@@ -15,6 +15,7 @@
         "__KBUILD_MODNAME=kmod_mapple"
       ],
       "includePath": [
+        "${workspaceFolder}",
         "${workspaceFolder}/user/src",
         "${workspaceFolder}/shared",
         "${workspaceFolder}/kernel/src/**",
@@ -30,6 +31,7 @@
       ],
       "browse": {
         "path": [
+          "${workspaceFolder}",
           "${workspaceFolder}/kernel/src",
           "${workspaceFolder}/user/src",
           "${workspaceFolder}/shared",

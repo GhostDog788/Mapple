@@ -1,5 +1,5 @@
 BasedOnStyle: LLVM
-ColumnLimit: 125
+ColumnLimit: 110
 # Remove excessive newlines (keeps at most 1 empty line)
 MaxEmptyLinesToKeep: 1
 # Strict Linux Kernel formatting rules

@@ -14,6 +14,7 @@ BUILD_ROOT       ?= $(CURDIR)/build
 INTERMEDIATE_DIR ?= $(BUILD_ROOT)/intermediate/$(BUILD_ID)
 ARTIFACT_DIR     ?= $(BUILD_ROOT)/artifacts/$(BUILD_ID)
 MODULE_DIR       ?= $(CURDIR)
+PROJECT_ROOT     ?= $(abspath $(CURDIR)/..)
 SHARED_DIR       ?= $(abspath $(CURDIR)/../shared)
 
 # Only these are staged (staging the whole dir would recurse into build/).
@@ -36,7 +37,8 @@ help:
 
 modules: prepare-build
 	$(MAKE) -C "$(KDIR)" M="$(INTERMEDIATE_DIR)" \
-		KCFLAGS="$(KCFLAGS_INJECT)" LAB_SHARED_DIR="$(SHARED_DIR)" modules
+		KCFLAGS="$(KCFLAGS_INJECT)" LAB_ROOT_DIR="$(PROJECT_ROOT)" \
+		LAB_SHARED_DIR="$(SHARED_DIR)" modules
 	@mkdir -p "$(ARTIFACT_DIR)"
 	@set -e; \
 	kos=$$(find "$(INTERMEDIATE_DIR)" -maxdepth 2 -name '*.ko' -type f); \

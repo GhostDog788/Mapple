@@ -5,62 +5,13 @@
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/mutex.h>
-#include <linux/slab.h>
-#include <linux/uaccess.h>
 #include <linux/version.h>
+
+#include <kernel/src/control/fops/fops.h>
 
 static dev_t mapple_devt;
 static struct cdev mapple_cdev;
 static struct class *mapple_class;
-
-/* The stored string and the lock that guards it against concurrent ioctls. */
-static DEFINE_MUTEX(mapple_lock);
-static char mapple_msg[mapple_MSG_MAX];
-
-static long mapple_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
-{
-	void __user *uarg = (void __user *)arg;
-	struct mapple_msg *buf;
-	long ret = 0;
-
-	buf = kmalloc(sizeof(*buf), GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
-
-	switch (cmd) {
-	case IOCTL_SET_MSG:
-		if (copy_from_user(buf, uarg, sizeof(*buf))) {
-			ret = -EFAULT;
-			break;
-		}
-		/* Never trust user input to be terminated. */
-		buf->data[mapple_MSG_MAX - 1] = '\0';
-		mutex_lock(&mapple_lock);
-		memcpy(mapple_msg, buf->data, mapple_MSG_MAX);
-		mutex_unlock(&mapple_lock);
-		pr_info("mapple: stored \"%s\"\n", buf->data);
-		break;
-	case IOCTL_GET_MSG:
-		mutex_lock(&mapple_lock);
-		memcpy(buf->data, mapple_msg, mapple_MSG_MAX);
-		mutex_unlock(&mapple_lock);
-		buf->data[mapple_MSG_MAX - 1] = '\0';
-		if (copy_to_user(uarg, buf, sizeof(*buf)))
-			ret = -EFAULT;
-		break;
-	default:
-		ret = -ENOTTY;
-	}
-
-	kfree(buf);
-	return ret;
-}
-
-static const struct file_operations mapple_fops = {
-	.owner = THIS_MODULE,
-	.unlocked_ioctl = mapple_ioctl,
-};
 
 static struct class *mapple_class_create(void)
 {
@@ -93,15 +44,14 @@ static int __init mapple_init(void)
 		goto delete_cdev;
 	}
 
-	device = device_create(mapple_class, NULL, mapple_devt, NULL,
-			       mapple_DEVICE_NAME);
+	device = device_create(mapple_class, NULL, mapple_devt, NULL, mapple_DEVICE_NAME);
 	if (IS_ERR(device)) {
 		ret = PTR_ERR(device);
 		goto destroy_class;
 	}
 
-	pr_info("mapple: registered /dev/%s major=%u minor=%u\n",
-		mapple_DEVICE_NAME, MAJOR(mapple_devt), MINOR(mapple_devt));
+	pr_info("mapple: registered /dev/%s major=%u minor=%u\n", mapple_DEVICE_NAME, MAJOR(mapple_devt),
+			MINOR(mapple_devt));
 	return 0;
 
 destroy_class:

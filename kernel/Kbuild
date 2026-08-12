@@ -1,8 +1,11 @@
 # Kbuild fragment, driven by ./Makefile. The module name is defined HERE
 # (obj-m); scripts discover it from the built .ko.
 obj-m += mapple.o
-mapple-y := src/main.o
+mapple-y := src/main.o \
+	src/control/fops/fops.o \
+	src/control/ioctl/ioctl.o
 
 # LAB_SHARED_DIR (absolute, from ./Makefile) holds shared/shared.h.
 ccflags-y := -g -DDEBUG
+ccflags-y += $(addprefix -I,$(LAB_ROOT_DIR))
 ccflags-y += $(addprefix -I,$(LAB_SHARED_DIR))
