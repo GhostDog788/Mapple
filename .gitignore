@@ -1,0 +1,26 @@
+# Per-machine config (lab.example.env is the tracked template).
+lab.local.env
+
+# Synced per-target kernel trees + generated GDB/build outputs.
+kernel/kernel-cache/
+kernel/.gdb/
+kernel/build/
+user/.gdb/
+user/build/
+
+# Kbuild stragglers.
+*.ko
+*.mod
+*.mod.c
+*.o
+.*.cmd
+Module.symvers
+modules.order
+
+# IDE / agent noise.
+.vscode/ipch/
+.codex
+.claude/
+CLAUDE.md
+session.md
+todo.md

@@ -1,0 +1,50 @@
+{
+  "version": 4,
+  "configurations": [
+    {
+      "name": "Kernel + Usermode",
+      "compilerPath": "/usr/bin/gcc",
+      "intelliSenseMode": "linux-gcc-x64",
+      "cStandard": "gnu11",
+      "defines": [
+        "__KERNEL__",
+        "MODULE",
+        "CC_USING_FENTRY",
+        "KBUILD_MODNAME=\"mapple\"",
+        "KBUILD_BASENAME=\"main\"",
+        "__KBUILD_MODNAME=kmod_mapple"
+      ],
+      "includePath": [
+        "${workspaceFolder}/user/src",
+        "${workspaceFolder}/shared",
+        "${workspaceFolder}/kernel/src/**",
+        "${workspaceFolder}/kernel/kernel-cache/current/build/include",
+        "${workspaceFolder}/kernel/kernel-cache/current/build/include/uapi",
+        "${workspaceFolder}/kernel/kernel-cache/current/build/include/generated",
+        "${workspaceFolder}/kernel/kernel-cache/current/build/include/generated/uapi",
+        "${workspaceFolder}/kernel/kernel-cache/current/build/ubuntu/include",
+        "${workspaceFolder}/kernel/kernel-cache/current/build/arch/x86/include",
+        "${workspaceFolder}/kernel/kernel-cache/current/build/arch/x86/include/uapi",
+        "${workspaceFolder}/kernel/kernel-cache/current/build/arch/x86/include/generated",
+        "${workspaceFolder}/kernel/kernel-cache/current/build/arch/x86/include/generated/uapi"
+      ],
+      "browse": {
+        "path": [
+          "${workspaceFolder}/kernel/src",
+          "${workspaceFolder}/user/src",
+          "${workspaceFolder}/shared",
+          "${workspaceFolder}/kernel/kernel-cache/current/source",
+          "${workspaceFolder}/kernel/kernel-cache/current/build/ubuntu/include",
+          "${workspaceFolder}/kernel/kernel-cache/current/build/include",
+          "${workspaceFolder}/kernel/kernel-cache/current/build/arch/x86/include"
+        ],
+        "limitSymbolsToIncludedHeaders": false
+      },
+      "forcedInclude": [
+        "${workspaceFolder}/kernel/kernel-cache/current/build/include/linux/compiler-version.h",
+        "${workspaceFolder}/kernel/kernel-cache/current/build/include/linux/kconfig.h",
+        "${workspaceFolder}/kernel/kernel-cache/current/build/include/linux/compiler_types.h"
+      ]
+    }
+  ]
+}

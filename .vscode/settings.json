@@ -1,0 +1,15 @@
+{
+  "C_Cpp.default.configurationName": "Kernel + Usermode",
+  "C_Cpp.errorSquiggles": "enabled",
+  "files.associations": {
+    "*.h": "c",
+    "*.c": "c",
+    "Kbuild": "makefile"
+  },
+  "files.exclude": {
+    "kernel/.gdb": true,
+    "kernel/build": true,
+    "user/.gdb": true,
+    "user/build": true
+  }
+}
