@@ -1,6 +1,12 @@
 {
   "C_Cpp.default.configurationName": "Kernel + Usermode",
-  "C_Cpp.errorSquiggles": "enabled",
+  "C_Cpp.intelliSenseEngine": "disabled",
+  "clangd.path": "/usr/bin/clangd-18",
+  "clangd.arguments": [
+    "--compile-commands-dir=.",
+    "--background-index",
+    "--header-insertion=never"
+  ],
   "files.associations": {
     "*.h": "c",
     "*.c": "c",

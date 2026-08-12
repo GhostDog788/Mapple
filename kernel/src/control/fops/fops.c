@@ -1,9 +1,9 @@
-#include <kernel/src/control/fops/fops.h>
+#include <control/fops/fops.h>
 
 #include <linux/fs.h>
 #include <linux/module.h>
 
-#include <kernel/src/control/ioctl/ioctl.h>
+#include <control/ioctl/ioctl.h>
 
 const struct file_operations mapple_fops = {
 	.owner = THIS_MODULE,

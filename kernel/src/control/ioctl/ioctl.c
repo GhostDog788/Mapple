@@ -1,4 +1,4 @@
-#include <kernel/src/control/ioctl/ioctl.h>
+#include <control/ioctl/ioctl.h>
 
 #include "shared.h"
 

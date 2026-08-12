@@ -36,7 +36,7 @@ apt_get() {
 echo "[1/5] installing host build prerequisites"
 apt_get update
 apt_get install -y \
-	bc bison build-essential dwarves flex gdb \
+	bc bison build-essential clangd-18 dwarves flex gdb \
 	libelf-dev libssl-dev openssh-client rsync sshpass
 
 echo "[2/5] discovering target kernel"

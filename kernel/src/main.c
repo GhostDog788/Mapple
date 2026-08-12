@@ -7,7 +7,7 @@
 #include <linux/module.h>
 #include <linux/version.h>
 
-#include <kernel/src/control/fops/fops.h>
+#include <control/fops/fops.h>
 
 static dev_t mapple_devt;
 static struct cdev mapple_cdev;

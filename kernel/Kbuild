@@ -1,11 +1,12 @@
 # Kbuild fragment, driven by ./Makefile. The module name is defined HERE
 # (obj-m); scripts discover it from the built .ko.
 obj-m += mapple.o
-mapple-y := src/main.o \
-	src/control/fops/fops.o \
-	src/control/ioctl/ioctl.o
+# Every C translation unit under src/ is part of the module. Keeping discovery
+# here also keeps compile_commands.json in sync when source files are added.
+mapple-y := $(patsubst $(src)/%.c,%.o,\
+	$(shell find -L $(src)/src -type f -name '*.c' | sort))
 
-# LAB_SHARED_DIR (absolute, from ./Makefile) holds shared/shared.h.
+# Project headers are rooted at kernel/src; LAB_SHARED_DIR holds shared.h.
 ccflags-y := -g -DDEBUG
-ccflags-y += $(addprefix -I,$(LAB_ROOT_DIR))
+ccflags-y += $(addprefix -I,$(LAB_ROOT_DIR)/kernel/src)
 ccflags-y += $(addprefix -I,$(LAB_SHARED_DIR))

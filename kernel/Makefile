@@ -16,6 +16,13 @@ ARTIFACT_DIR     ?= $(BUILD_ROOT)/artifacts/$(BUILD_ID)
 MODULE_DIR       ?= $(CURDIR)
 PROJECT_ROOT     ?= $(abspath $(CURDIR)/..)
 SHARED_DIR       ?= $(abspath $(CURDIR)/../shared)
+MODULE_COMPILE_COMMANDS ?= $(MODULE_DIR)/module_compile_commands.json
+COMPILE_COMMANDS ?= $(MODULE_DIR)/compile_commands.json
+LINUX_COMPILE_COMMANDS ?= $(MODULE_DIR)/linux_compile_commands.json
+ROOT_COMPILE_COMMANDS ?= $(PROJECT_ROOT)/compile_commands.json
+COMPILE_DB_TOOL  ?= $(PROJECT_ROOT)/scripts/compile_commands.py
+KERNEL_DB_TOOL   ?= $(KDIR)/scripts/clang-tools/gen_compile_commands.py
+KERNEL_SOURCE    ?= $(realpath $(CURRENT_CACHE)/source)
 
 # Only these are staged (staging the whole dir would recurse into build/).
 STAGE_ITEMS ?= src Kbuild
@@ -39,6 +46,19 @@ modules: prepare-build
 	$(MAKE) -C "$(KDIR)" M="$(INTERMEDIATE_DIR)" \
 		KCFLAGS="$(KCFLAGS_INJECT)" LAB_ROOT_DIR="$(PROJECT_ROOT)" \
 		LAB_SHARED_DIR="$(SHARED_DIR)" modules
+	@python3 "$(KERNEL_DB_TOOL)" -d "$(KDIR)" -o "$(MODULE_COMPILE_COMMANDS)" "$(INTERMEDIATE_DIR)"
+	@python3 "$(COMPILE_DB_TOOL)" remap "$(MODULE_COMPILE_COMMANDS)" "$(INTERMEDIATE_DIR)" "$(MODULE_DIR)"
+	@if [ -n "$(KERNEL_SOURCE)" ]; then \
+		python3 "$(KERNEL_DB_TOOL)" -d "$(KERNEL_SOURCE)" \
+			-o "$(LINUX_COMPILE_COMMANDS)" "$(KERNEL_SOURCE)"; \
+	fi
+	@python3 "$(COMPILE_DB_TOOL)" merge --clangd-compatible "$(COMPILE_COMMANDS)" \
+		"$(MODULE_COMPILE_COMMANDS)" "$(PROJECT_ROOT)/user/compile_commands.json" \
+		"$(LINUX_COMPILE_COMMANDS)"
+	@python3 "$(COMPILE_DB_TOOL)" merge --clangd-compatible "$(ROOT_COMPILE_COMMANDS)" \
+		"$(COMPILE_COMMANDS)"
+	@echo "generated $(COMPILE_COMMANDS)"
+	@echo "generated $(ROOT_COMPILE_COMMANDS)"
 	@mkdir -p "$(ARTIFACT_DIR)"
 	@set -e; \
 	kos=$$(find "$(INTERMEDIATE_DIR)" -maxdepth 2 -name '*.ko' -type f); \
