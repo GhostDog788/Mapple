@@ -3,7 +3,7 @@
 #include <linux/fs.h>
 #include <linux/module.h>
 
-#include <control/ioctl/ioctl.h>
+#include <control/fops/ioctl/ioctl.h>
 
 const struct file_operations mapple_fops = {
 	.owner = THIS_MODULE,

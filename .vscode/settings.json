@@ -16,6 +16,11 @@
     "kernel/.gdb": true,
     "kernel/build": true,
     "user/.gdb": true,
-    "user/build": true
+    "user/build": true,
+    ".cache": true,
+    "compile_commands.json": true,
+    "*/compile_commands.json": true,
+    "*/module_compile_commands.json": true,
+    "*/linux_compile_commands.json": true
   }
 }
