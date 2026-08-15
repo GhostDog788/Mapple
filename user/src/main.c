@@ -14,7 +14,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#define ECHO_PAYLOAD_SIZE (32U * 1024U)
+#define ECHO_MESSAGE "Hello server!"
+#define ECHO_PAYLOAD_SIZE (sizeof(ECHO_MESSAGE) - 1U)
 
 _Static_assert(sizeof(struct mapple_wire_header) == MAPPLE_WIRE_HEADER_SIZE,
 	       "mapple wire header must be 16 bytes");
@@ -72,54 +73,34 @@ static void make_header(struct mapple_wire_header *header, uint16_t command,
 	header->payload_size = htobe64(payload_size);
 }
 
-static void fill_payload(uint8_t *payload, size_t size)
-{
-	size_t index;
-
-	for (index = 0; index < size; ++index)
-		payload[index] = (uint8_t)((index * 131U + 17U) & 0xffU);
-}
-
 static int verify_echo(int fd)
 {
 	struct mapple_wire_header request;
 	struct mapple_wire_header response;
-	uint8_t *payload;
-	uint8_t *echoed;
-	int ret = -1;
+	const char payload[] = ECHO_MESSAGE;
+	char echoed[ECHO_PAYLOAD_SIZE];
 
-	payload = malloc(ECHO_PAYLOAD_SIZE);
-	echoed = malloc(ECHO_PAYLOAD_SIZE);
-	if (!payload || !echoed) {
-		errno = ENOMEM;
-		goto out;
-	}
-	fill_payload(payload, ECHO_PAYLOAD_SIZE);
 	make_header(&request, MAPPLE_COMMAND_ECHO, ECHO_PAYLOAD_SIZE);
 
 	if (write_all(fd, &request, sizeof(request)) ||
 	    write_all(fd, payload, ECHO_PAYLOAD_SIZE) ||
 	    read_exact(fd, &response, sizeof(response)))
-		goto out;
+		return -1;
 
 	if (ntohl(response.magic) != MAPPLE_PROTOCOL_MAGIC ||
 	    ntohs(response.version) != MAPPLE_PROTOCOL_VERSION ||
 	    ntohs(response.command) != MAPPLE_COMMAND_ECHO ||
 	    be64toh(response.payload_size) != ECHO_PAYLOAD_SIZE) {
 		errno = EPROTO;
-		goto out;
+		return -1;
 	}
 	if (read_exact(fd, echoed, ECHO_PAYLOAD_SIZE))
-		goto out;
+		return -1;
 	if (memcmp(payload, echoed, ECHO_PAYLOAD_SIZE) != 0) {
 		errno = EBADMSG;
-		goto out;
+		return -1;
 	}
-	ret = 0;
-out:
-	free(echoed);
-	free(payload);
-	return ret;
+	return 0;
 }
 
 static int open_tcp(void)
@@ -168,7 +149,7 @@ static bool run_transport(const char *name, int (*open_transport)(void))
 		return false;
 	}
 	close(fd);
-	printf("%s: ECHO verified (%u bytes)\n", name, ECHO_PAYLOAD_SIZE);
+	printf("%s: ECHO verified (%zu bytes)\n", name, ECHO_PAYLOAD_SIZE);
 	return true;
 }
 
