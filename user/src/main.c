@@ -1,3 +1,4 @@
+#include "communication/helpers/command.h"
 #include <arpa/inet.h>
 #include <endian.h>
 #include <errno.h>
@@ -22,28 +23,19 @@
 
 static int verify_echo(int fd)
 {
-	struct mapple_wire_header request;
 	struct mapple_wire_header response;
 	const char payload[] = ECHO_MESSAGE;
 	char echoed[ECHO_PAYLOAD_SIZE];
 	int ret;
 
-	make_header(&request, MAPPLE_COMMAND_ECHO, ECHO_PAYLOAD_SIZE);
-
-	ret = write_all(fd, &request, sizeof(request));
+	ret = send_command(fd, MAPPLE_COMMAND_ECHO, payload, ECHO_PAYLOAD_SIZE);
 	if (ret)
 		return ret;
-	ret = write_all(fd, payload, ECHO_PAYLOAD_SIZE);
-	if (ret)
-		return ret;
-	ret = read_exact(fd, &response, sizeof(response));
+	ret = receive_response_header(fd, &response);
 	if (ret)
 		return ret;
 
-	if (ntohl(response.magic) != MAPPLE_PROTOCOL_MAGIC ||
-		ntohs(response.version) != MAPPLE_PROTOCOL_VERSION ||
-		ntohs(response.command) != MAPPLE_COMMAND_ECHO ||
-		be64toh(response.payload_size) != ECHO_PAYLOAD_SIZE)
+	if (ntohs(response.command) != MAPPLE_COMMAND_ECHO || be64toh(response.payload_size) != ECHO_PAYLOAD_SIZE)
 		return EPROTO;
 	ret = read_exact(fd, echoed, ECHO_PAYLOAD_SIZE);
 	if (ret)

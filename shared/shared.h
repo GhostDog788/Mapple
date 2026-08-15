@@ -8,11 +8,12 @@
 #ifndef SHARED_H
 #define SHARED_H
 
-/* Auto-created device node: /dev/mapple (see device_create in kernel). */
+/* Character device config */
 #define MAPPLE_DEVICE_NAME "mapple"
-#define MAPPLE_CLASS_NAME  "mapple"
+#define MAPPLE_CLASS_NAME "mapple"
 #define MAPPLE_DEVICE_PATH "/dev/" MAPPLE_DEVICE_NAME
 
+/* TCP server config */
 #define MAPPLE_TCP_PORT 4444
 
 #endif /* SHARED_H */

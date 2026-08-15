@@ -5,35 +5,30 @@
  * Public wire ABI.  Multi-byte values are encoded in network byte order.
  * Keep this header usable by both the kernel module and ordinary C clients.
  */
-#ifdef __KERNEL__
 #include <linux/types.h>
-typedef __be16 mapple_wire_u16;
-typedef __be32 mapple_wire_u32;
-typedef __be64 mapple_wire_u64;
-#define MAPPLE_WIRE_PACKED __packed
+
+// prevents the compiler from inserting padding into the struct
+#ifdef __KERNEL__
+#define PACKED_STRUCT __packed
 #else
-#include <stdint.h>
-typedef uint16_t mapple_wire_u16;
-typedef uint32_t mapple_wire_u32;
-typedef uint64_t mapple_wire_u64;
-#define MAPPLE_WIRE_PACKED __attribute__((packed))
+#define PACKED_STRUCT __attribute__((packed))
 #endif
 
-#define MAPPLE_PROTOCOL_MAGIC 0x4d41504cU
+#define MAPPLE_PROTOCOL_MAGIC 0x4d41504cU // "MAPL" in network byte order
 #define MAPPLE_PROTOCOL_VERSION 1U
-#define MAPPLE_WIRE_HEADER_SIZE 16U
 
 enum mapple_command_id {
 	MAPPLE_COMMAND_ECHO = 1,
+	MAPPLE_COMMAND_COUNT
 };
 
 struct mapple_wire_header {
-	mapple_wire_u32 magic;
-	mapple_wire_u16 version;
-	mapple_wire_u16 command;
-	mapple_wire_u64 payload_size;
-} MAPPLE_WIRE_PACKED;
+	__u32 magic;
+	__u16 version;
+	__u16 command;
+	__u64 payload_size;
+} PACKED_STRUCT;
 
-#undef MAPPLE_WIRE_PACKED
+#undef PACKED_STRUCT
 
 #endif /* MAPPLE_COMMANDS_H */

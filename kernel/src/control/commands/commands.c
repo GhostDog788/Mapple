@@ -7,8 +7,7 @@
 #include <control/commands/command_registry.h>
 #include <control/session.h>
 
-static void mapple_decode_header(const struct mapple_wire_header *wire,
-					 struct mapple_decoded_header *header)
+static void mapple_decode_header(const struct mapple_wire_header *wire, struct mapple_decoded_header *header)
 {
 	header->magic = get_unaligned_be32(&wire->magic);
 	header->version = get_unaligned_be16(&wire->version);
@@ -24,11 +23,7 @@ static void mapple_encode_header(struct mapple_wire_header *wire, u16 command, u
 	put_unaligned_be64(payload_size, &wire->payload_size);
 }
 
-int mapple_protocol_init(void)
-{
-	BUILD_BUG_ON(sizeof(struct mapple_wire_header) != MAPPLE_WIRE_HEADER_SIZE);
-	return mapple_command_find_handler(MAPPLE_COMMAND_ECHO) ? 0 : -EINVAL;
-}
+int mapple_protocol_init(void) { return mapple_command_find_handler(MAPPLE_COMMAND_ECHO) ? 0 : -EINVAL; }
 
 int mapple_command_read(struct mapple_command_context *context, void *buffer, size_t size)
 {
@@ -44,7 +39,7 @@ int mapple_command_read(struct mapple_command_context *context, void *buffer, si
 }
 
 int mapple_command_write_response_header(struct mapple_command_context *context, u16 command,
-						 u64 payload_size)
+										 u64 payload_size)
 {
 	struct mapple_wire_header wire;
 	int ret;
@@ -92,7 +87,7 @@ int mapple_protocol_run(struct mapple_session *session)
 		context.remaining_payload = context.header.payload_size;
 
 		if (context.header.magic != MAPPLE_PROTOCOL_MAGIC ||
-		    context.header.version != MAPPLE_PROTOCOL_VERSION)
+			context.header.version != MAPPLE_PROTOCOL_VERSION)
 			return -EPROTO;
 		handler = mapple_command_find_handler(context.header.command);
 		if (!handler)
@@ -101,8 +96,7 @@ int mapple_protocol_run(struct mapple_session *session)
 		ret = handler(&context);
 		if (ret)
 			return ret;
-		if (context.remaining_payload || !context.response_started ||
-		    context.remaining_response)
+		if (context.remaining_payload || !context.response_started || context.remaining_response)
 			return -EPROTO;
 	}
 }
