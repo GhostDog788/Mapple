@@ -2,28 +2,9 @@
 #include <linux/module.h>
 #include <linux/printk.h>
 
-#include <control/sessions/session.h>
+#include <control/sessions/session_manager.h>
 #include <control/transports/chardev/init.h>
 #include <control/transports/tcp_server/tcp.h>
-
-static void mapple_drain_sessions(void)
-{
-	struct mapple_session *sessions[MAPPLE_MAX_SESSIONS];
-	size_t count;
-	size_t index;
-
-	do {
-		count = mapple_session_manager_snapshot(sessions, ARRAY_SIZE(sessions));
-		for (index = 0; index < count; ++index)
-			mapple_session_shutdown(sessions[index]);
-		for (index = 0; index < count; ++index) {
-			mapple_session_wait(sessions[index]);
-			mapple_session_put(sessions[index]);
-		}
-	} while (count);
-	WARN_ON(mapple_session_manager_active_count() != 0);
-	WARN_ON(!mapple_session_manager_is_empty());
-}
 
 static int __init mapple_init(void)
 {
@@ -41,17 +22,15 @@ static int __init mapple_init(void)
 	return 0;
 
 stop_chardev:
-	mapple_session_manager_begin_shutdown();
-	mapple_drain_sessions();
+	mapple_session_manager_shutdown();
 	mapple_chardev_exit();
 	return ret;
 }
 
 static void __exit mapple_exit(void)
 {
-	mapple_session_manager_begin_shutdown();
+	mapple_session_manager_shutdown();
 	mapple_tcp_exit();
-	mapple_drain_sessions();
 	mapple_chardev_exit();
 	pr_info("mapple: module unloaded\n");
 }

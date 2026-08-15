@@ -11,6 +11,7 @@
 #include <net/net_namespace.h>
 #include <net/sock.h>
 
+#include <control/sessions/session_manager.h>
 #include <control/transports/tcp_server/internal.h>
 #include <control/transports/tcp_server/stream_ops.h>
 #include <shared.h>

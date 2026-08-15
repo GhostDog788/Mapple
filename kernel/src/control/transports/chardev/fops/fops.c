@@ -10,7 +10,7 @@
 #include <linux/slab.h>
 #include <linux/wait.h>
 
-#include <control/sessions/session.h>
+#include <control/sessions/session_manager.h>
 
 #define MAPPLE_FIFO_SIZE (64U * 1024U)
 

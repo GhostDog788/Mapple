@@ -8,13 +8,7 @@
 #include <linux/workqueue.h>
 
 #include <control/stream.h>
-
-#define MAPPLE_MAX_SESSIONS 8U
-
-enum mapple_transport_kind {
-	MAPPLE_TRANSPORT_CHARDEV,
-	MAPPLE_TRANSPORT_TCP,
-};
+#include <control/transports/transport.h>
 
 enum mapple_session_state {
 	MAPPLE_SESSION_STARTING,
@@ -39,32 +33,13 @@ struct mapple_session {
 	void (*release)(struct mapple_session *session);
 };
 
-struct mapple_session_manager {
-	struct mutex lock;
-	struct list_head sessions;
-	u32 active_count;
-	u64 next_id;
-	bool stopping;
-};
-
-extern struct mapple_session_manager mapple_sessions;
-
-void mapple_session_manager_init(void);
-void mapple_session_manager_begin_shutdown(void);
-u32 mapple_session_manager_active_count(void);
-bool mapple_session_manager_is_empty(void);
-size_t mapple_session_manager_snapshot(struct mapple_session **sessions, size_t capacity);
-
 void mapple_session_init(struct mapple_session *session, enum mapple_transport_kind transport,
 				 const struct mapple_stream_ops *stream_ops,
 				 void (*release)(struct mapple_session *session));
 void mapple_session_get(struct mapple_session *session);
 void mapple_session_put(struct mapple_session *session);
-int mapple_session_register(struct mapple_session *session);
-void mapple_session_unregister(struct mapple_session *session);
 int mapple_session_start_parser(struct mapple_session *session);
 void mapple_session_shutdown(struct mapple_session *session);
 void mapple_session_wait(struct mapple_session *session);
-const char *mapple_transport_name(enum mapple_transport_kind transport);
 
 #endif /* MAPPLE_SESSION_H */
