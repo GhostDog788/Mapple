@@ -20,7 +20,7 @@ CFLAGS    ?= -g -O0 -Wall -Wextra -std=gnu11
 
 all: $(BIN) compile-commands
 
-$(BIN): $(SRC) $(SHARED_DIR)/shared.h | $(BUILD_DIR)
+$(BIN): $(SRC) $(SHARED_DIR)/shared.h $(SHARED_DIR)/commands.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(SRC)
 	ln -sfn $(notdir $(BIN)) $(BUILD_DIR)/current
 	@echo "built $@ (alias $(BUILD_DIR)/current)"
