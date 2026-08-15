@@ -1,4 +1,4 @@
-#include <control/session.h>
+#include <control/sessions/session.h>
 
 #include <linux/err.h>
 #include <linux/errno.h>

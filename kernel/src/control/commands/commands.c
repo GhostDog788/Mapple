@@ -2,10 +2,10 @@
 
 #include <asm/unaligned.h>
 #include <linux/errno.h>
-#include <linux/printk.h>
+#include <linux/string.h>
 
 #include <control/commands/command_registry.h>
-#include <control/session.h>
+#include <control/sessions/session.h>
 
 static void mapple_decode_header(const struct mapple_wire_header *wire, struct mapple_decoded_header *header)
 {
@@ -22,8 +22,6 @@ static void mapple_encode_header(struct mapple_wire_header *wire, u16 command, u
 	put_unaligned_be16(command, &wire->command);
 	put_unaligned_be64(payload_size, &wire->payload_size);
 }
-
-int mapple_protocol_init(void) { return mapple_command_find_handler(MAPPLE_COMMAND_ECHO) ? 0 : -EINVAL; }
 
 int mapple_command_read(struct mapple_command_context *context, void *buffer, size_t size)
 {

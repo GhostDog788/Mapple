@@ -1,10 +1,10 @@
-#include "communication/helpers/request.h"
+#include <communication/helpers/command.h>
 
 #include <errno.h>
 #include <netinet/in.h>
 
-#include "communication/helpers/stream.h"
-#include <communication/helpers/command.h>
+#include <communication/helpers/request.h>
+#include <communication/helpers/stream.h>
 
 int send_command(int fd, uint16_t command, const void *data, size_t len)
 {

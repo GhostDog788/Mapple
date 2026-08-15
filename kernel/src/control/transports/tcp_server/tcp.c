@@ -1,7 +1,6 @@
-#include <transport/tcp.h>
+#include <control/transports/tcp_server/tcp.h>
 
 #include <linux/err.h>
-#include <linux/errno.h>
 #include <linux/in.h>
 #include <linux/kthread.h>
 #include <linux/net.h>
@@ -12,73 +11,15 @@
 #include <net/net_namespace.h>
 #include <net/sock.h>
 
+#include <control/transports/tcp_server/internal.h>
+#include <control/transports/tcp_server/stream_ops.h>
 #include <shared.h>
-
-#include <control/session.h>
-
-struct mapple_tcp_session {
-	struct mapple_session session;
-	struct socket *socket;
-};
-
-struct mapple_tcp_server {
-	struct socket *listen_socket;
-	struct task_struct *listener_task;
-};
 
 static struct mapple_tcp_server mapple_tcp_server;
 
-static struct mapple_tcp_session *mapple_tcp_from_stream(struct mapple_stream *stream)
-{
-	struct mapple_session *session = container_of(stream, struct mapple_session, stream);
-
-	return container_of(session, struct mapple_tcp_session, session);
-}
-
-static ssize_t mapple_tcp_stream_read(struct mapple_stream *stream, void *buffer, size_t size)
-{
-	struct mapple_tcp_session *context = mapple_tcp_from_stream(stream);
-	struct msghdr message = { };
-	struct kvec vector = {
-		.iov_base = buffer,
-		.iov_len = size,
-	};
-
-	return kernel_recvmsg(context->socket, &message, &vector, 1, size, 0);
-}
-
-static ssize_t mapple_tcp_stream_write(struct mapple_stream *stream, const void *buffer,
-					       size_t size)
-{
-	struct mapple_tcp_session *context = mapple_tcp_from_stream(stream);
-	struct msghdr message = {
-		.msg_flags = MSG_NOSIGNAL,
-	};
-	struct kvec vector = {
-		.iov_base = (void *)buffer,
-		.iov_len = size,
-	};
-
-	return kernel_sendmsg(context->socket, &message, &vector, 1, size);
-}
-
-static void mapple_tcp_stream_shutdown(struct mapple_stream *stream)
-{
-	struct mapple_tcp_session *context = mapple_tcp_from_stream(stream);
-
-	kernel_sock_shutdown(context->socket, SHUT_RDWR);
-}
-
-static const struct mapple_stream_ops mapple_tcp_stream_ops = {
-	.read_some = mapple_tcp_stream_read,
-	.write_some = mapple_tcp_stream_write,
-	.shutdown = mapple_tcp_stream_shutdown,
-};
-
 static void mapple_tcp_session_release(struct mapple_session *session)
 {
-	struct mapple_tcp_session *context = container_of(session, struct mapple_tcp_session,
-							 session);
+	struct mapple_tcp_session *context = mapple_tcp_from_session(session);
 
 	sock_release(context->socket);
 	kfree(context);
@@ -96,7 +37,7 @@ static void mapple_tcp_accept_session(struct socket *socket)
 	}
 	context->socket = socket;
 	mapple_session_init(&context->session, MAPPLE_TRANSPORT_TCP, &mapple_tcp_stream_ops,
-				    mapple_tcp_session_release);
+						mapple_tcp_session_release);
 	ret = mapple_session_register(&context->session);
 	if (ret)
 		goto put_session;
@@ -111,7 +52,7 @@ put_session:
 	mapple_session_put(&context->session);
 }
 
-static int mapple_tcp_listener(void *)
+static int mapple_tcp_listener(void * _)
 {
 	while (!kthread_should_stop()) {
 		struct socket *accepted = NULL;
@@ -137,24 +78,21 @@ int mapple_tcp_init(void)
 	int reuse = 1;
 	int ret;
 
-	ret = sock_create_kern(&init_net, AF_INET, SOCK_STREAM, IPPROTO_TCP,
-			       &mapple_tcp_server.listen_socket);
+	ret = sock_create_kern(&init_net, AF_INET, SOCK_STREAM, IPPROTO_TCP, &mapple_tcp_server.listen_socket);
 	if (ret)
 		return ret;
-	ret = sock_setsockopt(mapple_tcp_server.listen_socket, SOL_SOCKET, SO_REUSEADDR,
-			      KERNEL_SOCKPTR(&reuse), sizeof(reuse));
+	ret = sock_setsockopt(mapple_tcp_server.listen_socket, SOL_SOCKET, SO_REUSEADDR, KERNEL_SOCKPTR(&reuse),
+						  sizeof(reuse));
 	if (ret)
 		goto release_socket;
-	ret = kernel_bind(mapple_tcp_server.listen_socket, (struct sockaddr *)&address,
-			  sizeof(address));
+	ret = kernel_bind(mapple_tcp_server.listen_socket, (struct sockaddr *)&address, sizeof(address));
 	if (ret)
 		goto release_socket;
 	ret = kernel_listen(mapple_tcp_server.listen_socket, MAPPLE_MAX_SESSIONS);
 	if (ret)
 		goto release_socket;
 
-	mapple_tcp_server.listener_task =
-		kthread_run(mapple_tcp_listener, NULL, "mapple-listener");
+	mapple_tcp_server.listener_task = kthread_run(mapple_tcp_listener, NULL, "mapple-listener");
 	if (IS_ERR(mapple_tcp_server.listener_task)) {
 		ret = PTR_ERR(mapple_tcp_server.listener_task);
 		mapple_tcp_server.listener_task = NULL;

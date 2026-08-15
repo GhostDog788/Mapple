@@ -2,10 +2,9 @@
 #include <linux/module.h>
 #include <linux/printk.h>
 
-#include <control/commands/commands.h>
-#include <control/fops/fops.h>
-#include <control/session.h>
-#include <transport/tcp.h>
+#include <control/sessions/session.h>
+#include <control/transports/chardev/init.h>
+#include <control/transports/tcp_server/tcp.h>
 
 static void mapple_drain_sessions(void)
 {
@@ -31,9 +30,6 @@ static int __init mapple_init(void)
 	int ret;
 
 	mapple_session_manager_init();
-	ret = mapple_protocol_init();
-	if (ret)
-		return ret;
 	ret = mapple_chardev_init();
 	if (ret)
 		return ret;
@@ -64,4 +60,4 @@ module_init(mapple_init);
 module_exit(mapple_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Shared binary protocol over chardev and TCP transports");
+MODULE_DESCRIPTION("Kernel pentest tool");

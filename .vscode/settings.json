@@ -5,7 +5,8 @@
   "clangd.arguments": [
     "--compile-commands-dir=.",
     "--background-index",
-    "--header-insertion=never"
+    "--header-insertion=never",
+    "--clang-tidy=false",
   ],
   "files.associations": {
     "*.h": "c",

@@ -1,4 +1,6 @@
 #include <communication/helpers/request.h>
+
+#include <endian.h>
 #include <netinet/in.h>
 
 void make_header(struct mapple_wire_header *header, uint16_t command, uint64_t payload_size)

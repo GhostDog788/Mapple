@@ -2,21 +2,16 @@
 #include <arpa/inet.h>
 #include <endian.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <signal.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <unistd.h>
 
 #include <commands.h>
-#include <communication/helpers/request.h>
 #include <communication/helpers/stream.h>
 #include <communication/helpers/transport.h>
-#include <shared.h>
 
 #define ECHO_MESSAGE "Hello server!"
 #define ECHO_PAYLOAD_SIZE (sizeof(ECHO_MESSAGE) - 1)

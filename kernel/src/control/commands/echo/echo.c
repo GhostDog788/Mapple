@@ -3,8 +3,6 @@
 #include <linux/minmax.h>
 #include <linux/slab.h>
 
-#include <commands.h>
-
 #define MAPPLE_ECHO_CHUNK_SIZE 4096U
 
 int mapple_handle_echo(struct mapple_command_context *context)
@@ -21,7 +19,7 @@ int mapple_handle_echo(struct mapple_command_context *context)
 		goto free_buffer;
 
 	while (context->remaining_payload) {
-		size_t chunk = min_t(u64, context->remaining_payload, sizeof(buffer));
+		size_t chunk = min_t(u64, context->remaining_payload, MAPPLE_ECHO_CHUNK_SIZE);
 
 		ret = mapple_command_read(context, buffer, chunk);
 		if (ret)

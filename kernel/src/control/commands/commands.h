@@ -5,7 +5,7 @@
 
 #include <commands.h>
 
-struct mapple_session;
+#include <control/sessions/session.h>
 
 struct mapple_decoded_header {
 	u32 magic;
@@ -25,7 +25,6 @@ struct mapple_command_context {
 
 typedef int (*mapple_command_handler_t)(struct mapple_command_context *context);
 
-int mapple_protocol_init(void);
 int mapple_protocol_run(struct mapple_session *session);
 
 int mapple_command_read(struct mapple_command_context *context, void *buffer, size_t size);
