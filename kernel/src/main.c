@@ -1,79 +1,67 @@
-#include "shared.h"
-
-#include <linux/cdev.h>
-#include <linux/device.h>
-#include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/version.h>
+#include <linux/printk.h>
 
+#include <control/commands/commands.h>
 #include <control/fops/fops.h>
+#include <control/session.h>
+#include <transport/tcp.h>
 
-static dev_t mapple_devt;
-static struct cdev mapple_cdev;
-static struct class *mapple_class;
-
-static struct class *mapple_class_create(void)
+static void mapple_drain_sessions(void)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
-	return class_create(mapple_CLASS_NAME);
-#else
-	return class_create(THIS_MODULE, mapple_CLASS_NAME);
-#endif
+	struct mapple_session *sessions[MAPPLE_MAX_SESSIONS];
+	size_t count;
+	size_t index;
+
+	do {
+		count = mapple_session_manager_snapshot(sessions, ARRAY_SIZE(sessions));
+		for (index = 0; index < count; ++index)
+			mapple_session_shutdown(sessions[index]);
+		for (index = 0; index < count; ++index) {
+			mapple_session_wait(sessions[index]);
+			mapple_session_put(sessions[index]);
+		}
+	} while (count);
+	WARN_ON(mapple_session_manager_active_count() != 0);
+	WARN_ON(!mapple_session_manager_is_empty());
 }
 
 static int __init mapple_init(void)
 {
-	struct device *device;
 	int ret;
 
-	ret = alloc_chrdev_region(&mapple_devt, 0, 1, mapple_DEVICE_NAME);
+	mapple_session_manager_init();
+	ret = mapple_protocol_init();
 	if (ret)
 		return ret;
-
-	cdev_init(&mapple_cdev, &mapple_fops);
-	mapple_cdev.owner = THIS_MODULE;
-
-	ret = cdev_add(&mapple_cdev, mapple_devt, 1);
+	ret = mapple_chardev_init();
 	if (ret)
-		goto unregister_region;
+		return ret;
+	ret = mapple_tcp_init();
+	if (ret)
+		goto stop_chardev;
 
-	mapple_class = mapple_class_create();
-	if (IS_ERR(mapple_class)) {
-		ret = PTR_ERR(mapple_class);
-		goto delete_cdev;
-	}
-
-	device = device_create(mapple_class, NULL, mapple_devt, NULL, mapple_DEVICE_NAME);
-	if (IS_ERR(device)) {
-		ret = PTR_ERR(device);
-		goto destroy_class;
-	}
-
-	pr_info("mapple: registered /dev/%s major=%u minor=%u\n", mapple_DEVICE_NAME, MAJOR(mapple_devt),
-			MINOR(mapple_devt));
+	pr_info("mapple: module loaded (shared session limit %u)\n", MAPPLE_MAX_SESSIONS);
 	return 0;
 
-destroy_class:
-	class_destroy(mapple_class);
-delete_cdev:
-	cdev_del(&mapple_cdev);
-unregister_region:
-	unregister_chrdev_region(mapple_devt, 1);
+stop_chardev:
+	mapple_session_manager_begin_shutdown();
+	mapple_drain_sessions();
+	mapple_chardev_exit();
 	return ret;
 }
 
 static void __exit mapple_exit(void)
 {
-	device_destroy(mapple_class, mapple_devt);
-	class_destroy(mapple_class);
-	cdev_del(&mapple_cdev);
-	unregister_chrdev_region(mapple_devt, 1);
-	pr_info("mapple: unregistered /dev/%s\n", mapple_DEVICE_NAME);
+	mapple_session_manager_begin_shutdown();
+	mapple_tcp_exit();
+	mapple_drain_sessions();
+	mapple_chardev_exit();
+	pr_info("mapple: module unloaded\n");
 }
 
 module_init(mapple_init);
 module_exit(mapple_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Stores and retrieves a single string via ioctl");
+MODULE_DESCRIPTION("Shared binary protocol over chardev and TCP transports");

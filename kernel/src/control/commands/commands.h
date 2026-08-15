@@ -1,0 +1,36 @@
+#ifndef MAPPLE_KERNEL_COMMANDS_H
+#define MAPPLE_KERNEL_COMMANDS_H
+
+#include <linux/types.h>
+
+#include <commands.h>
+
+struct mapple_session;
+
+struct mapple_decoded_header {
+	u32 magic;
+	u16 version;
+	u16 command;
+	u64 payload_size;
+};
+
+struct mapple_command_context {
+	struct mapple_session *session;
+	struct mapple_decoded_header header;
+	u64 original_payload_size;
+	u64 remaining_payload;
+	bool response_started;
+	u64 remaining_response;
+};
+
+typedef int (*mapple_command_handler_t)(struct mapple_command_context *context);
+
+int mapple_protocol_init(void);
+int mapple_protocol_run(struct mapple_session *session);
+
+int mapple_command_read(struct mapple_command_context *context, void *buffer, size_t size);
+int mapple_command_write_response_header(struct mapple_command_context *context, u16 command,
+						 u64 payload_size);
+int mapple_command_write(struct mapple_command_context *context, const void *buffer, size_t size);
+
+#endif /* MAPPLE_KERNEL_COMMANDS_H */
