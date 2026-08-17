@@ -9,7 +9,7 @@
 
 #include <shared.h>
 
-#include <control/transports/chardev/fops/fops.h>
+#include <control/transports/chardev/fops.h>
 
 static dev_t mapple_devt;
 static struct cdev mapple_cdev;

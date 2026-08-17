@@ -1,49 +1,38 @@
 #include <control/transports/tcp_server/tcp.h>
 
 #include <linux/err.h>
+#include <linux/errno.h>
 #include <linux/in.h>
 #include <linux/kthread.h>
 #include <linux/net.h>
 #include <linux/printk.h>
-#include <linux/slab.h>
 #include <linux/socket.h>
 #include <linux/sockptr.h>
 #include <net/net_namespace.h>
 #include <net/sock.h>
 
 #include <control/sessions/session_manager.h>
-#include <control/transports/tcp_server/internal.h>
 #include <control/transports/tcp_server/stream_ops.h>
 #include <shared.h>
 
+struct mapple_tcp_server {
+	struct socket *listen_socket;
+	struct task_struct *listener_task;
+};
+
 static struct mapple_tcp_server mapple_tcp_server;
 
-static void mapple_tcp_session_release(struct mapple_session *session)
-{
-	struct mapple_tcp_session *context = mapple_tcp_from_session(session);
-
-	sock_release(context->socket);
-	kfree(context);
-}
+static void mapple_tcp_release_backend(void *backend) { sock_release(backend); }
 
 static const struct mapple_transport mapple_tcp_transport = {
 	.name = "tcp",
 	.stream_ops = &mapple_tcp_stream_ops,
-	.release = mapple_tcp_session_release,
+	.release_backend = mapple_tcp_release_backend,
 };
 
-static void mapple_tcp_accept_session(struct socket *socket)
+static int mapple_tcp_accept_session(struct socket *socket)
 {
-	struct mapple_tcp_session *context;
-
-	context = kzalloc(sizeof(*context), GFP_KERNEL);
-	if (!context) {
-		sock_release(socket);
-		return;
-	}
-	context->socket = socket;
-	mapple_session_manager_register(&context->session, &mapple_tcp_transport);
-	mapple_session_put(&context->session); /* creator reference */
+	return mapple_session_manager_register(&mapple_tcp_transport, socket);
 }
 
 static int mapple_tcp_listener(void *_)
@@ -57,7 +46,9 @@ static int mapple_tcp_listener(void *_)
 				pr_debug("mapple: TCP accept failed: %d\n", ret);
 			continue;
 		}
-		mapple_tcp_accept_session(accepted);
+		ret = mapple_tcp_accept_session(accepted);
+		if (ret && ret != -EBUSY && ret != -ESHUTDOWN)
+			pr_debug("mapple: failed to create TCP session: %d\n", ret);
 	}
 	return 0;
 }

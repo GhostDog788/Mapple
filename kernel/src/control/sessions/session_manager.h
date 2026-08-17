@@ -7,7 +7,8 @@
 
 void mapple_session_manager_init(void);
 void mapple_session_manager_shutdown(void);
-int mapple_session_manager_register(struct mapple_session *session, const struct mapple_transport *transport);
+/* Takes ownership of stream_backend, including when registration fails. */
+int mapple_session_manager_register(const struct mapple_transport *transport, void *stream_backend);
 void mapple_session_manager_unregister(struct mapple_session *session);
 void mapple_session_manager_set_state(struct mapple_session *session, enum mapple_session_state state);
 void mapple_session_manager_unlist(struct mapple_session *session);

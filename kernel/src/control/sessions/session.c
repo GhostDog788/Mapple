@@ -5,13 +5,15 @@
 #include <linux/kthread.h>
 #include <linux/printk.h>
 #include <linux/sched/task.h>
+#include <linux/slab.h>
 
 #include <control/commands/commands.h>
 #include <control/sessions/session_manager.h>
 
 static void mapple_session_reap(struct work_struct *work);
 
-void mapple_session_init(struct mapple_session *session, const struct mapple_transport *transport)
+void mapple_session_init(struct mapple_session *session, const struct mapple_transport *transport,
+						 void *stream_backend)
 {
 	kref_init(&session->refcount);
 	INIT_LIST_HEAD(&session->manager_node);
@@ -20,17 +22,14 @@ void mapple_session_init(struct mapple_session *session, const struct mapple_tra
 	session->state = MAPPLE_SESSION_STARTING;
 	session->registered = false;
 	session->listed = false;
-	mapple_stream_init(&session->stream, transport->stream_ops);
+	mapple_stream_init(&session->stream, transport->stream_ops, stream_backend);
 	session->parser_task = NULL;
 	mutex_init(&session->join_lock);
 	session->parser_joined = false;
 	INIT_WORK(&session->reap_work, mapple_session_reap);
 }
 
-void mapple_session_get(struct mapple_session *session)
-{
-	kref_get(&session->refcount);
-}
+void mapple_session_get(struct mapple_session *session) { kref_get(&session->refcount); }
 
 static void mapple_session_release_ref(struct kref *refcount)
 {
@@ -38,7 +37,8 @@ static void mapple_session_release_ref(struct kref *refcount)
 
 	if (session->parser_task)
 		put_task_struct(session->parser_task);
-	session->transport->release(session);
+	session->transport->release_backend(session->stream.backend);
+	kfree(session);
 }
 
 void mapple_session_put(struct mapple_session *session)
@@ -99,10 +99,7 @@ int mapple_session_start_parser(struct mapple_session *session)
 	return 0;
 }
 
-void mapple_session_shutdown(struct mapple_session *session)
-{
-	mapple_stream_shutdown(&session->stream);
-}
+void mapple_session_shutdown(struct mapple_session *session) { mapple_stream_shutdown(&session->stream); }
 
 void mapple_session_wait(struct mapple_session *session)
 {

@@ -32,7 +32,8 @@ struct mapple_session {
 	struct work_struct reap_work;
 };
 
-void mapple_session_init(struct mapple_session *session, const struct mapple_transport *transport);
+void mapple_session_init(struct mapple_session *session, const struct mapple_transport *transport,
+						 void *stream_backend);
 void mapple_session_get(struct mapple_session *session);
 void mapple_session_put(struct mapple_session *session);
 int mapple_session_start_parser(struct mapple_session *session);

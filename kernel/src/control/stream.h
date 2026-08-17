@@ -15,15 +15,15 @@ struct mapple_stream_ops {
 
 struct mapple_stream {
 	const struct mapple_stream_ops *ops;
+	void *backend;
 	atomic_t shut_down;
 };
 
-void mapple_stream_init(struct mapple_stream *stream, const struct mapple_stream_ops *ops);
+void mapple_stream_init(struct mapple_stream *stream, const struct mapple_stream_ops *ops, void *backend);
 ssize_t mapple_stream_read_some(struct mapple_stream *stream, void *buffer, size_t size);
 ssize_t mapple_stream_write_some(struct mapple_stream *stream, const void *buffer, size_t size);
 int mapple_stream_read_exact(struct mapple_stream *stream, void *buffer, size_t size);
 int mapple_stream_write_all(struct mapple_stream *stream, const void *buffer, size_t size);
 void mapple_stream_shutdown(struct mapple_stream *stream);
-bool mapple_stream_is_shutdown(const struct mapple_stream *stream);
 
 #endif /* MAPPLE_STREAM_H */

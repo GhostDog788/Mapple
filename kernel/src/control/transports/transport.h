@@ -3,12 +3,10 @@
 
 #include <control/stream.h>
 
-struct mapple_session;
-
 struct mapple_transport {
 	const char *name;
 	const struct mapple_stream_ops *stream_ops;
-	void (*release)(struct mapple_session *session);
+	void (*release_backend)(void *backend);
 };
 
 #endif /* MAPPLE_TRANSPORT_H */

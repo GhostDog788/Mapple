@@ -5,6 +5,7 @@
 #include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/printk.h>
+#include <linux/slab.h>
 #include <linux/types.h>
 
 struct mapple_session_manager {
@@ -86,25 +87,33 @@ void mapple_session_manager_shutdown(void)
 	WARN_ON(!mapple_session_manager_is_empty());
 }
 
-int mapple_session_manager_register(struct mapple_session *session, const struct mapple_transport *transport)
+int mapple_session_manager_register(const struct mapple_transport *transport, void *stream_backend)
 {
+	struct mapple_session *session;
 	u32 active;
 	int ret;
 
-	mapple_session_init(session, transport);
+	session = kzalloc(sizeof(*session), GFP_KERNEL);
+	if (!session) {
+		transport->release_backend(stream_backend);
+		return -ENOMEM;
+	}
+	mapple_session_init(session, transport, stream_backend);
 
 	mutex_lock(&mapple_sessions.lock);
 	if (mapple_sessions.stopping) {
 		mutex_unlock(&mapple_sessions.lock);
 		pr_debug("mapple: rejected %s session while stopping\n", session->transport->name);
-		return -ESHUTDOWN;
+		ret = -ESHUTDOWN;
+		goto put_session;
 	}
 	if (mapple_sessions.active_count >= MAPPLE_MAX_SESSIONS) {
 		active = mapple_sessions.active_count;
 		mutex_unlock(&mapple_sessions.lock);
 		pr_debug("mapple: rejected %s session at capacity (%u/%u)\n", session->transport->name, active,
 				 MAPPLE_MAX_SESSIONS);
-		return -EBUSY;
+		ret = -EBUSY;
+		goto put_session;
 	}
 
 	session->id = ++mapple_sessions.next_id;
@@ -123,6 +132,8 @@ int mapple_session_manager_register(struct mapple_session *session, const struct
 	if (ret)
 		mapple_session_manager_unregister(session);
 
+put_session:
+	mapple_session_put(session); /* creator reference */
 	return ret;
 }
 
