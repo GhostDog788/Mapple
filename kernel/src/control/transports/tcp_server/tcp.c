@@ -26,10 +26,15 @@ static void mapple_tcp_session_release(struct mapple_session *session)
 	kfree(context);
 }
 
+static const struct mapple_transport mapple_tcp_transport = {
+	.name = "tcp",
+	.stream_ops = &mapple_tcp_stream_ops,
+	.release = mapple_tcp_session_release,
+};
+
 static void mapple_tcp_accept_session(struct socket *socket)
 {
 	struct mapple_tcp_session *context;
-	int ret;
 
 	context = kzalloc(sizeof(*context), GFP_KERNEL);
 	if (!context) {
@@ -37,23 +42,11 @@ static void mapple_tcp_accept_session(struct socket *socket)
 		return;
 	}
 	context->socket = socket;
-	mapple_session_init(&context->session, MAPPLE_TRANSPORT_TCP, &mapple_tcp_stream_ops,
-						mapple_tcp_session_release);
-	ret = mapple_session_register(&context->session);
-	if (ret)
-		goto put_session;
-	ret = mapple_session_start_parser(&context->session);
-	if (ret)
-		mapple_session_unregister(&context->session);
-	else {
-		mapple_session_put(&context->session); /* creator reference */
-		return;
-	}
-put_session:
-	mapple_session_put(&context->session);
+	mapple_session_manager_register(&context->session, &mapple_tcp_transport);
+	mapple_session_put(&context->session); /* creator reference */
 }
 
-static int mapple_tcp_listener(void * _)
+static int mapple_tcp_listener(void *_)
 {
 	while (!kthread_should_stop()) {
 		struct socket *accepted = NULL;

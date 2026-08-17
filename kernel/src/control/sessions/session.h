@@ -21,7 +21,7 @@ struct mapple_session {
 	struct kref refcount;
 	struct list_head manager_node;
 	u64 id;
-	enum mapple_transport_kind transport;
+	const struct mapple_transport *transport;
 	enum mapple_session_state state;
 	bool registered;
 	bool listed;
@@ -30,12 +30,9 @@ struct mapple_session {
 	struct mutex join_lock;
 	bool parser_joined;
 	struct work_struct reap_work;
-	void (*release)(struct mapple_session *session);
 };
 
-void mapple_session_init(struct mapple_session *session, enum mapple_transport_kind transport,
-				 const struct mapple_stream_ops *stream_ops,
-				 void (*release)(struct mapple_session *session));
+void mapple_session_init(struct mapple_session *session, const struct mapple_transport *transport);
 void mapple_session_get(struct mapple_session *session);
 void mapple_session_put(struct mapple_session *session);
 int mapple_session_start_parser(struct mapple_session *session);

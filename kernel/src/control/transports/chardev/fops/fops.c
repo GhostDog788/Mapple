@@ -100,7 +100,13 @@ static void mapple_chardev_session_release(struct mapple_session *session)
 	kfree(context);
 }
 
-static int mapple_open(struct inode * _, struct file *file)
+static const struct mapple_transport mapple_chardev_transport = {
+	.name = "chardev",
+	.stream_ops = &mapple_chardev_stream_ops,
+	.release = mapple_chardev_session_release,
+};
+
+static int mapple_open(struct inode *_, struct file *file)
 {
 	struct mapple_chardev_session *context;
 	int ret;
@@ -121,17 +127,9 @@ static int mapple_open(struct inode * _, struct file *file)
 	init_waitqueue_head(&context->rx_space_wait);
 	init_waitqueue_head(&context->tx_data_wait);
 	init_waitqueue_head(&context->tx_space_wait);
-	mapple_session_init(&context->session, MAPPLE_TRANSPORT_CHARDEV, &mapple_chardev_stream_ops,
-					mapple_chardev_session_release);
-
-	ret = mapple_session_register(&context->session);
+	ret = mapple_session_manager_register(&context->session, &mapple_chardev_transport);
 	if (ret)
 		goto put_session;
-	ret = mapple_session_start_parser(&context->session);
-	if (ret) {
-		mapple_session_unregister(&context->session);
-		goto put_session;
-	}
 
 	file->private_data = context;
 	return 0;
@@ -146,7 +144,7 @@ free_context:
 	return ret;
 }
 
-static ssize_t mapple_read(struct file *file, char __user *buffer, size_t size, loff_t * _)
+static ssize_t mapple_read(struct file *file, char __user *buffer, size_t size, loff_t *_)
 {
 	struct mapple_chardev_session *context = file->private_data;
 	unsigned int copied = 0;
@@ -183,7 +181,7 @@ unlock:
 	return ret;
 }
 
-static ssize_t mapple_write(struct file *file, const char __user *buffer, size_t size, loff_t * _)
+static ssize_t mapple_write(struct file *file, const char __user *buffer, size_t size, loff_t *_)
 {
 	struct mapple_chardev_session *context = file->private_data;
 	unsigned int copied = 0;
@@ -240,7 +238,7 @@ static __poll_t mapple_poll(struct file *file, struct poll_table_struct *wait)
 	return mask;
 }
 
-static int mapple_release(struct inode * _, struct file *file)
+static int mapple_release(struct inode *_, struct file *file)
 {
 	struct mapple_chardev_session *context = file->private_data;
 

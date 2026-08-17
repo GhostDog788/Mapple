@@ -43,7 +43,8 @@ static size_t mapple_session_manager_snapshot(struct mapple_session **sessions, 
 	size_t count = 0;
 
 	mutex_lock(&mapple_sessions.lock);
-	list_for_each_entry(session, &mapple_sessions.sessions, manager_node) {
+	list_for_each_entry(session, &mapple_sessions.sessions, manager_node)
+	{
 		if (count == capacity)
 			break;
 		mapple_session_get(session);
@@ -85,22 +86,24 @@ void mapple_session_manager_shutdown(void)
 	WARN_ON(!mapple_session_manager_is_empty());
 }
 
-int mapple_session_register(struct mapple_session *session)
+int mapple_session_manager_register(struct mapple_session *session, const struct mapple_transport *transport)
 {
 	u32 active;
+	int ret;
+
+	mapple_session_init(session, transport);
 
 	mutex_lock(&mapple_sessions.lock);
 	if (mapple_sessions.stopping) {
 		mutex_unlock(&mapple_sessions.lock);
-		pr_debug("mapple: rejected %s session while stopping\n",
-			 mapple_transport_name(session->transport));
+		pr_debug("mapple: rejected %s session while stopping\n", session->transport->name);
 		return -ESHUTDOWN;
 	}
 	if (mapple_sessions.active_count >= MAPPLE_MAX_SESSIONS) {
 		active = mapple_sessions.active_count;
 		mutex_unlock(&mapple_sessions.lock);
-		pr_debug("mapple: rejected %s session at capacity (%u/%u)\n",
-			 mapple_transport_name(session->transport), active, MAPPLE_MAX_SESSIONS);
+		pr_debug("mapple: rejected %s session at capacity (%u/%u)\n", session->transport->name, active,
+				 MAPPLE_MAX_SESSIONS);
 		return -EBUSY;
 	}
 
@@ -113,12 +116,17 @@ int mapple_session_register(struct mapple_session *session)
 	active = ++mapple_sessions.active_count;
 	mutex_unlock(&mapple_sessions.lock);
 
-	pr_debug("mapple: session %llu created transport=%s active=%u\n",
-		  session->id, mapple_transport_name(session->transport), active);
-	return 0;
+	pr_debug("mapple: session %llu created transport=%s active=%u\n", session->id, session->transport->name,
+			 active);
+
+	ret = mapple_session_start_parser(session);
+	if (ret)
+		mapple_session_manager_unregister(session);
+
+	return ret;
 }
 
-void mapple_session_unregister(struct mapple_session *session)
+void mapple_session_manager_unregister(struct mapple_session *session)
 {
 	u32 active;
 	bool removed = false;
@@ -130,25 +138,20 @@ void mapple_session_unregister(struct mapple_session *session)
 		session->state = MAPPLE_SESSION_CLOSED;
 		active = --mapple_sessions.active_count;
 		removed = true;
-		/* A failed start has no task for the asynchronous reaper to join. */
-		if (!session->parser_task) {
-			list_del_init(&session->manager_node);
-			session->listed = false;
-			unlist = true;
-		}
+		/* A failed start has no asynchronous reaper to unlist it. */
+		unlist = !session->parser_task;
 	}
 	mutex_unlock(&mapple_sessions.lock);
 
 	if (!removed)
 		return;
-	pr_debug("mapple: session %llu removed transport=%s active=%u\n",
-		  session->id, mapple_transport_name(session->transport), active);
+	pr_debug("mapple: session %llu removed transport=%s active=%u\n", session->id, session->transport->name,
+			 active);
 	if (unlist)
-		mapple_session_put(session); /* registry reference */
+		mapple_session_manager_unlist(session);
 }
 
-void mapple_session_manager_set_state(struct mapple_session *session,
-				      enum mapple_session_state state)
+void mapple_session_manager_set_state(struct mapple_session *session, enum mapple_session_state state)
 {
 	mutex_lock(&mapple_sessions.lock);
 	if (session->registered)

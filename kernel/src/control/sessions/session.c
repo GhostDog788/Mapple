@@ -11,9 +11,7 @@
 
 static void mapple_session_reap(struct work_struct *work);
 
-void mapple_session_init(struct mapple_session *session, enum mapple_transport_kind transport,
-				 const struct mapple_stream_ops *stream_ops,
-				 void (*release)(struct mapple_session *session))
+void mapple_session_init(struct mapple_session *session, const struct mapple_transport *transport)
 {
 	kref_init(&session->refcount);
 	INIT_LIST_HEAD(&session->manager_node);
@@ -22,12 +20,11 @@ void mapple_session_init(struct mapple_session *session, enum mapple_transport_k
 	session->state = MAPPLE_SESSION_STARTING;
 	session->registered = false;
 	session->listed = false;
-	mapple_stream_init(&session->stream, stream_ops);
+	mapple_stream_init(&session->stream, transport->stream_ops);
 	session->parser_task = NULL;
 	mutex_init(&session->join_lock);
 	session->parser_joined = false;
 	INIT_WORK(&session->reap_work, mapple_session_reap);
-	session->release = release;
 }
 
 void mapple_session_get(struct mapple_session *session)
@@ -41,7 +38,7 @@ static void mapple_session_release_ref(struct kref *refcount)
 
 	if (session->parser_task)
 		put_task_struct(session->parser_task);
-	session->release(session);
+	session->transport->release(session);
 }
 
 void mapple_session_put(struct mapple_session *session)
@@ -81,7 +78,7 @@ static int mapple_session_parser_main(void *data)
 
 	mapple_session_manager_set_state(session, MAPPLE_SESSION_STOPPING);
 	mapple_stream_shutdown(&session->stream);
-	mapple_session_unregister(session);
+	mapple_session_manager_unregister(session);
 	schedule_work(&session->reap_work);
 	return 0;
 }
