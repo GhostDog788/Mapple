@@ -118,7 +118,6 @@ int mapple_session_manager_register(const struct mapple_transport *transport, vo
 
 	session->id = ++mapple_sessions.next_id;
 	session->registered = true;
-	session->listed = true;
 	session->state = MAPPLE_SESSION_STARTING;
 	mapple_session_get(session); /* registry reference */
 	list_add_tail(&session->manager_node, &mapple_sessions.sessions);
@@ -141,16 +140,14 @@ void mapple_session_manager_unregister(struct mapple_session *session)
 {
 	u32 active;
 	bool removed = false;
-	bool unlist = false;
 
 	mutex_lock(&mapple_sessions.lock);
 	if (session->registered) {
 		session->registered = false;
 		session->state = MAPPLE_SESSION_CLOSED;
+		list_del_init(&session->manager_node);
 		active = --mapple_sessions.active_count;
 		removed = true;
-		/* A failed start has no asynchronous reaper to unlist it. */
-		unlist = !session->parser_task;
 	}
 	mutex_unlock(&mapple_sessions.lock);
 
@@ -158,8 +155,7 @@ void mapple_session_manager_unregister(struct mapple_session *session)
 		return;
 	pr_debug("mapple: session %llu removed transport=%s active=%u\n", session->id, session->transport->name,
 			 active);
-	if (unlist)
-		mapple_session_manager_unlist(session);
+	mapple_session_put(session); /* registry reference */
 }
 
 void mapple_session_manager_set_state(struct mapple_session *session, enum mapple_session_state state)
@@ -168,19 +164,4 @@ void mapple_session_manager_set_state(struct mapple_session *session, enum mappl
 	if (session->registered)
 		session->state = state;
 	mutex_unlock(&mapple_sessions.lock);
-}
-
-void mapple_session_manager_unlist(struct mapple_session *session)
-{
-	bool unlist = false;
-
-	mutex_lock(&mapple_sessions.lock);
-	if (session->listed) {
-		list_del_init(&session->manager_node);
-		session->listed = false;
-		unlist = true;
-	}
-	mutex_unlock(&mapple_sessions.lock);
-	if (unlist)
-		mapple_session_put(session); /* registry reference */
 }

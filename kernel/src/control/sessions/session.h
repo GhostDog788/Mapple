@@ -24,7 +24,6 @@ struct mapple_session {
 	const struct mapple_transport *transport;
 	enum mapple_session_state state;
 	bool registered;
-	bool listed;
 	struct mapple_stream stream;
 	struct task_struct *parser_task;
 	struct mutex join_lock;
