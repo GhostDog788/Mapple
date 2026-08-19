@@ -5,8 +5,10 @@
 #include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/printk.h>
+#include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/types.h>
+#include <linux/wait.h>
 
 struct mapple_session_manager {
 	struct mutex lock;
@@ -14,6 +16,7 @@ struct mapple_session_manager {
 	u32 active_count;
 	u64 next_id;
 	bool stopping;
+	wait_queue_head_t empty_wait;
 };
 
 static struct mapple_session_manager mapple_sessions;
@@ -62,6 +65,7 @@ void mapple_session_manager_init(void)
 	mapple_sessions.active_count = 0;
 	mapple_sessions.next_id = 0;
 	mapple_sessions.stopping = false;
+	init_waitqueue_head(&mapple_sessions.empty_wait);
 }
 
 void mapple_session_manager_shutdown(void)
@@ -74,15 +78,13 @@ void mapple_session_manager_shutdown(void)
 	mapple_sessions.stopping = true;
 	mutex_unlock(&mapple_sessions.lock);
 
-	do {
-		count = mapple_session_manager_snapshot(sessions, ARRAY_SIZE(sessions));
-		for (index = 0; index < count; ++index)
-			mapple_session_shutdown(sessions[index]);
-		for (index = 0; index < count; ++index) {
-			mapple_session_wait(sessions[index]);
-			mapple_session_put(sessions[index]);
-		}
-	} while (count);
+	count = mapple_session_manager_snapshot(sessions, ARRAY_SIZE(sessions));
+	for (index = 0; index < count; ++index)
+		mapple_session_shutdown(sessions[index]);
+	for (index = 0; index < count; ++index)
+		mapple_session_put(sessions[index]);
+
+	wait_event(mapple_sessions.empty_wait, mapple_session_manager_is_empty());
 	WARN_ON(mapple_session_manager_active_count() != 0);
 	WARN_ON(!mapple_session_manager_is_empty());
 }
@@ -155,6 +157,8 @@ void mapple_session_manager_unregister(struct mapple_session *session)
 		return;
 	pr_debug("mapple: session %llu removed transport=%s active=%u\n", session->id, session->transport->name,
 			 active);
+	if (!active)
+		wake_up_all(&mapple_sessions.empty_wait);
 	mapple_session_put(session); /* registry reference */
 }
 

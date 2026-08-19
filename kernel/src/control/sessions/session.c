@@ -24,8 +24,6 @@ void mapple_session_init(struct mapple_session *session, const struct mapple_tra
 	session->registered = false;
 	mapple_stream_init(&session->stream, transport->stream_ops, stream_backend);
 	session->parser_task = NULL;
-	mutex_init(&session->join_lock);
-	session->parser_joined = false;
 	INIT_WORK(&session->reap_work, mapple_session_reap);
 }
 
@@ -46,21 +44,11 @@ void mapple_session_put(struct mapple_session *session)
 	kref_put(&session->refcount, mapple_session_release_ref);
 }
 
-static void mapple_session_join_parser(struct mapple_session *session)
-{
-	mutex_lock(&session->join_lock);
-	if (!session->parser_joined && session->parser_task) {
-		kthread_stop(session->parser_task);
-		session->parser_joined = true;
-	}
-	mutex_unlock(&session->join_lock);
-}
-
 static void mapple_session_reap(struct work_struct *work)
 {
 	struct mapple_session *session = container_of(work, struct mapple_session, reap_work);
 
-	mapple_session_join_parser(session);
+	kthread_stop(session->parser_task);
 	mapple_session_manager_unregister(session);
 	mapple_session_put(session); /* parser reference; may free session */
 }
@@ -99,11 +87,3 @@ int mapple_session_start_parser(struct mapple_session *session)
 }
 
 void mapple_session_shutdown(struct mapple_session *session) { mapple_stream_shutdown(&session->stream); }
-
-void mapple_session_wait(struct mapple_session *session)
-{
-	if (!session->parser_task)
-		return;
-	mapple_session_join_parser(session);
-	flush_work(&session->reap_work);
-}
