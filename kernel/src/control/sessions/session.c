@@ -20,8 +20,6 @@ void mapple_session_init(struct mapple_session *session, const struct mapple_tra
 	INIT_LIST_HEAD(&session->manager_node);
 	session->id = 0;
 	session->transport = transport;
-	session->state = MAPPLE_SESSION_STARTING;
-	session->registered = false;
 	mapple_stream_init(&session->stream, transport->stream_ops, stream_backend);
 	session->parser_task = NULL;
 	INIT_WORK(&session->reap_work, mapple_session_reap);
@@ -58,13 +56,10 @@ static int mapple_session_parser_main(void *data)
 	struct mapple_session *session = data;
 	int ret;
 
-	mapple_session_manager_set_state(session, MAPPLE_SESSION_RUNNING);
-
 	ret = mapple_protocol_run(session);
 	if (ret && ret != -ECONNRESET && ret != -EPIPE)
 		pr_debug("mapple: session %llu protocol ended: %d\n", session->id, ret);
 
-	mapple_session_manager_set_state(session, MAPPLE_SESSION_STOPPING);
 	mapple_stream_shutdown(&session->stream);
 	mapple_workqueue_add(&session->reap_work);
 	return 0;

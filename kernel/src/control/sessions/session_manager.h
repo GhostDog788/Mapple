@@ -10,6 +10,5 @@ void mapple_session_manager_shutdown(void);
 /* Takes ownership of stream_backend, including when registration fails. */
 int mapple_session_manager_register(const struct mapple_transport *transport, void *stream_backend);
 void mapple_session_manager_unregister(struct mapple_session *session);
-void mapple_session_manager_set_state(struct mapple_session *session, enum mapple_session_state state);
 
 #endif /* MAPPLE_SESSION_MANAGER_H */

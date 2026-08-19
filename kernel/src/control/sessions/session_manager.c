@@ -13,23 +13,12 @@
 struct mapple_session_manager {
 	struct mutex lock;
 	struct list_head sessions;
-	u32 active_count;
 	u64 next_id;
 	bool stopping;
 	wait_queue_head_t empty_wait;
 };
 
 static struct mapple_session_manager mapple_sessions;
-
-static u32 mapple_session_manager_active_count(void)
-{
-	u32 count;
-
-	mutex_lock(&mapple_sessions.lock);
-	count = mapple_sessions.active_count;
-	mutex_unlock(&mapple_sessions.lock);
-	return count;
-}
 
 static bool mapple_session_manager_is_empty(void)
 {
@@ -62,7 +51,6 @@ void mapple_session_manager_init(void)
 {
 	mutex_init(&mapple_sessions.lock);
 	INIT_LIST_HEAD(&mapple_sessions.sessions);
-	mapple_sessions.active_count = 0;
 	mapple_sessions.next_id = 0;
 	mapple_sessions.stopping = false;
 	init_waitqueue_head(&mapple_sessions.empty_wait);
@@ -79,20 +67,19 @@ void mapple_session_manager_shutdown(void)
 	mutex_unlock(&mapple_sessions.lock);
 
 	count = mapple_session_manager_snapshot(sessions, ARRAY_SIZE(sessions));
+	/* Keep all snapshot references until every parser receives shutdown. */
 	for (index = 0; index < count; ++index)
 		mapple_session_shutdown(sessions[index]);
 	for (index = 0; index < count; ++index)
 		mapple_session_put(sessions[index]);
 
 	wait_event(mapple_sessions.empty_wait, mapple_session_manager_is_empty());
-	WARN_ON(mapple_session_manager_active_count() != 0);
-	WARN_ON(!mapple_session_manager_is_empty());
 }
 
 int mapple_session_manager_register(const struct mapple_transport *transport, void *stream_backend)
 {
 	struct mapple_session *session;
-	u32 active;
+	size_t active;
 	int ret;
 
 	session = kzalloc(sizeof(*session), GFP_KERNEL);
@@ -109,24 +96,22 @@ int mapple_session_manager_register(const struct mapple_transport *transport, vo
 		ret = -ESHUTDOWN;
 		goto put_session;
 	}
-	if (mapple_sessions.active_count >= MAPPLE_MAX_SESSIONS) {
-		active = mapple_sessions.active_count;
+	active = list_count_nodes(&mapple_sessions.sessions);
+	if (active >= MAPPLE_MAX_SESSIONS) {
 		mutex_unlock(&mapple_sessions.lock);
-		pr_debug("mapple: rejected %s session at capacity (%u/%u)\n", session->transport->name, active,
+		pr_debug("mapple: rejected %s session at capacity (%zu/%u)\n", session->transport->name, active,
 				 MAPPLE_MAX_SESSIONS);
 		ret = -EBUSY;
 		goto put_session;
 	}
 
 	session->id = ++mapple_sessions.next_id;
-	session->registered = true;
-	session->state = MAPPLE_SESSION_STARTING;
 	mapple_session_get(session); /* registry reference */
 	list_add_tail(&session->manager_node, &mapple_sessions.sessions);
-	active = ++mapple_sessions.active_count;
+	++active;
 	mutex_unlock(&mapple_sessions.lock);
 
-	pr_debug("mapple: session %llu created transport=%s active=%u\n", session->id, session->transport->name,
+	pr_debug("mapple: session %llu created transport=%s active=%zu\n", session->id, session->transport->name,
 			 active);
 
 	ret = mapple_session_start_parser(session);
@@ -140,32 +125,20 @@ put_session:
 
 void mapple_session_manager_unregister(struct mapple_session *session)
 {
-	u32 active;
-	bool removed = false;
+	size_t active;
 
 	mutex_lock(&mapple_sessions.lock);
-	if (session->registered) {
-		session->registered = false;
-		session->state = MAPPLE_SESSION_CLOSED;
-		list_del_init(&session->manager_node);
-		active = --mapple_sessions.active_count;
-		removed = true;
+	if (list_empty(&session->manager_node)) {
+		mutex_unlock(&mapple_sessions.lock);
+		return;
 	}
+	list_del_init(&session->manager_node);
+	active = list_count_nodes(&mapple_sessions.sessions);
 	mutex_unlock(&mapple_sessions.lock);
 
-	if (!removed)
-		return;
-	pr_debug("mapple: session %llu removed transport=%s active=%u\n", session->id, session->transport->name,
+	pr_debug("mapple: session %llu removed transport=%s active=%zu\n", session->id, session->transport->name,
 			 active);
 	if (!active)
 		wake_up_all(&mapple_sessions.empty_wait);
 	mapple_session_put(session); /* registry reference */
-}
-
-void mapple_session_manager_set_state(struct mapple_session *session, enum mapple_session_state state)
-{
-	mutex_lock(&mapple_sessions.lock);
-	if (session->registered)
-		session->state = state;
-	mutex_unlock(&mapple_sessions.lock);
 }

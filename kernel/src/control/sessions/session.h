@@ -9,20 +9,11 @@
 #include <control/stream.h>
 #include <control/transports/transport.h>
 
-enum mapple_session_state {
-	MAPPLE_SESSION_STARTING,
-	MAPPLE_SESSION_RUNNING,
-	MAPPLE_SESSION_STOPPING,
-	MAPPLE_SESSION_CLOSED,
-};
-
 struct mapple_session {
 	struct kref refcount;
 	struct list_head manager_node;
 	u64 id;
 	const struct mapple_transport *transport;
-	enum mapple_session_state state;
-	bool registered;
 	struct mapple_stream stream;
 	struct task_struct *parser_task;
 	struct work_struct reap_work;
