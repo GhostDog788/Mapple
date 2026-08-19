@@ -7,6 +7,7 @@
 #include <linux/sched/task.h>
 #include <linux/slab.h>
 
+#include <common/workqueue.h>
 #include <control/commands/commands.h>
 #include <control/sessions/session_manager.h>
 
@@ -77,7 +78,7 @@ static int mapple_session_parser_main(void *data)
 
 	mapple_session_manager_set_state(session, MAPPLE_SESSION_STOPPING);
 	mapple_stream_shutdown(&session->stream);
-	schedule_work(&session->reap_work);
+	mapple_workqueue_add(&session->reap_work);
 	return 0;
 }
 
