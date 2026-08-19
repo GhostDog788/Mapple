@@ -38,6 +38,7 @@ static void __exit mapple_exit(void)
 	mapple_session_manager_shutdown();
 	mapple_tcp_exit();
 	mapple_chardev_exit();
+	/* Drain reapers that may still be returning after the registry emptied. */
 	mapple_workqueue_cleanup();
 	pr_info("mapple: module unloaded\n");
 }
