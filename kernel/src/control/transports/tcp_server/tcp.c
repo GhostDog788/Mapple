@@ -32,6 +32,7 @@ static const struct mapple_transport mapple_tcp_transport = {
 
 static int mapple_tcp_accept_session(struct socket *socket)
 {
+	/* The manager owns the accepted socket, including on failure. */
 	return mapple_session_manager_register(&mapple_tcp_transport, socket);
 }
 
