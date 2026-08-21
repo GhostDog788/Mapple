@@ -26,8 +26,8 @@ int main(void)
 	int chardev_ret;
 
 	signal(SIGPIPE, SIG_IGN);
-	tcp_ret = test(open_tcp, MAPPLE_COMMAND_ECHO);
-	chardev_ret = test(open_chardev, MAPPLE_COMMAND_ECHO);
+	tcp_ret = test(open_tcp, MAPPLE_COMMAND_PSLIST);
+	chardev_ret = test(open_chardev, MAPPLE_COMMAND_PSLIST);
 	if (tcp_ret)
 		fprintf(stderr, "TCP command failed: %s\n", strerror(tcp_ret));
 	else

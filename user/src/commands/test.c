@@ -3,11 +3,13 @@
 #include <errno.h>
 
 #include <commands/echo/echo.h>
+#include <commands/pslist/pslist.h>
 
 typedef int (*command_test_t)(int session_fd);
 
 static const command_test_t command_tests[MAPPLE_COMMAND_COUNT] = {
 	[MAPPLE_COMMAND_ECHO] = run_echo,
+	[MAPPLE_COMMAND_PSLIST] = run_pslist,
 };
 
 int test_command(int session_fd, enum mapple_command_id command)

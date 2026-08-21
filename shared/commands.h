@@ -19,9 +19,11 @@
 
 #define MAPPLE_HEADER_FLAG_STREAM (1U << 0)
 #define MAPPLE_HEADER_KNOWN_FLAGS MAPPLE_HEADER_FLAG_STREAM
+#define MAPPLE_PSLIST_NAME_SIZE 16U
 
 enum mapple_command_id {
 	MAPPLE_COMMAND_ECHO = 1,
+	MAPPLE_COMMAND_PSLIST = 2,
 	MAPPLE_COMMAND_COUNT
 };
 
@@ -31,6 +33,14 @@ struct mapple_wire_header {
 	__u16 command;
 	__u32 flags;
 	__u64 payload_size;
+} PACKED_STRUCT;
+
+struct mapple_pslist_record {
+	__u32 pid;
+	__u32 ppid;
+	__u8 state;
+	__u8 reserved[3];
+	char name[MAPPLE_PSLIST_NAME_SIZE];
 } PACKED_STRUCT;
 
 #undef PACKED_STRUCT
