@@ -1,6 +1,3 @@
-# Dispatch: kernel/ (out-of-tree module), user/ (client). Shared ABI in
-# shared/shared.h. Per-target workflows live in kernel/scripts/ and user/scripts/.
-
 .PHONY: all kernel user clean clean-kernel clean-user help
 
 all: kernel user

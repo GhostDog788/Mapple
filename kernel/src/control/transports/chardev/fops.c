@@ -5,7 +5,7 @@
 #include <linux/module.h>
 
 #include <control/sessions/session_manager.h>
-#include <control/transports/chardev/channel.h>
+#include <control/transports/chardev/channel/channel.h>
 #include <control/transports/chardev/stream_ops.h>
 
 static void mapple_chardev_release_backend(void *backend)

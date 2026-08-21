@@ -1,6 +1,6 @@
 #include <control/transports/chardev/stream_ops.h>
 
-#include <control/transports/chardev/channel.h>
+#include <control/transports/chardev/channel/channel.h>
 
 static ssize_t mapple_chardev_stream_read(struct mapple_stream *stream, void *buffer, size_t size)
 {
