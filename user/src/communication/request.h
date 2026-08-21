@@ -5,6 +5,7 @@
 
 #include <commands.h>
 
-void make_header(struct mapple_wire_header *header, uint16_t command, uint64_t payload_size);
+void make_header(struct mapple_wire_header *header, uint16_t command, uint32_t flags,
+		 uint64_t payload_size);
 
 #endif /* MAPPLE_USER_REQUEST_H */

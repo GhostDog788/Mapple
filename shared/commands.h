@@ -15,7 +15,10 @@
 #endif
 
 #define MAPPLE_PROTOCOL_MAGIC 0x4d41504cU // "MAPL" in network byte order
-#define MAPPLE_PROTOCOL_VERSION 1U
+#define MAPPLE_PROTOCOL_VERSION 2U
+
+#define MAPPLE_HEADER_FLAG_STREAM (1U << 0)
+#define MAPPLE_HEADER_KNOWN_FLAGS MAPPLE_HEADER_FLAG_STREAM
 
 enum mapple_command_id {
 	MAPPLE_COMMAND_ECHO = 1,
@@ -26,6 +29,7 @@ struct mapple_wire_header {
 	__u32 magic;
 	__u16 version;
 	__u16 command;
+	__u32 flags;
 	__u64 payload_size;
 } PACKED_STRUCT;
 
