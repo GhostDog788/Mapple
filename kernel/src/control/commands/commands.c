@@ -12,44 +12,71 @@ static void mapple_decode_header(const struct mapple_wire_header *wire, struct m
 	header->magic = get_unaligned_be32(&wire->magic);
 	header->version = get_unaligned_be16(&wire->version);
 	header->command = get_unaligned_be16(&wire->command);
+	header->flags = get_unaligned_be32(&wire->flags);
 	header->payload_size = get_unaligned_be64(&wire->payload_size);
 }
 
-static void mapple_encode_header(struct mapple_wire_header *wire, u16 command, u64 payload_size)
+static void mapple_encode_header(struct mapple_wire_header *wire, u16 command, u32 flags, u64 payload_size)
 {
 	put_unaligned_be32(MAPPLE_PROTOCOL_MAGIC, &wire->magic);
 	put_unaligned_be16(MAPPLE_PROTOCOL_VERSION, &wire->version);
 	put_unaligned_be16(command, &wire->command);
+	put_unaligned_be32(flags, &wire->flags);
 	put_unaligned_be64(payload_size, &wire->payload_size);
+}
+
+static bool mapple_header_is_streaming(const struct mapple_decoded_header *header)
+{
+	return header->flags & MAPPLE_HEADER_FLAG_STREAM;
+}
+
+static bool mapple_header_is_valid(const struct mapple_decoded_header *header)
+{
+	if (header->magic != MAPPLE_PROTOCOL_MAGIC || header->version != MAPPLE_PROTOCOL_VERSION)
+		return false;
+	if (header->flags & ~MAPPLE_HEADER_KNOWN_FLAGS)
+		return false;
+	if (mapple_header_is_streaming(header) && header->payload_size)
+		return false;
+	return true;
 }
 
 int mapple_command_read(struct mapple_command_context *context, void *buffer, size_t size)
 {
 	int ret;
 
-	if ((u64)size > context->remaining_payload)
+	if (!context->payload_streaming && (u64)size > context->remaining_payload)
 		return -EMSGSIZE;
 	ret = mapple_stream_read_exact(&context->session->stream, buffer, size);
 	if (ret)
 		return ret;
-	context->remaining_payload -= size;
+	if (!context->payload_streaming)
+		context->remaining_payload -= size;
 	return 0;
 }
 
-int mapple_command_write_response_header(struct mapple_command_context *context, u16 command,
-										 u64 payload_size)
+int mapple_command_write_response_header(struct mapple_command_context *context, u16 command, u32 flags,
+										 u64 response_size)
 {
 	struct mapple_wire_header wire;
 	int ret;
 
 	if (context->response_started)
 		return -EPROTO;
-	mapple_encode_header(&wire, command, payload_size);
+	if (flags & ~MAPPLE_HEADER_KNOWN_FLAGS)
+		return -EINVAL;
+	if ((flags & MAPPLE_HEADER_FLAG_STREAM) && response_size)
+		return -EINVAL;
+	mapple_encode_header(&wire, command, flags, response_size);
 	ret = mapple_stream_write_all(&context->session->stream, &wire, sizeof(wire));
 	if (ret)
 		return ret;
 	context->response_started = true;
-	context->remaining_response = payload_size;
+	context->response_streaming = flags & MAPPLE_HEADER_FLAG_STREAM;
+	if (!context->response_streaming) {
+		context->response_size = response_size;
+		context->remaining_response = response_size;
+	}
 	return 0;
 }
 
@@ -57,12 +84,15 @@ int mapple_command_write(struct mapple_command_context *context, const void *buf
 {
 	int ret;
 
-	if (!context->response_started || (u64)size > context->remaining_response)
+	if (!context->response_started)
+		return -EPROTO;
+	if (!context->response_streaming && (u64)size > context->remaining_response)
 		return -EMSGSIZE;
 	ret = mapple_stream_write_all(&context->session->stream, buffer, size);
 	if (ret)
 		return ret;
-	context->remaining_response -= size;
+	if (!context->response_streaming)
+		context->remaining_response -= size;
 	return 0;
 }
 
@@ -81,12 +111,14 @@ int mapple_protocol_run(struct mapple_session *session)
 		memset(&context, 0, sizeof(context));
 		context.session = session;
 		mapple_decode_header(&wire, &context.header);
-		context.original_payload_size = context.header.payload_size;
-		context.remaining_payload = context.header.payload_size;
 
-		if (context.header.magic != MAPPLE_PROTOCOL_MAGIC ||
-			context.header.version != MAPPLE_PROTOCOL_VERSION)
+		if (!mapple_header_is_valid(&context.header))
 			return -EPROTO;
+		context.payload_streaming = mapple_header_is_streaming(&context.header);
+		if (!context.payload_streaming) {
+			context.payload_size = context.header.payload_size;
+			context.remaining_payload = context.header.payload_size;
+		}
 		handler = mapple_command_find_handler(context.header.command);
 		if (!handler)
 			return -EOPNOTSUPP;
@@ -94,7 +126,9 @@ int mapple_protocol_run(struct mapple_session *session)
 		ret = handler(&context);
 		if (ret)
 			return ret;
-		if (context.remaining_payload || !context.response_started || context.remaining_response)
+		if ((!context.payload_streaming && context.remaining_payload) ||
+			!context.response_started ||
+			(!context.response_streaming && context.remaining_response))
 			return -EPROTO;
 	}
 }
