@@ -5,7 +5,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include <communication/helpers/transport.h>
+#include <communication/transport.h>
 #include <shared.h>
 
 int open_tcp(int *fd_out)

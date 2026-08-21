@@ -1,4 +1,4 @@
-#include <communication/helpers/stream.h>
+#include <communication/stream.h>
 
 #include <errno.h>
 #include <stdint.h>

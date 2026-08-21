@@ -1,5 +1,5 @@
-#ifndef REQUEST_HELPERS_H
-#define REQUEST_HELPERS_H
+#ifndef MAPPLE_USER_REQUEST_H
+#define MAPPLE_USER_REQUEST_H
 
 #include <stdint.h>
 
@@ -7,4 +7,4 @@
 
 void make_header(struct mapple_wire_header *header, uint16_t command, uint64_t payload_size);
 
-#endif /* REQUEST_HELPERS_H */
+#endif /* MAPPLE_USER_REQUEST_H */

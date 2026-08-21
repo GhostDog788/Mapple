@@ -1,4 +1,4 @@
-#include <communication/helpers/request.h>
+#include <communication/request.h>
 
 #include <endian.h>
 #include <netinet/in.h>
