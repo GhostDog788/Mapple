@@ -3,6 +3,7 @@
 #include <arpa/inet.h>
 #include <endian.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -19,8 +20,21 @@
 struct mapple_pslist_process {
 	__u32 tgid;
 	__u32 ppid;
+	__u64 start_boottime_ns;
+	__u16 executable_status;
+	__u32 executable_flags;
+	__u32 executable_device_major;
+	__u32 executable_device_minor;
+	__u32 executable_mode;
 	unsigned char *command_line;
 	__u32 command_line_length;
+	unsigned char *executable_path;
+	__u32 executable_path_length;
+	__u64 executable_inode;
+	__u64 executable_size;
+	__s64 executable_mtime_ns;
+	__s64 executable_ctime_ns;
+	__u64 executable_filesystem_magic;
 };
 
 struct mapple_pslist_task {
@@ -53,6 +67,14 @@ static __u32 mapple_pslist_read_u32(const void *record, size_t offset)
 
 	memcpy(&value, (const unsigned char *)record + offset, sizeof(value));
 	return ntohl(value);
+}
+
+static __u64 mapple_pslist_read_u64(const void *record, size_t offset)
+{
+	__u64 value;
+
+	memcpy(&value, (const unsigned char *)record + offset, sizeof(value));
+	return be64toh(value);
 }
 
 static int mapple_pslist_skip(int session_fd, size_t size)
@@ -107,6 +129,7 @@ static int mapple_pslist_add_process(struct mapple_pslist_snapshot *snapshot,
 		return ret;
 	snapshot->processes[snapshot->process_count++] = *process;
 	process->command_line = NULL;
+	process->executable_path = NULL;
 	return 0;
 }
 
@@ -127,8 +150,10 @@ static void mapple_pslist_free_snapshot(struct mapple_pslist_snapshot *snapshot)
 {
 	size_t index;
 
-	for (index = 0; index < snapshot->process_count; ++index)
+	for (index = 0; index < snapshot->process_count; ++index) {
 		free(snapshot->processes[index].command_line);
+		free(snapshot->processes[index].executable_path);
+	}
 	free(snapshot->processes);
 	free(snapshot->tasks);
 }
@@ -154,10 +179,59 @@ static int mapple_pslist_read_process(int session_fd,
 		&wire, offsetof(struct mapple_pslist_process_record, tgid));
 	process.ppid = mapple_pslist_read_u32(
 		&wire, offsetof(struct mapple_pslist_process_record, ppid));
+	process.start_boottime_ns = mapple_pslist_read_u64(
+		&wire, offsetof(struct mapple_pslist_process_record, start_boottime_ns));
+	process.executable_status = mapple_pslist_read_u16(
+		&wire, offsetof(struct mapple_pslist_process_record, executable_status));
+	process.executable_flags = mapple_pslist_read_u32(
+		&wire, offsetof(struct mapple_pslist_process_record, executable_flags));
 	process.command_line_length = mapple_pslist_read_u32(
 		&wire, offsetof(struct mapple_pslist_process_record, command_line_length));
-	minimum_size = sizeof(wire) + (__u64)process.command_line_length;
-	if (!process.tgid || minimum_size > record_size)
+	process.executable_path_length = mapple_pslist_read_u32(
+		&wire, offsetof(struct mapple_pslist_process_record, executable_path_length));
+	process.executable_device_major = mapple_pslist_read_u32(
+		&wire, offsetof(struct mapple_pslist_process_record, executable_device_major));
+	process.executable_device_minor = mapple_pslist_read_u32(
+		&wire, offsetof(struct mapple_pslist_process_record, executable_device_minor));
+	process.executable_mode = mapple_pslist_read_u32(
+		&wire, offsetof(struct mapple_pslist_process_record, executable_mode));
+	process.executable_inode = mapple_pslist_read_u64(
+		&wire, offsetof(struct mapple_pslist_process_record, executable_inode));
+	process.executable_size = mapple_pslist_read_u64(
+		&wire, offsetof(struct mapple_pslist_process_record, executable_size));
+	process.executable_mtime_ns = (__s64)mapple_pslist_read_u64(
+		&wire, offsetof(struct mapple_pslist_process_record, executable_mtime_ns));
+	process.executable_ctime_ns = (__s64)mapple_pslist_read_u64(
+		&wire, offsetof(struct mapple_pslist_process_record, executable_ctime_ns));
+	process.executable_filesystem_magic = mapple_pslist_read_u64(
+		&wire, offsetof(struct mapple_pslist_process_record, executable_filesystem_magic));
+	minimum_size = sizeof(wire) + (__u64)process.command_line_length +
+		       process.executable_path_length;
+	if (!process.tgid ||
+	    mapple_pslist_read_u16(&wire,
+				    offsetof(struct mapple_pslist_process_record, reserved16)) ||
+	    (process.executable_flags & ~MAPPLE_PSLIST_EXECUTABLE_KNOWN_FLAGS) ||
+	    process.executable_status < MAPPLE_PSLIST_EXECUTABLE_AVAILABLE ||
+	    process.executable_status > MAPPLE_PSLIST_EXECUTABLE_UNAVAILABLE ||
+	    minimum_size > record_size)
+		return EPROTO;
+	if (process.executable_status == MAPPLE_PSLIST_EXECUTABLE_AVAILABLE) {
+		if (!!(process.executable_flags &
+		       MAPPLE_PSLIST_EXECUTABLE_FLAG_PATH_UNAVAILABLE) ==
+		    !!process.executable_path_length)
+			return EPROTO;
+	} else if (process.executable_flags || process.executable_path_length ||
+		   process.executable_device_major || process.executable_device_minor ||
+		   process.executable_mode || process.executable_inode || process.executable_size ||
+		   process.executable_mtime_ns || process.executable_ctime_ns ||
+		   process.executable_filesystem_magic) {
+		return EPROTO;
+	}
+	if (process.executable_flags & MAPPLE_PSLIST_EXECUTABLE_FLAG_METADATA_UNAVAILABLE &&
+	    (process.executable_device_major || process.executable_device_minor ||
+	     process.executable_mode || process.executable_inode || process.executable_size ||
+	     process.executable_mtime_ns || process.executable_ctime_ns ||
+	     process.executable_filesystem_magic))
 		return EPROTO;
 	if (process.command_line_length) {
 		process.command_line = malloc(process.command_line_length);
@@ -165,19 +239,31 @@ static int mapple_pslist_read_process(int session_fd,
 			return ENOMEM;
 		ret = read_exact(session_fd, process.command_line, process.command_line_length);
 		if (ret)
-			goto free_command_line;
+			goto free_process;
+	}
+	if (process.executable_path_length) {
+		process.executable_path = malloc(process.executable_path_length);
+		if (!process.executable_path) {
+			ret = ENOMEM;
+			goto free_process;
+		}
+		ret = read_exact(session_fd, process.executable_path,
+				 process.executable_path_length);
+		if (ret)
+			goto free_process;
 	}
 	extension_size = record_size - (size_t)minimum_size;
 	ret = mapple_pslist_skip(session_fd, extension_size);
 	if (ret)
-		goto free_command_line;
+		goto free_process;
 	ret = mapple_pslist_add_process(snapshot, &process);
 	if (ret)
-		goto free_command_line;
+		goto free_process;
 	return 0;
 
-free_command_line:
+free_process:
 	free(process.command_line);
+	free(process.executable_path);
 	return ret;
 }
 
@@ -386,6 +472,91 @@ static int mapple_pslist_print_json_task(const struct mapple_pslist_task *task)
 	return putchar('}') == EOF ? EIO : 0;
 }
 
+static const char *mapple_pslist_executable_status_name(__u16 status)
+{
+	switch (status) {
+	case MAPPLE_PSLIST_EXECUTABLE_AVAILABLE:
+		return "available";
+	case MAPPLE_PSLIST_EXECUTABLE_KERNEL_THREAD:
+		return "kernel_thread";
+	case MAPPLE_PSLIST_EXECUTABLE_NONE:
+		return "none";
+	case MAPPLE_PSLIST_EXECUTABLE_UNAVAILABLE:
+		return "unavailable";
+	default:
+		return NULL;
+	}
+}
+
+static int mapple_pslist_print_json_executable(
+	const struct mapple_pslist_process *process)
+{
+	const char *metadata_status;
+	const char *path_status;
+	const char *status;
+	int ret;
+
+	if (!process)
+		return fputs("null", stdout) == EOF ? EIO : 0;
+	status = mapple_pslist_executable_status_name(process->executable_status);
+	if (!status)
+		return EPROTO;
+	if (process->executable_status == MAPPLE_PSLIST_EXECUTABLE_AVAILABLE) {
+		path_status = process->executable_flags &
+				      MAPPLE_PSLIST_EXECUTABLE_FLAG_PATH_UNAVAILABLE ?
+				      "unavailable" : "available";
+		metadata_status = process->executable_flags &
+					  MAPPLE_PSLIST_EXECUTABLE_FLAG_METADATA_UNAVAILABLE ?
+					  "unavailable" : "available";
+	} else {
+		path_status = "not_applicable";
+		metadata_status = "not_applicable";
+	}
+	if (printf("{\n        \"status\": \"%s\",\n        \"path_status\": \"%s\","
+		   "\n        \"path\": ",
+		   status, path_status) < 0)
+		return EIO;
+	if (process->executable_path) {
+		ret = mapple_pslist_print_json_bytes(process->executable_path,
+						     process->executable_path_length);
+		if (ret)
+			return ret;
+	} else if (fputs("null", stdout) == EOF) {
+		return EIO;
+	}
+	if (printf(",\n        \"deleted\": %s,\n        \"metadata_status\": \"%s\","
+		   "\n        \"device_major\": ",
+		   process->executable_flags & MAPPLE_PSLIST_EXECUTABLE_FLAG_DELETED ?
+			   "true" : "false",
+		   metadata_status) < 0)
+		return EIO;
+	if (process->executable_status == MAPPLE_PSLIST_EXECUTABLE_AVAILABLE &&
+	    !(process->executable_flags & MAPPLE_PSLIST_EXECUTABLE_FLAG_METADATA_UNAVAILABLE)) {
+		if (printf("%u,\n        \"device_minor\": %u,"
+			   "\n        \"inode\": %" PRIu64 ","
+			   "\n        \"mode\": %u,"
+			   "\n        \"size\": %" PRIu64 ","
+			   "\n        \"mtime_ns\": %" PRId64 ","
+			   "\n        \"ctime_ns\": %" PRId64 ","
+			   "\n        \"filesystem_magic\": %" PRIu64 "\n      }",
+			   process->executable_device_major, process->executable_device_minor,
+			   (uint64_t)process->executable_inode, process->executable_mode,
+			   (uint64_t)process->executable_size,
+			   (int64_t)process->executable_mtime_ns,
+			   (int64_t)process->executable_ctime_ns,
+			   (uint64_t)process->executable_filesystem_magic) < 0)
+			return EIO;
+	} else if (fputs("null,\n        \"device_minor\": null,"
+			 "\n        \"inode\": null,\n        \"mode\": null,"
+			 "\n        \"size\": null,\n        \"mtime_ns\": null,"
+			 "\n        \"ctime_ns\": null,"
+			 "\n        \"filesystem_magic\": null\n      }",
+			 stdout) == EOF) {
+		return EIO;
+	}
+	return 0;
+}
+
 static int mapple_pslist_print_json_group(__u32 tgid,
 					  const struct mapple_pslist_process *process,
 					  const struct mapple_pslist_task *tasks,
@@ -402,10 +573,18 @@ static int mapple_pslist_print_json_group(__u32 tgid,
 			break;
 		}
 	}
-	if (printf("    {\n      \"pid\": %u,\n      \"ppid\": ", tgid) < 0)
+	if (printf("    {\n      \"tgid\": %u,\n      \"ppid\": ", tgid) < 0)
 		return EIO;
 	if (process) {
 		if (printf("%u", process->ppid) < 0)
+			return EIO;
+	} else if (fputs("null", stdout) == EOF) {
+		return EIO;
+	}
+	if (fputs(",\n      \"start_boottime_ns\": ", stdout) == EOF)
+		return EIO;
+	if (process) {
+		if (printf("%" PRIu64, (uint64_t)process->start_boottime_ns) < 0)
 			return EIO;
 	} else if (fputs("null", stdout) == EOF) {
 		return EIO;
@@ -440,6 +619,11 @@ static int mapple_pslist_print_json_group(__u32 tgid,
 	} else if (fputs("null", stdout) == EOF) {
 		return EIO;
 	}
+	if (fputs(",\n      \"executable\": ", stdout) == EOF)
+		return EIO;
+	ret = mapple_pslist_print_json_executable(process);
+	if (ret)
+		return ret;
 	if (fputs(",\n      \"threads\": [", stdout) == EOF)
 		return EIO;
 	for (index = 0; index < task_count; ++index) {

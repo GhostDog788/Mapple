@@ -21,6 +21,14 @@
 #define MAPPLE_HEADER_KNOWN_FLAGS MAPPLE_HEADER_FLAG_STREAM
 #define MAPPLE_PSLIST_COMM_SIZE 16U
 
+#define MAPPLE_PSLIST_EXECUTABLE_FLAG_DELETED (1U << 0)
+#define MAPPLE_PSLIST_EXECUTABLE_FLAG_PATH_UNAVAILABLE (1U << 1)
+#define MAPPLE_PSLIST_EXECUTABLE_FLAG_METADATA_UNAVAILABLE (1U << 2)
+#define MAPPLE_PSLIST_EXECUTABLE_KNOWN_FLAGS                                               \
+	(MAPPLE_PSLIST_EXECUTABLE_FLAG_DELETED |                                            \
+	 MAPPLE_PSLIST_EXECUTABLE_FLAG_PATH_UNAVAILABLE |                                   \
+	 MAPPLE_PSLIST_EXECUTABLE_FLAG_METADATA_UNAVAILABLE)
+
 enum mapple_command_id {
 	MAPPLE_COMMAND_ECHO = 1,
 	MAPPLE_COMMAND_PSLIST = 2,
@@ -40,6 +48,13 @@ enum mapple_pslist_record_type {
 	MAPPLE_PSLIST_RECORD_PROCESS = 2
 };
 
+enum mapple_pslist_executable_status {
+	MAPPLE_PSLIST_EXECUTABLE_AVAILABLE = 1,
+	MAPPLE_PSLIST_EXECUTABLE_KERNEL_THREAD = 2,
+	MAPPLE_PSLIST_EXECUTABLE_NONE = 3,
+	MAPPLE_PSLIST_EXECUTABLE_UNAVAILABLE = 4
+};
+
 struct mapple_pslist_record_header {
 	__u32 record_size;
 	__u16 record_type;
@@ -50,7 +65,20 @@ struct mapple_pslist_process_record {
 	struct mapple_pslist_record_header header;
 	__u32 tgid;
 	__u32 ppid;
+	__u64 start_boottime_ns;
+	__u16 executable_status;
+	__u16 reserved16;
+	__u32 executable_flags;
 	__u32 command_line_length;
+	__u32 executable_path_length;
+	__u32 executable_device_major;
+	__u32 executable_device_minor;
+	__u32 executable_mode;
+	__u64 executable_inode;
+	__u64 executable_size;
+	__s64 executable_mtime_ns;
+	__s64 executable_ctime_ns;
+	__u64 executable_filesystem_magic;
 } PACKED_STRUCT;
 
 struct mapple_pslist_task_record {
