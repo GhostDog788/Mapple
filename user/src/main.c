@@ -31,10 +31,10 @@ int main(void)
 	if (tcp_ret)
 		fprintf(stderr, "TCP command failed: %s\n", strerror(tcp_ret));
 	else
-		printf("TCP command verified\n");
+		fprintf(stderr, "TCP command verified\n");
 	if (chardev_ret)
 		fprintf(stderr, "chardev command failed: %s\n", strerror(chardev_ret));
 	else
-		printf("chardev command verified\n");
+		fprintf(stderr, "chardev command verified\n");
 	return tcp_ret || chardev_ret ? EXIT_FAILURE : EXIT_SUCCESS;
 }

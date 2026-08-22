@@ -35,11 +35,28 @@ struct mapple_wire_header {
 	__u64 payload_size;
 } PACKED_STRUCT;
 
+enum mapple_pslist_record_type {
+	MAPPLE_PSLIST_RECORD_TASK = 1,
+	MAPPLE_PSLIST_RECORD_PROCESS = 2
+};
+
 struct mapple_pslist_record_header {
 	__u32 record_size;
-	__u32 pid;
+	__u16 record_type;
+	__u16 reserved;
+} PACKED_STRUCT;
+
+struct mapple_pslist_process_record {
+	struct mapple_pslist_record_header header;
+	__u32 tgid;
 	__u32 ppid;
 	__u32 command_line_length;
+} PACKED_STRUCT;
+
+struct mapple_pslist_task_record {
+	struct mapple_pslist_record_header header;
+	__u32 tid;
+	__u32 tgid;
 	__u8 state;
 	__u8 reserved[3];
 	char comm[MAPPLE_PSLIST_COMM_SIZE];

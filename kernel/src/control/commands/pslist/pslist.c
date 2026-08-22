@@ -12,26 +12,35 @@
 #include <linux/string.h>
 #include <linux/threads.h>
 
-struct mapple_pslist_record {
-	struct mapple_pslist_record_header header;
+struct mapple_pslist_captured_record {
+	struct mapple_pslist_process_record process;
+	struct mapple_pslist_task_record task;
 	char *command_line;
 	u32 command_line_length;
+	bool has_process;
 };
 
-static struct task_struct *mapple_pslist_next_task(unsigned int *next_pid)
+static void mapple_pslist_encode_header(struct mapple_pslist_record_header *header, u32 record_size,
+					u16 record_type)
+{
+	put_unaligned_be32(record_size, &header->record_size);
+	put_unaligned_be16(record_type, &header->record_type);
+}
+
+static struct task_struct *mapple_pslist_next_task(unsigned int *next_tid)
 {
 	struct task_struct *task = NULL;
 	struct pid *pid;
 	pid_t nr;
 
 	rcu_read_lock();
-	while (*next_pid <= PID_MAX_LIMIT) {
-		pid = find_ge_pid(*next_pid, &init_pid_ns);
+	while (*next_tid <= PID_MAX_LIMIT) {
+		pid = find_ge_pid(*next_tid, &init_pid_ns);
 		if (!pid)
 			break;
 		nr = pid_nr_ns(pid, &init_pid_ns);
-		*next_pid = nr + 1;
-		task = pid_task(pid, PIDTYPE_TGID);
+		*next_tid = nr + 1;
+		task = pid_task(pid, PIDTYPE_PID);
 		if (task) {
 			get_task_struct(task);
 			break;
@@ -89,43 +98,66 @@ static int mapple_pslist_capture_command_line(struct task_struct *task, char **b
 	return 0;
 }
 
-static int mapple_pslist_capture_record(struct mapple_pslist_record *record, struct task_struct *task)
+static int mapple_pslist_capture_record(struct mapple_pslist_captured_record *record,
+					struct task_struct *task)
 {
+	pid_t tgid;
+	pid_t tid;
 	u32 record_size;
 	int ret;
 
 	memset(record, 0, sizeof(*record));
-	get_task_comm(record->header.comm, task);
+	tid = task_pid_nr_ns(task, &init_pid_ns);
+	tgid = task_tgid_nr_ns(task, &init_pid_ns);
+	if (!tid || !tgid)
+		return -ESRCH;
+
+	mapple_pslist_encode_header(&record->task.header, sizeof(record->task),
+				    MAPPLE_PSLIST_RECORD_TASK);
+	put_unaligned_be32(tid, &record->task.tid);
+	put_unaligned_be32(tgid, &record->task.tgid);
+	record->task.state = task_state_to_char(task);
+	get_task_comm(record->task.comm, task);
+	if (tid != tgid)
+		return 0;
+
 	ret = mapple_pslist_capture_command_line(task, &record->command_line,
 						  &record->command_line_length);
 	if (ret)
 		return ret;
-	record_size = sizeof(record->header) + record->command_line_length;
-	put_unaligned_be32(record_size, &record->header.record_size);
-	put_unaligned_be32(task_tgid_nr_ns(task, &init_pid_ns), &record->header.pid);
-	put_unaligned_be32(task_ppid_nr_ns(task, &init_pid_ns), &record->header.ppid);
-	put_unaligned_be32(record->command_line_length, &record->header.command_line_length);
-	record->header.state = task_state_to_char(task);
+	record_size = sizeof(record->process) + record->command_line_length;
+	mapple_pslist_encode_header(&record->process.header, record_size,
+				    MAPPLE_PSLIST_RECORD_PROCESS);
+	put_unaligned_be32(tgid, &record->process.tgid);
+	put_unaligned_be32(task_ppid_nr_ns(task, &init_pid_ns), &record->process.ppid);
+	put_unaligned_be32(record->command_line_length, &record->process.command_line_length);
+	record->has_process = true;
 	return 0;
 }
 
-static int mapple_pslist_write_record(struct mapple_command_context *context,
-				      const struct mapple_pslist_record *record)
+static int mapple_pslist_write_records(struct mapple_command_context *context,
+				       const struct mapple_pslist_captured_record *record)
 {
 	int ret;
 
-	ret = mapple_command_write(context, &record->header, sizeof(record->header));
-	if (ret)
-		return ret;
-	return mapple_command_write(context, record->command_line, record->command_line_length);
+	if (record->has_process) {
+		ret = mapple_command_write(context, &record->process, sizeof(record->process));
+		if (ret)
+			return ret;
+		ret = mapple_command_write(context, record->command_line,
+					   record->command_line_length);
+		if (ret)
+			return ret;
+	}
+	return mapple_command_write(context, &record->task, sizeof(record->task));
 }
 
 int mapple_handle_pslist(struct mapple_command_context *context)
 {
 	const struct mapple_pslist_record_header terminator = { 0 };
-	struct mapple_pslist_record record;
+	struct mapple_pslist_captured_record record;
 	struct task_struct *task;
-	unsigned int next_pid = 1;
+	unsigned int next_tid = 1;
 	int ret;
 
 	BUILD_BUG_ON(MAPPLE_PSLIST_COMM_SIZE != TASK_COMM_LEN);
@@ -136,12 +168,14 @@ int mapple_handle_pslist(struct mapple_command_context *context)
 	if (ret)
 		return ret;
 
-	while ((task = mapple_pslist_next_task(&next_pid))) {
+	while ((task = mapple_pslist_next_task(&next_tid))) {
 		ret = mapple_pslist_capture_record(&record, task);
 		put_task_struct(task);
+		if (ret == -ESRCH)
+			continue;
 		if (ret)
 			return ret;
-		ret = mapple_pslist_write_record(context, &record);
+		ret = mapple_pslist_write_records(context, &record);
 		kvfree(record.command_line);
 		if (ret)
 			return ret;
