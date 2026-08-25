@@ -1,5 +1,7 @@
 #include <control/commands/pslist/pslist.h>
 
+#include <control/commands/pslist/fd.h>
+
 #include <asm/unaligned.h>
 #include <linux/dcache.h>
 #include <linux/errno.h>
@@ -364,11 +366,15 @@ int mapple_handle_pslist(struct mapple_command_context *context)
 
 	while ((task = mapple_pslist_next_task(&next_tid))) {
 		ret = mapple_pslist_capture_record(&record, task);
-		put_task_struct(task);
-		if (ret == -ESRCH)
+		if (ret == -ESRCH) {
+			put_task_struct(task);
 			continue;
+		}
 		if (!ret)
 			ret = mapple_pslist_write_record(context, &record);
+		if (!ret && record.type == MAPPLE_PSLIST_RECORD_PROCESS)
+			ret = mapple_pslist_write_fd_table(context, task);
+		put_task_struct(task);
 		mapple_pslist_release_record(&record);
 		if (ret)
 			return ret;

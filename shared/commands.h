@@ -21,6 +21,7 @@
 #define MAPPLE_HEADER_KNOWN_FLAGS MAPPLE_HEADER_FLAG_STREAM
 #define MAPPLE_PSLIST_COMM_SIZE 16U
 #define MAPPLE_PSLIST_COMMAND_LINE_MAX_SIZE (6U * 1024U * 1024U)
+#define MAPPLE_PSLIST_FDINFO_MAX_SIZE (6U * 1024U * 1024U)
 
 #define MAPPLE_PSLIST_EXECUTABLE_FLAG_DELETED (1U << 0)
 #define MAPPLE_PSLIST_EXECUTABLE_FLAG_PATH_UNAVAILABLE (1U << 1)
@@ -94,6 +95,170 @@ struct mapple_pslist_process_data {
 	__s64 executable_mtime_ns;
 	__s64 executable_ctime_ns;
 	__u64 executable_filesystem_magic;
+} PACKED_STRUCT;
+
+enum mapple_pslist_data_status {
+	MAPPLE_PSLIST_DATA_AVAILABLE = 1,
+	MAPPLE_PSLIST_DATA_UNAVAILABLE = 2,
+	MAPPLE_PSLIST_DATA_TOO_LARGE = 3,
+	MAPPLE_PSLIST_DATA_RACED = 4,
+	MAPPLE_PSLIST_DATA_UNSUPPORTED = 5
+};
+
+enum mapple_pslist_fd_table_status {
+	MAPPLE_PSLIST_FD_TABLE_COMPLETE = 1,
+	MAPPLE_PSLIST_FD_TABLE_PARTIAL = 2,
+	MAPPLE_PSLIST_FD_TABLE_UNAVAILABLE = 3
+};
+
+enum mapple_pslist_fd_kind {
+	MAPPLE_PSLIST_FD_REGULAR = 1,
+	MAPPLE_PSLIST_FD_DIRECTORY = 2,
+	MAPPLE_PSLIST_FD_CHARACTER = 3,
+	MAPPLE_PSLIST_FD_BLOCK = 4,
+	MAPPLE_PSLIST_FD_PIPE = 5,
+	MAPPLE_PSLIST_FD_SOCKET = 6,
+	MAPPLE_PSLIST_FD_SYMLINK = 7,
+	MAPPLE_PSLIST_FD_ANON_INODE = 8,
+	MAPPLE_PSLIST_FD_OTHER = 9
+};
+
+enum mapple_pslist_fd_detail_type {
+	MAPPLE_PSLIST_FD_DETAIL_NONE = 0,
+	MAPPLE_PSLIST_FD_DETAIL_SOCKET = 1
+};
+
+#define MAPPLE_PSLIST_FD_DESCRIPTOR_CLOEXEC (1U << 0)
+#define MAPPLE_PSLIST_FD_KNOWN_DESCRIPTOR_FLAGS MAPPLE_PSLIST_FD_DESCRIPTOR_CLOEXEC
+
+struct mapple_pslist_timespec {
+	__s64 seconds;
+	__u32 nanoseconds;
+	__u32 reserved;
+} PACKED_STRUCT;
+
+struct mapple_pslist_fd_stat {
+	__u32 result_mask;
+	__u32 mode;
+	__u32 link_count;
+	__u32 block_size;
+	__u32 uid;
+	__u32 gid;
+	__u32 device_major;
+	__u32 device_minor;
+	__u32 special_device_major;
+	__u32 special_device_minor;
+	__u32 direct_io_memory_alignment;
+	__u32 direct_io_offset_alignment;
+	__u64 inode;
+	__s64 size;
+	__u64 blocks;
+	__u64 attributes;
+	__u64 attributes_mask;
+	__u64 mount_id;
+	__u64 change_cookie;
+	__u64 filesystem_magic;
+	struct mapple_pslist_timespec access_time;
+	struct mapple_pslist_timespec birth_time;
+	struct mapple_pslist_timespec change_time;
+	struct mapple_pslist_timespec modification_time;
+} PACKED_STRUCT;
+
+struct mapple_pslist_fd_record {
+	__u32 record_size;
+	__u32 fd;
+	__u16 kind;
+	__u16 detail_type;
+	__u32 descriptor_flags;
+	__u32 open_flags;
+	__u64 file_mode;
+	__s64 position;
+	__u64 version;
+	__u32 credential_uid;
+	__u32 credential_gid;
+	__u32 credential_effective_uid;
+	__u32 credential_effective_gid;
+	__u32 credential_saved_uid;
+	__u32 credential_saved_gid;
+	__u32 credential_filesystem_uid;
+	__u32 credential_filesystem_gid;
+	__s32 async_owner_pid;
+	__u16 async_owner_type;
+	__u16 async_signal;
+	__u32 async_owner_uid;
+	__u32 async_owner_effective_uid;
+	__u16 path_status;
+	__u16 stat_status;
+	__u16 fdinfo_status;
+	__u16 reserved;
+	__s32 path_error;
+	__s32 stat_error;
+	__s32 fdinfo_error;
+	__u32 detail_size;
+	__u32 path_length;
+	__u32 fdinfo_length;
+	struct mapple_pslist_fd_stat stat;
+} PACKED_STRUCT;
+
+struct mapple_pslist_fd_table_end {
+	__u32 record_size;
+	__u16 status;
+	__u16 reserved;
+	__u32 record_count;
+} PACKED_STRUCT;
+
+enum mapple_pslist_socket_endpoint_type {
+	MAPPLE_PSLIST_SOCKET_ENDPOINT_NONE = 0,
+	MAPPLE_PSLIST_SOCKET_ENDPOINT_IPV4 = 1,
+	MAPPLE_PSLIST_SOCKET_ENDPOINT_IPV6 = 2,
+	MAPPLE_PSLIST_SOCKET_ENDPOINT_UNIX = 3,
+	MAPPLE_PSLIST_SOCKET_ENDPOINT_NETLINK = 4
+};
+
+enum mapple_pslist_socket_endpoint_status {
+	MAPPLE_PSLIST_SOCKET_ENDPOINT_AVAILABLE = 1,
+	MAPPLE_PSLIST_SOCKET_ENDPOINT_UNAVAILABLE = 2,
+	MAPPLE_PSLIST_SOCKET_ENDPOINT_NOT_CONNECTED = 3,
+	MAPPLE_PSLIST_SOCKET_ENDPOINT_UNSUPPORTED = 4
+};
+
+#define MAPPLE_PSLIST_SOCKET_ENDPOINT_ABSTRACT (1U << 0)
+#define MAPPLE_PSLIST_SOCKET_ENDPOINT_KNOWN_FLAGS MAPPLE_PSLIST_SOCKET_ENDPOINT_ABSTRACT
+
+struct mapple_pslist_socket_endpoint {
+	__u16 status;
+	__u16 type;
+	__s32 error;
+	__u16 port;
+	__u16 flags;
+	__u32 scope_id;
+	__u32 flow_info;
+	__u32 netlink_pid;
+	__u32 netlink_groups;
+	__u32 address_length;
+} PACKED_STRUCT;
+
+struct mapple_pslist_socket_data {
+	__u16 family;
+	__u16 type;
+	__u16 protocol;
+	__u16 socket_state;
+	__u16 protocol_state;
+	__u16 shutdown;
+	__s32 error;
+	__s32 soft_error;
+	__u32 bound_device;
+	__u32 mark;
+	__u32 priority;
+	__u32 uid;
+	__u32 network_namespace;
+	__u32 receive_buffer;
+	__u32 send_buffer;
+	__u32 receive_queued;
+	__u32 send_queued;
+	__u32 drops;
+	struct mapple_pslist_socket_endpoint local;
+	struct mapple_pslist_socket_endpoint peer;
 } PACKED_STRUCT;
 
 #undef PACKED_STRUCT

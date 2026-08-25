@@ -11,54 +11,14 @@
 #include <string.h>
 
 #include <commands.h>
+#include <commands/pslist/fd.h>
+#include <commands/pslist/json.h>
+#include <commands/pslist/model.h>
 #include <communication/command.h>
 #include <communication/stream.h>
 
 #define MAPPLE_PSLIST_INITIAL_CAPACITY 64U
 #define MAPPLE_PSLIST_IO_CHUNK_SIZE 4096U
-
-struct mapple_pslist_task {
-	__u32 pid;
-	__u32 tgid;
-	__u32 ppid;
-	__u64 start_boottime_ns;
-	__u8 state;
-	char comm[MAPPLE_PSLIST_COMM_SIZE];
-};
-
-struct mapple_pslist_process {
-	__u16 command_line_status;
-	__u16 executable_status;
-	__u32 executable_flags;
-	__u32 executable_device_major;
-	__u32 executable_device_minor;
-	__u32 executable_mode;
-	unsigned char *command_line;
-	__u32 command_line_length;
-	unsigned char *executable_path;
-	__u32 executable_path_length;
-	__u64 executable_inode;
-	__u64 executable_size;
-	__s64 executable_mtime_ns;
-	__s64 executable_ctime_ns;
-	__u64 executable_filesystem_magic;
-};
-
-union mapple_pslist_entry_data {
-	struct mapple_pslist_process process;
-};
-
-struct mapple_pslist_entry {
-	__u16 type;
-	struct mapple_pslist_task task;
-	union mapple_pslist_entry_data data;
-};
-
-struct mapple_pslist_snapshot {
-	struct mapple_pslist_entry *entries;
-	size_t count;
-	size_t capacity;
-};
 
 static __u16 mapple_pslist_read_u16(const void *record, size_t offset)
 {
@@ -162,6 +122,8 @@ static int mapple_pslist_add_entry(struct mapple_pslist_snapshot *snapshot,
 	if (entry->type == MAPPLE_PSLIST_RECORD_PROCESS) {
 		entry->data.process.command_line = NULL;
 		entry->data.process.executable_path = NULL;
+		memset(&entry->data.process.fd_table, 0,
+		       sizeof(entry->data.process.fd_table));
 	}
 	return 0;
 }
@@ -175,6 +137,8 @@ static void mapple_pslist_free_snapshot(struct mapple_pslist_snapshot *snapshot)
 			continue;
 		free(snapshot->entries[index].data.process.command_line);
 		free(snapshot->entries[index].data.process.executable_path);
+		mapple_pslist_free_fd_table(
+			&snapshot->entries[index].data.process.fd_table);
 	}
 	free(snapshot->entries);
 }
@@ -352,6 +316,9 @@ static int mapple_pslist_read_snapshot(int session_fd, struct mapple_pslist_snap
 			if (entry.task.pid != entry.task.tgid)
 				return EPROTO;
 			ret = mapple_pslist_read_process(session_fd, record_size, &entry);
+			if (!ret)
+				ret = mapple_pslist_read_fd_table(
+					session_fd, &entry.data.process.fd_table);
 			break;
 		case MAPPLE_PSLIST_RECORD_KTHREAD:
 			ret = mapple_pslist_skip(session_fd, record_size - sizeof(header));
@@ -365,16 +332,20 @@ static int mapple_pslist_read_snapshot(int session_fd, struct mapple_pslist_snap
 			continue;
 		}
 		if (ret)
-			return ret;
+			goto free_entry;
 		ret = mapple_pslist_add_entry(snapshot, &entry);
 		if (ret) {
-			if (entry.type == MAPPLE_PSLIST_RECORD_PROCESS) {
-				free(entry.data.process.command_line);
-				free(entry.data.process.executable_path);
-			}
-			return ret;
+			goto free_entry;
 		}
 	}
+
+free_entry:
+	if (entry.type == MAPPLE_PSLIST_RECORD_PROCESS) {
+		free(entry.data.process.command_line);
+		free(entry.data.process.executable_path);
+		mapple_pslist_free_fd_table(&entry.data.process.fd_table);
+	}
+	return ret;
 }
 
 static int mapple_pslist_compare_entries_by_pid(const void *left, const void *right)
@@ -422,49 +393,6 @@ static int mapple_pslist_sort_snapshot(struct mapple_pslist_snapshot *snapshot)
 		qsort(snapshot->entries, snapshot->count, sizeof(*snapshot->entries),
 		      mapple_pslist_compare_entries_for_output);
 	return 0;
-}
-
-static int mapple_pslist_print_json_bytes(const unsigned char *bytes, size_t length)
-{
-	size_t index;
-	int ret;
-
-	if (putchar('"') == EOF)
-		return EIO;
-	for (index = 0; index < length; ++index) {
-		switch (bytes[index]) {
-		case '"':
-			ret = fputs("\\\"", stdout);
-			break;
-		case '\\':
-			ret = fputs("\\\\", stdout);
-			break;
-		case '\b':
-			ret = fputs("\\b", stdout);
-			break;
-		case '\f':
-			ret = fputs("\\f", stdout);
-			break;
-		case '\n':
-			ret = fputs("\\n", stdout);
-			break;
-		case '\r':
-			ret = fputs("\\r", stdout);
-			break;
-		case '\t':
-			ret = fputs("\\t", stdout);
-			break;
-		default:
-			if (bytes[index] >= 0x20 && bytes[index] < 0x7f)
-				ret = putchar(bytes[index]);
-			else
-				ret = printf("\\u%04x", bytes[index]);
-			break;
-		}
-		if (ret == EOF || ret < 0)
-			return EIO;
-	}
-	return putchar('"') == EOF ? EIO : 0;
 }
 
 static int mapple_pslist_print_json_argv(const unsigned char *command_line, __u32 length)
@@ -660,6 +588,11 @@ static int mapple_pslist_print_json_process(const struct mapple_pslist_entry *en
 	if (fputs(",\n      \"executable\": ", stdout) == EOF)
 		return EIO;
 	ret = mapple_pslist_print_json_executable(process);
+	if (ret)
+		return ret;
+	if (fputs(",\n      \"fd_table\": ", stdout) == EOF)
+		return EIO;
+	ret = mapple_pslist_print_json_fd_table(&process->fd_table, 6);
 	if (ret)
 		return ret;
 	if (fputs(",\n      \"threads\": [", stdout) == EOF)
