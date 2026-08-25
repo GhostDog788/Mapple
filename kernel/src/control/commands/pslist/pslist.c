@@ -14,20 +14,26 @@
 #include <linux/rcupdate.h>
 #include <linux/sched.h>
 #include <linux/sched/mm.h>
+#include <linux/sched/signal.h>
 #include <linux/slab.h>
 #include <linux/stat.h>
 #include <linux/string.h>
 #include <linux/time64.h>
 #include <linux/threads.h>
 
+struct mapple_pslist_mm_source {
+	struct task_struct *task;
+	struct mm_struct *mm;
+};
+
 struct mapple_pslist_captured_record {
-	struct mapple_pslist_process_record process;
-	struct mapple_pslist_task_record task;
+	struct mapple_pslist_record_header header;
+	struct mapple_pslist_process_data process;
 	char *command_line;
 	char *executable_path;
 	u32 command_line_length;
 	u32 executable_path_length;
-	bool has_process;
+	u16 type;
 };
 
 static void mapple_pslist_encode_header(struct mapple_pslist_record_header *header, u32 record_size,
@@ -60,65 +66,109 @@ static struct task_struct *mapple_pslist_next_task(unsigned int *next_tid)
 	return task;
 }
 
-static int mapple_pslist_capture_command_line(struct task_struct *task, char **buffer_out,
-						      u32 *length_out)
+/* find_lock_task_mm() provides this operation but is not exported to modules. */
+static void mapple_pslist_get_mm_source(struct task_struct *leader,
+					struct mapple_pslist_mm_source *source)
 {
-	struct mm_struct *mm;
+	struct task_struct *task;
+
+	source->task = NULL;
+	source->mm = NULL;
+	rcu_read_lock();
+	for_each_thread(leader, task) {
+		task_lock(task);
+		if (!(task->flags & PF_KTHREAD) && task->mm) {
+			get_task_struct(task);
+			mmget(task->mm);
+			source->task = task;
+			source->mm = task->mm;
+			task_unlock(task);
+			break;
+		}
+		task_unlock(task);
+	}
+	rcu_read_unlock();
+}
+
+static void mapple_pslist_put_mm_source(struct mapple_pslist_mm_source *source)
+{
+	if (!source->mm)
+		return;
+	mmput(source->mm);
+	put_task_struct(source->task);
+}
+
+static bool mapple_pslist_source_uses_mm(const struct mapple_pslist_mm_source *source)
+{
+	bool matches;
+
+	task_lock(source->task);
+	matches = source->task->mm == source->mm;
+	task_unlock(source->task);
+	return matches;
+}
+
+static int mapple_pslist_capture_command_line(struct mapple_pslist_captured_record *record,
+					       const struct mapple_pslist_mm_source *source)
+{
+	struct mapple_pslist_process_data *process = &record->process;
 	unsigned long arg_start;
 	unsigned long arg_end;
 	unsigned long length;
 	char *buffer;
 	int copied;
+	u16 status;
 
-	*buffer_out = NULL;
-	*length_out = 0;
-	mm = get_task_mm(task);
-	if (!mm)
-		return 0;
-	spin_lock(&mm->arg_lock);
-	arg_start = mm->arg_start;
-	arg_end = mm->arg_end;
-	spin_unlock(&mm->arg_lock);
-	if (arg_end <= arg_start) {
-		mmput(mm);
-		return 0;
+	if (!source->mm) {
+		status = MAPPLE_PSLIST_COMMAND_LINE_UNAVAILABLE;
+		goto encode;
+	}
+	spin_lock(&source->mm->arg_lock);
+	arg_start = source->mm->arg_start;
+	arg_end = source->mm->arg_end;
+	spin_unlock(&source->mm->arg_lock);
+	if (!arg_end || arg_end < arg_start) {
+		status = MAPPLE_PSLIST_COMMAND_LINE_UNAVAILABLE;
+		goto encode;
+	}
+	if (arg_end == arg_start) {
+		status = MAPPLE_PSLIST_COMMAND_LINE_EMPTY;
+		goto encode;
 	}
 	length = arg_end - arg_start;
-	if (length > INT_MAX) {
-		mmput(mm);
-		return -EOVERFLOW;
+	if (length > MAPPLE_PSLIST_COMMAND_LINE_MAX_SIZE) {
+		status = MAPPLE_PSLIST_COMMAND_LINE_TOO_LARGE;
+		goto encode;
 	}
 	buffer = kvmalloc(length, GFP_KERNEL);
-	if (!buffer) {
-		mmput(mm);
+	if (!buffer)
 		return -ENOMEM;
-	}
-	copied = access_process_vm(task, arg_start, buffer, length, FOLL_FORCE);
-	mmput(mm);
-	if (copied < 0) {
+	if (!mapple_pslist_source_uses_mm(source)) {
 		kvfree(buffer);
-		return copied;
+		status = MAPPLE_PSLIST_COMMAND_LINE_UNAVAILABLE;
+		goto encode;
 	}
-	if (copied != (int)length) {
+	copied = access_process_vm(source->task, arg_start, buffer, length, FOLL_FORCE);
+	if (copied != (int)length || !mapple_pslist_source_uses_mm(source)) {
 		kvfree(buffer);
-		return 0;
+		status = MAPPLE_PSLIST_COMMAND_LINE_UNAVAILABLE;
+		goto encode;
 	}
-	*buffer_out = buffer;
-	*length_out = length;
+	record->command_line = buffer;
+	record->command_line_length = length;
+	status = MAPPLE_PSLIST_COMMAND_LINE_AVAILABLE;
+
+encode:
+	put_unaligned_be16(status, &process->command_line_status);
+	put_unaligned_be32(record->command_line_length, &process->command_line_length);
 	return 0;
 }
 
-static struct file *mapple_pslist_get_executable(struct task_struct *task, u16 *status)
+static struct file *mapple_pslist_get_executable(struct mm_struct *mm, u16 *status)
 {
-	struct file *executable = NULL;
-	struct mm_struct *mm;
+	struct file *executable;
 	bool reference_failed = false;
 
-	if (task->flags & PF_KTHREAD) {
-		*status = MAPPLE_PSLIST_EXECUTABLE_KERNEL_THREAD;
-		return NULL;
-	}
-	mm = get_task_mm(task);
 	if (!mm) {
 		*status = MAPPLE_PSLIST_EXECUTABLE_UNAVAILABLE;
 		return NULL;
@@ -130,7 +180,6 @@ static struct file *mapple_pslist_get_executable(struct task_struct *task, u16 *
 		reference_failed = true;
 	}
 	rcu_read_unlock();
-	mmput(mm);
 	if (executable)
 		*status = MAPPLE_PSLIST_EXECUTABLE_AVAILABLE;
 	else
@@ -139,7 +188,7 @@ static struct file *mapple_pslist_get_executable(struct task_struct *task, u16 *
 	return executable;
 }
 
-static void mapple_pslist_capture_executable_path(struct mapple_pslist_captured_record *record,
+static int mapple_pslist_capture_executable_path(struct mapple_pslist_captured_record *record,
 						  struct file *executable, u32 *flags)
 {
 	char *path;
@@ -148,24 +197,22 @@ static void mapple_pslist_capture_executable_path(struct mapple_pslist_captured_
 
 	buffer = kvmalloc(PATH_MAX, GFP_KERNEL);
 	if (!buffer)
-		goto unavailable;
+		return -ENOMEM;
 	path = file_path(executable, buffer, PATH_MAX);
 	if (IS_ERR(path)) {
 		kvfree(buffer);
-		goto unavailable;
+		*flags |= MAPPLE_PSLIST_EXECUTABLE_FLAG_PATH_UNAVAILABLE;
+		return 0;
 	}
 	length = strlen(path);
 	memmove(buffer, path, length);
 	record->executable_path = buffer;
 	record->executable_path_length = length;
-	return;
-
-unavailable:
-	*flags |= MAPPLE_PSLIST_EXECUTABLE_FLAG_PATH_UNAVAILABLE;
+	return 0;
 }
 
 static void mapple_pslist_capture_executable_metadata(
-	struct mapple_pslist_process_record *process, struct file *executable, u32 *flags)
+	struct mapple_pslist_process_data *process, struct file *executable, u32 *flags)
 {
 	struct kstat stat;
 	int ret;
@@ -187,86 +234,116 @@ static void mapple_pslist_capture_executable_metadata(
 			   &process->executable_filesystem_magic);
 }
 
-static void mapple_pslist_capture_executable(struct mapple_pslist_captured_record *record,
-					     struct task_struct *task)
+static int mapple_pslist_capture_executable(struct mapple_pslist_captured_record *record,
+					     struct mm_struct *mm)
 {
-	struct mapple_pslist_process_record *process = &record->process;
+	struct mapple_pslist_process_data *process = &record->process;
 	struct file *executable;
 	u16 executable_status;
 	u32 executable_flags = 0;
+	int ret;
 
-	executable = mapple_pslist_get_executable(task, &executable_status);
+	executable = mapple_pslist_get_executable(mm, &executable_status);
 	put_unaligned_be16(executable_status, &process->executable_status);
 	if (executable) {
 		if (d_unlinked(executable->f_path.dentry))
 			executable_flags |= MAPPLE_PSLIST_EXECUTABLE_FLAG_DELETED;
-		mapple_pslist_capture_executable_path(record, executable, &executable_flags);
-		mapple_pslist_capture_executable_metadata(process, executable, &executable_flags);
+		ret = mapple_pslist_capture_executable_path(record, executable,
+							      &executable_flags);
+		if (ret) {
+			fput(executable);
+			return ret;
+		}
+		mapple_pslist_capture_executable_metadata(process, executable,
+						    &executable_flags);
 		fput(executable);
 	}
 	put_unaligned_be32(executable_flags, &process->executable_flags);
 	put_unaligned_be32(record->executable_path_length, &process->executable_path_length);
+	return 0;
+}
+
+static void mapple_pslist_capture_task_data(struct mapple_pslist_captured_record *record,
+					    struct task_struct *task, pid_t pid, pid_t tgid)
+{
+	struct mapple_pslist_task_data *data = &record->header.task;
+
+	put_unaligned_be32(pid, &data->pid);
+	put_unaligned_be32(tgid, &data->tgid);
+	put_unaligned_be32(task_ppid_nr_ns(task, &init_pid_ns), &data->ppid);
+	put_unaligned_be64(task->start_boottime, &data->start_boottime_ns);
+	data->state = task_state_to_char(task);
+	get_task_comm(data->comm, task);
+}
+
+static int mapple_pslist_capture_process(struct mapple_pslist_captured_record *record,
+					  struct task_struct *task)
+{
+	struct mapple_pslist_mm_source source;
+	u32 record_size;
+	int ret;
+
+	mapple_pslist_get_mm_source(task, &source);
+	ret = mapple_pslist_capture_command_line(record, &source);
+	if (!ret)
+		ret = mapple_pslist_capture_executable(record, source.mm);
+	mapple_pslist_put_mm_source(&source);
+	if (ret)
+		return ret;
+	record_size = sizeof(record->header) + sizeof(record->process) +
+		      record->command_line_length +
+		      record->executable_path_length;
+	mapple_pslist_encode_header(&record->header, record_size, record->type);
+	return 0;
 }
 
 static int mapple_pslist_capture_record(struct mapple_pslist_captured_record *record,
 					struct task_struct *task)
 {
 	pid_t tgid;
-	pid_t tid;
-	u32 record_size;
-	int ret;
+	pid_t pid;
 
 	memset(record, 0, sizeof(*record));
-	tid = task_pid_nr_ns(task, &init_pid_ns);
+	pid = task_pid_nr_ns(task, &init_pid_ns);
 	tgid = task_tgid_nr_ns(task, &init_pid_ns);
-	if (!tid || !tgid)
+	if (!pid || !tgid)
 		return -ESRCH;
-
-	mapple_pslist_encode_header(&record->task.header, sizeof(record->task),
-				    MAPPLE_PSLIST_RECORD_TASK);
-	put_unaligned_be32(tid, &record->task.tid);
-	put_unaligned_be32(tgid, &record->task.tgid);
-	record->task.state = task_state_to_char(task);
-	get_task_comm(record->task.comm, task);
-	if (tid != tgid)
-		return 0;
-
-	ret = mapple_pslist_capture_command_line(task, &record->command_line,
-						  &record->command_line_length);
-	if (ret)
-		return ret;
-	put_unaligned_be32(tgid, &record->process.tgid);
-	put_unaligned_be32(task_ppid_nr_ns(task, &init_pid_ns), &record->process.ppid);
-	put_unaligned_be64(task->start_boottime, &record->process.start_boottime_ns);
-	put_unaligned_be32(record->command_line_length, &record->process.command_line_length);
-	mapple_pslist_capture_executable(record, task);
-	record_size = sizeof(record->process) + record->command_line_length +
-		      record->executable_path_length;
-	mapple_pslist_encode_header(&record->process.header, record_size,
-				    MAPPLE_PSLIST_RECORD_PROCESS);
-	record->has_process = true;
+	if (task->flags & PF_KTHREAD)
+		record->type = MAPPLE_PSLIST_RECORD_KTHREAD;
+	else if (pid == tgid)
+		record->type = MAPPLE_PSLIST_RECORD_PROCESS;
+	else
+		record->type = MAPPLE_PSLIST_RECORD_THREAD;
+	mapple_pslist_capture_task_data(record, task, pid, tgid);
+	if (record->type == MAPPLE_PSLIST_RECORD_PROCESS)
+		return mapple_pslist_capture_process(record, task);
+	mapple_pslist_encode_header(&record->header, sizeof(record->header), record->type);
 	return 0;
 }
 
-static int mapple_pslist_write_records(struct mapple_command_context *context,
+static void mapple_pslist_release_record(struct mapple_pslist_captured_record *record)
+{
+	kvfree(record->command_line);
+	kvfree(record->executable_path);
+}
+
+static int mapple_pslist_write_record(struct mapple_command_context *context,
 				       const struct mapple_pslist_captured_record *record)
 {
 	int ret;
 
-	if (record->has_process) {
-		ret = mapple_command_write(context, &record->process, sizeof(record->process));
-		if (ret)
-			return ret;
-		ret = mapple_command_write(context, record->command_line,
-					   record->command_line_length);
-		if (ret)
-			return ret;
-		ret = mapple_command_write(context, record->executable_path,
-					   record->executable_path_length);
-		if (ret)
-			return ret;
-	}
-	return mapple_command_write(context, &record->task, sizeof(record->task));
+	ret = mapple_command_write(context, &record->header, sizeof(record->header));
+	if (ret || record->type != MAPPLE_PSLIST_RECORD_PROCESS)
+		return ret;
+	ret = mapple_command_write(context, &record->process, sizeof(record->process));
+	if (ret)
+		return ret;
+	ret = mapple_command_write(context, record->command_line,
+				   record->command_line_length);
+	if (ret)
+		return ret;
+	return mapple_command_write(context, record->executable_path,
+				    record->executable_path_length);
 }
 
 int mapple_handle_pslist(struct mapple_command_context *context)
@@ -290,11 +367,9 @@ int mapple_handle_pslist(struct mapple_command_context *context)
 		put_task_struct(task);
 		if (ret == -ESRCH)
 			continue;
-		if (ret)
-			return ret;
-		ret = mapple_pslist_write_records(context, &record);
-		kvfree(record.command_line);
-		kvfree(record.executable_path);
+		if (!ret)
+			ret = mapple_pslist_write_record(context, &record);
+		mapple_pslist_release_record(&record);
 		if (ret)
 			return ret;
 	}

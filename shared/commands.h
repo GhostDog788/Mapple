@@ -20,6 +20,7 @@
 #define MAPPLE_HEADER_FLAG_STREAM (1U << 0)
 #define MAPPLE_HEADER_KNOWN_FLAGS MAPPLE_HEADER_FLAG_STREAM
 #define MAPPLE_PSLIST_COMM_SIZE 16U
+#define MAPPLE_PSLIST_COMMAND_LINE_MAX_SIZE (6U * 1024U * 1024U)
 
 #define MAPPLE_PSLIST_EXECUTABLE_FLAG_DELETED (1U << 0)
 #define MAPPLE_PSLIST_EXECUTABLE_FLAG_PATH_UNAVAILABLE (1U << 1)
@@ -44,30 +45,44 @@ struct mapple_wire_header {
 } PACKED_STRUCT;
 
 enum mapple_pslist_record_type {
-	MAPPLE_PSLIST_RECORD_TASK = 1,
-	MAPPLE_PSLIST_RECORD_PROCESS = 2
+	MAPPLE_PSLIST_RECORD_THREAD = 1,
+	MAPPLE_PSLIST_RECORD_PROCESS = 2,
+	MAPPLE_PSLIST_RECORD_KTHREAD = 3
 };
 
 enum mapple_pslist_executable_status {
 	MAPPLE_PSLIST_EXECUTABLE_AVAILABLE = 1,
-	MAPPLE_PSLIST_EXECUTABLE_KERNEL_THREAD = 2,
-	MAPPLE_PSLIST_EXECUTABLE_NONE = 3,
-	MAPPLE_PSLIST_EXECUTABLE_UNAVAILABLE = 4
+	MAPPLE_PSLIST_EXECUTABLE_NONE = 2,
+	MAPPLE_PSLIST_EXECUTABLE_UNAVAILABLE = 3
 };
+
+enum mapple_pslist_command_line_status {
+	MAPPLE_PSLIST_COMMAND_LINE_AVAILABLE = 1,
+	MAPPLE_PSLIST_COMMAND_LINE_EMPTY = 2,
+	MAPPLE_PSLIST_COMMAND_LINE_UNAVAILABLE = 3,
+	MAPPLE_PSLIST_COMMAND_LINE_TOO_LARGE = 4
+};
+
+struct mapple_pslist_task_data {
+	__u32 pid;
+	__u32 tgid;
+	__u32 ppid;
+	__u64 start_boottime_ns;
+	__u8 state;
+	__u8 reserved[3];
+	char comm[MAPPLE_PSLIST_COMM_SIZE];
+} PACKED_STRUCT;
 
 struct mapple_pslist_record_header {
 	__u32 record_size;
 	__u16 record_type;
 	__u16 reserved;
+	struct mapple_pslist_task_data task;
 } PACKED_STRUCT;
 
-struct mapple_pslist_process_record {
-	struct mapple_pslist_record_header header;
-	__u32 tgid;
-	__u32 ppid;
-	__u64 start_boottime_ns;
+struct mapple_pslist_process_data {
+	__u16 command_line_status;
 	__u16 executable_status;
-	__u16 reserved16;
 	__u32 executable_flags;
 	__u32 command_line_length;
 	__u32 executable_path_length;
@@ -79,15 +94,6 @@ struct mapple_pslist_process_record {
 	__s64 executable_mtime_ns;
 	__s64 executable_ctime_ns;
 	__u64 executable_filesystem_magic;
-} PACKED_STRUCT;
-
-struct mapple_pslist_task_record {
-	struct mapple_pslist_record_header header;
-	__u32 tid;
-	__u32 tgid;
-	__u8 state;
-	__u8 reserved[3];
-	char comm[MAPPLE_PSLIST_COMM_SIZE];
 } PACKED_STRUCT;
 
 #undef PACKED_STRUCT
