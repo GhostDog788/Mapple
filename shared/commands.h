@@ -43,7 +43,7 @@ struct mapple_wire_header {
 #define MAPPLE_PSLIST_GROUP_CONTEXT (1ULL << 3)
 #define MAPPLE_PSLIST_GROUP_RESOURCES (1ULL << 4)
 #define MAPPLE_PSLIST_GROUP_FDS (1ULL << 5)
-#define MAPPLE_PSLIST_GROUP_FD_DETAILS (1ULL << 6)
+#define MAPPLE_PSLIST_GROUP_FDS_DETAILS (1ULL << 6)
 #define MAPPLE_PSLIST_GROUP_NETWORK (1ULL << 7)
 #define MAPPLE_PSLIST_GROUP_MEMORY_MAPS (1ULL << 8)
 #define MAPPLE_PSLIST_GROUP_ELF (1ULL << 9)
@@ -52,12 +52,12 @@ struct mapple_wire_header {
 	(MAPPLE_PSLIST_GROUP_IDENTITY | MAPPLE_PSLIST_GROUP_ENVIRONMENT |             \
 	 MAPPLE_PSLIST_GROUP_SECURITY | MAPPLE_PSLIST_GROUP_CONTEXT |                 \
 	 MAPPLE_PSLIST_GROUP_RESOURCES | MAPPLE_PSLIST_GROUP_FDS |                    \
-	 MAPPLE_PSLIST_GROUP_FD_DETAILS | MAPPLE_PSLIST_GROUP_NETWORK |               \
+	 MAPPLE_PSLIST_GROUP_FDS_DETAILS | MAPPLE_PSLIST_GROUP_NETWORK |              \
 	 MAPPLE_PSLIST_GROUP_MEMORY_MAPS | MAPPLE_PSLIST_GROUP_ELF)
 
 #define MAPPLE_PSLIST_SUPPORTED_GROUPS                                               \
 	(MAPPLE_PSLIST_GROUP_IDENTITY | MAPPLE_PSLIST_GROUP_FDS |                      \
-	 MAPPLE_PSLIST_GROUP_FD_DETAILS | MAPPLE_PSLIST_GROUP_NETWORK)
+	 MAPPLE_PSLIST_GROUP_FDS_DETAILS | MAPPLE_PSLIST_GROUP_NETWORK)
 
 #define MAPPLE_PSLIST_DEFAULT_GROUPS MAPPLE_PSLIST_SUPPORTED_GROUPS
 
@@ -135,20 +135,17 @@ struct mapple_pslist_task_data {
 
 struct mapple_pslist_task_record {
 	struct mapple_pslist_stream_record record;
-	__u64 task_id;
 	__u16 task_type;
 	__u16 reserved;
-	__u32 reserved2;
 	struct mapple_pslist_task_data task;
 } PACKED_STRUCT;
 
 struct mapple_pslist_task_object_link {
 	struct mapple_pslist_stream_record record;
-	__u64 task_id;
-	__u64 object_id;
+	__u32 pid;
 	__u16 object_type;
 	__u16 reserved;
-	__u32 reserved2;
+	__u64 object_id;
 } PACKED_STRUCT;
 
 struct mapple_pslist_object_begin {

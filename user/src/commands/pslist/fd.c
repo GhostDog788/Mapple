@@ -69,8 +69,6 @@ static struct mapple_pslist_fd *mapple_pslist_find_fd(struct mapple_pslist_fd_ta
 
 static void mapple_pslist_free_fd(struct mapple_pslist_fd *fd)
 {
-	free(fd->socket.local.address);
-	free(fd->socket.peer.address);
 	free(fd->path);
 	free(fd->fdinfo);
 }
@@ -82,6 +80,52 @@ void mapple_pslist_free_fd_table(struct mapple_pslist_fd_table *table)
 		mapple_pslist_free_fd(&table->entries[index]);
 	free(table->entries);
 	memset(table, 0, sizeof(*table));
+}
+
+static void mapple_pslist_free_network_entry(struct mapple_pslist_network_entry *entry)
+{
+	free(entry->socket.local.address);
+	free(entry->socket.peer.address);
+}
+
+void mapple_pslist_free_network_table(struct mapple_pslist_network_table *table)
+{
+	size_t index;
+
+	for (index = 0; index < table->count; ++index)
+		mapple_pslist_free_network_entry(&table->entries[index]);
+	free(table->entries);
+	memset(table, 0, sizeof(*table));
+}
+
+static struct mapple_pslist_network_entry *
+mapple_pslist_find_network_entry(struct mapple_pslist_network_table *table, __u32 fd)
+{
+	size_t index;
+
+	for (index = 0; index < table->count; ++index)
+		if (table->entries[index].fd == fd)
+			return &table->entries[index];
+	return NULL;
+}
+
+static int mapple_pslist_network_grow(struct mapple_pslist_network_table *table)
+{
+	struct mapple_pslist_network_entry *entries;
+	size_t capacity;
+
+	if (table->count < table->capacity)
+		return 0;
+	capacity = table->capacity ? table->capacity * 2 :
+				     MAPPLE_PSLIST_FD_INITIAL_CAPACITY;
+	if (capacity < table->capacity || capacity > SIZE_MAX / sizeof(*entries))
+		return EOVERFLOW;
+	entries = realloc(table->entries, capacity * sizeof(*entries));
+	if (!entries)
+		return ENOMEM;
+	table->entries = entries;
+	table->capacity = capacity;
+	return 0;
 }
 
 static void mapple_pslist_decode_time(const struct mapple_pslist_timespec *wire, struct mapple_pslist_time *time)
@@ -220,23 +264,24 @@ static int mapple_pslist_decode_endpoint(const struct mapple_pslist_socket_endpo
 	return 0;
 }
 
-int mapple_pslist_decode_network_record(const void *record, size_t size, struct mapple_pslist_fd_table *table)
+int mapple_pslist_decode_network_record(const void *record, size_t size,
+					struct mapple_pslist_network_table *table)
 {
 	const struct mapple_pslist_network_record *wire = record;
+	struct mapple_pslist_network_entry entry = { 0 };
 	struct mapple_pslist_socket *socket;
-	struct mapple_pslist_fd *fd;
 	const unsigned char *bytes;
 	__u32 local_length, peer_length, number;
 	size_t remaining;
 	int ret;
 	if (size < sizeof(*wire)) return EPROTO;
 	number = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_network_record, fd));
-	fd = mapple_pslist_find_fd(table, number);
-	if (!fd || fd->network_available || fd->kind != MAPPLE_PSLIST_FD_SOCKET) return EPROTO;
+	if (mapple_pslist_find_network_entry(table, number)) return EPROTO;
 	local_length = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_network_record, local_address_length));
 	peer_length = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_network_record, peer_address_length));
-	if (wire->reserved || sizeof(*wire) + (__u64)local_length + peer_length > size) return EPROTO;
-	socket = &fd->socket;
+	if (wire->reserved || sizeof(*wire) + (__u64)local_length + peer_length != size) return EPROTO;
+	entry.fd = number;
+	socket = &entry.socket;
 #define SOCKET_U16(field) socket->field = mapple_pslist_fd_read_u16(&wire->socket, offsetof(struct mapple_pslist_socket_data, field))
 #define SOCKET_U32(field) socket->field = mapple_pslist_fd_read_u32(&wire->socket, offsetof(struct mapple_pslist_socket_data, field))
 	SOCKET_U16(family); SOCKET_U16(type); SOCKET_U16(protocol); SOCKET_U16(socket_state); SOCKET_U16(protocol_state); SOCKET_U16(shutdown);
@@ -254,7 +299,12 @@ int mapple_pslist_decode_network_record(const void *record, size_t size, struct 
 		free(socket->local.address); free(socket->peer.address); socket->local.address = NULL; socket->peer.address = NULL;
 		return ret ? ret : EPROTO;
 	}
-	fd->network_available = 1;
+	ret = mapple_pslist_network_grow(table);
+	if (ret) {
+		mapple_pslist_free_network_entry(&entry);
+		return ret;
+	}
+	table->entries[table->count++] = entry;
 	return 0;
 }
 
@@ -1119,12 +1169,10 @@ static int mapple_pslist_print_fd(const struct mapple_pslist_fd *fd,
 			   fd->stat.device_minor, (uint64_t)fd->stat.inode,
 			   (uint64_t)fd->stat.mount_id) < 0)
 		ret = EIO;
-	if (!ret && printf(",\n%*s\"details\": ", indent + 2, "") < 0)
+	if (!ret && table->has_details &&
+	    printf(",\n%*s\"details\": ", indent + 2, "") < 0)
 		ret = EIO;
-	if (!ret && !table->has_details) {
-		if (fputs("null", stdout) == EOF)
-			ret = EIO;
-	} else if (!ret) {
+	if (!ret && table->has_details) {
 		if (printf("{\n%*s\"file_mode\": %" PRIu64 ",\n%*s\"position\": %" PRId64
 			   ",\n%*s\"version\": %" PRIu64 ",\n%*s\"credentials\": {"
 			   "\"uid\": %u, \"gid\": %u, \"effective_uid\": %u, "
@@ -1162,12 +1210,6 @@ static int mapple_pslist_print_fd(const struct mapple_pslist_fd *fd,
 		if (!ret && printf("}\n%*s}", indent + 2, "") < 0)
 			ret = EIO;
 	}
-	if (!ret && printf(",\n%*s\"network\": ", indent + 2, "") < 0)
-		ret = EIO;
-	if (!ret && fd->network_available)
-		ret = mapple_pslist_print_socket(&fd->socket, indent + 2);
-	else if (!ret && fputs("null", stdout) == EOF)
-		ret = EIO;
 	if (!ret && putchar('\n') == EOF)
 		ret = EIO;
 	if (!ret)
@@ -1181,33 +1223,13 @@ int mapple_pslist_print_json_fd_table(const struct mapple_pslist_fd_table *table
 				       int indent)
 {
 	const char *fds_status;
-	const char *details_status = NULL;
-	const char *network_status = NULL;
 	size_t index;
 	int ret;
 
 	fds_status = mapple_pslist_object_status_name(table->fds_status);
-	if (table->has_details)
-		details_status = mapple_pslist_object_status_name(table->details_status);
-	if (table->has_network)
-		network_status = mapple_pslist_object_status_name(table->network_status);
-	if (!table->has_fds || !fds_status || (table->has_details && !details_status) ||
-	    (table->has_network && !network_status))
+	if (!table->has_fds || !fds_status)
 		return EPROTO;
-	if (printf("{\n%*s\"fds_status\": \"%s\",\n%*s\"fd_details_status\": ",
-		   indent + 2, "", fds_status, indent + 2, "") < 0)
-		return EIO;
-	if (details_status) {
-		if (printf("\"%s\"", details_status) < 0)
-			return EIO;
-	} else if (fputs("null", stdout) == EOF)
-		return EIO;
-	if (printf(",\n%*s\"network_status\": ", indent + 2, "") < 0)
-		return EIO;
-	if (network_status) {
-		if (printf("\"%s\"", network_status) < 0)
-			return EIO;
-	} else if (fputs("null", stdout) == EOF)
+	if (printf("{\n%*s\"status\": \"%s\"", indent + 2, "", fds_status) < 0)
 		return EIO;
 	if (printf(",\n%*s\"fds\": [", indent + 2, "") < 0)
 		return EIO;
@@ -1218,9 +1240,46 @@ int mapple_pslist_print_json_fd_table(const struct mapple_pslist_fd_table *table
 		if (ret)
 			return ret;
 	}
+	ret = 0;
 	if (table->count && putchar('\n') == EOF)
+		ret = EIO;
+	if (!ret && table->count)
+		ret = mapple_pslist_print_json_indent(indent + 2);
+	if (!ret && fputs("]\n", stdout) == EOF)
+		ret = EIO;
+	if (!ret)
+		ret = mapple_pslist_print_json_indent(indent);
+	if (!ret && putchar('}') == EOF)
+		ret = EIO;
+	return ret;
+}
+
+int mapple_pslist_print_json_network_table(
+	const struct mapple_pslist_network_table *table, int indent)
+{
+	const char *status = mapple_pslist_object_status_name(table->status);
+	size_t index;
+	int ret;
+
+	if (!table->has_records || !status)
+		return EPROTO;
+	if (printf("{\n%*s\"status\": \"%s\",\n%*s\"sockets\": [",
+		   indent + 2, "", status, indent + 2, "") < 0)
 		return EIO;
-	ret = mapple_pslist_print_json_indent(indent + 2);
+	for (index = 0; index < table->count; ++index) {
+		if (printf("%s%*s{\"fd\": %u, \"network\": ", index ? ",\n" : "\n",
+			   indent + 4, "", table->entries[index].fd) < 0)
+			return EIO;
+		ret = mapple_pslist_print_socket(&table->entries[index].socket,
+						  indent + 4);
+		if (ret || putchar('}') == EOF)
+			return ret ? ret : EIO;
+	}
+	ret = 0;
+	if (table->count && putchar('\n') == EOF)
+		ret = EIO;
+	if (!ret && table->count)
+		ret = mapple_pslist_print_json_indent(indent + 2);
 	if (!ret && fputs("]\n", stdout) == EOF)
 		ret = EIO;
 	if (!ret)

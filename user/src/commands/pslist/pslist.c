@@ -34,7 +34,7 @@ static const struct mapple_pslist_group_name mapple_pslist_group_names[] = {
 	{ "context", MAPPLE_PSLIST_GROUP_CONTEXT },
 	{ "resources", MAPPLE_PSLIST_GROUP_RESOURCES },
 	{ "fds", MAPPLE_PSLIST_GROUP_FDS },
-	{ "fd-details", MAPPLE_PSLIST_GROUP_FD_DETAILS },
+	{ "fds-details", MAPPLE_PSLIST_GROUP_FDS_DETAILS },
 	{ "network", MAPPLE_PSLIST_GROUP_NETWORK },
 	{ "memory-maps", MAPPLE_PSLIST_GROUP_MEMORY_MAPS },
 	{ "elf", MAPPLE_PSLIST_GROUP_ELF },
@@ -172,13 +172,13 @@ static int mapple_pslist_grow(void **entries, size_t *capacity, size_t count,
 	return 0;
 }
 
-static struct mapple_pslist_task *mapple_pslist_find_task(struct mapple_pslist_snapshot *snapshot,
-						  __u64 task_id)
+static struct mapple_pslist_task *mapple_pslist_find_task(
+	struct mapple_pslist_snapshot *snapshot, __u32 pid)
 {
 	size_t index;
 
 	for (index = 0; index < snapshot->task_count; ++index)
-		if (snapshot->tasks[index].task_id == task_id)
+		if (snapshot->tasks[index].pid == pid)
 			return &snapshot->tasks[index];
 	return NULL;
 }
@@ -205,6 +205,18 @@ mapple_pslist_find_fd_table(struct mapple_pslist_snapshot *snapshot, __u64 objec
 	return NULL;
 }
 
+static struct mapple_pslist_network_table *
+mapple_pslist_find_network_table(struct mapple_pslist_snapshot *snapshot,
+					 __u64 object_id)
+{
+	size_t index;
+
+	for (index = 0; index < snapshot->network_table_count; ++index)
+		if (snapshot->network_tables[index].object_id == object_id)
+			return &snapshot->network_tables[index];
+	return NULL;
+}
+
 static int mapple_pslist_add_task(struct mapple_pslist_snapshot *snapshot,
 				  const struct mapple_pslist_task_record *wire)
 {
@@ -217,8 +229,6 @@ static int mapple_pslist_add_task(struct mapple_pslist_snapshot *snapshot,
 		return ret;
 	task = &snapshot->tasks[snapshot->task_count];
 	memset(task, 0, sizeof(*task));
-	task->task_id = mapple_pslist_read_u64(wire,
-		offsetof(struct mapple_pslist_task_record, task_id));
 	task->type = mapple_pslist_read_u16(wire,
 		offsetof(struct mapple_pslist_task_record, task_type));
 	task->pid = mapple_pslist_read_u32(&wire->task,
@@ -231,12 +241,12 @@ static int mapple_pslist_add_task(struct mapple_pslist_snapshot *snapshot,
 		offsetof(struct mapple_pslist_task_data, start_boottime_ns));
 	task->state = wire->task.state;
 	memcpy(task->comm, wire->task.comm, sizeof(task->comm));
-	if (!task->task_id || !task->pid || !task->tgid || wire->reserved || wire->reserved2 ||
+	if (!task->pid || !task->tgid || wire->reserved ||
 	    wire->task.reserved[0] || wire->task.reserved[1] || wire->task.reserved[2] ||
 	    task->type < MAPPLE_PSLIST_TASK_THREAD || task->type > MAPPLE_PSLIST_TASK_KTHREAD ||
 	    !mapple_pslist_state_name(task->state) ||
 	    !memchr(task->comm, '\0', sizeof(task->comm)) ||
-	    mapple_pslist_find_task(snapshot, task->task_id))
+	    mapple_pslist_find_task(snapshot, task->pid))
 		return EPROTO;
 	if ((task->type == MAPPLE_PSLIST_TASK_PROCESS && task->pid != task->tgid) ||
 	    (task->type == MAPPLE_PSLIST_TASK_THREAD && task->pid == task->tgid))
@@ -281,6 +291,26 @@ static int mapple_pslist_add_fd_table(struct mapple_pslist_snapshot *snapshot, _
 	return 0;
 }
 
+static int mapple_pslist_add_network_table(struct mapple_pslist_snapshot *snapshot,
+					    __u64 object_id)
+{
+	struct mapple_pslist_network_table *table;
+	int ret;
+
+	if (mapple_pslist_find_network_table(snapshot, object_id))
+		return EPROTO;
+	ret = mapple_pslist_grow((void **)&snapshot->network_tables,
+				 &snapshot->network_table_capacity,
+				 snapshot->network_table_count,
+				 sizeof(*snapshot->network_tables));
+	if (ret)
+		return ret;
+	table = &snapshot->network_tables[snapshot->network_table_count++];
+	memset(table, 0, sizeof(*table));
+	table->object_id = object_id;
+	return 0;
+}
+
 static int mapple_pslist_decode_snapshot_begin(struct mapple_pslist_snapshot *snapshot,
 					       const struct mapple_pslist_snapshot_begin *wire)
 {
@@ -304,36 +334,32 @@ static int mapple_pslist_decode_link(struct mapple_pslist_snapshot *snapshot,
 				     __u64 group)
 {
 	struct mapple_pslist_task *task;
-	__u64 task_id;
 	__u64 object_id;
+	__u32 pid;
 	__u16 object_type;
 	__u64 *slot;
 
-	task_id = mapple_pslist_read_u64(wire,
-		offsetof(struct mapple_pslist_task_object_link, task_id));
+	pid = mapple_pslist_read_u32(wire,
+		offsetof(struct mapple_pslist_task_object_link, pid));
 	object_id = mapple_pslist_read_u64(wire,
 		offsetof(struct mapple_pslist_task_object_link, object_id));
 	object_type = mapple_pslist_read_u16(wire,
 		offsetof(struct mapple_pslist_task_object_link, object_type));
-	task = mapple_pslist_find_task(snapshot, task_id);
-	if (!task || !object_id || wire->reserved || wire->reserved2)
+	task = mapple_pslist_find_task(snapshot, pid);
+	if (!task || !object_id || wire->reserved)
 		return EPROTO;
 	switch (group) {
 	case MAPPLE_PSLIST_GROUP_IDENTITY:
 		if (object_type != MAPPLE_PSLIST_OBJECT_MM) return EPROTO;
-		slot = &task->identity_object_id;
+		slot = &task->group_object_ids[MAPPLE_PSLIST_OUTPUT_IDENTITY];
 		break;
 	case MAPPLE_PSLIST_GROUP_FDS:
 		if (object_type != MAPPLE_PSLIST_OBJECT_FILES) return EPROTO;
-		slot = &task->fds_object_id;
-		break;
-	case MAPPLE_PSLIST_GROUP_FD_DETAILS:
-		if (object_type != MAPPLE_PSLIST_OBJECT_FILES) return EPROTO;
-		slot = &task->fd_details_object_id;
+		slot = &task->group_object_ids[MAPPLE_PSLIST_OUTPUT_FDS];
 		break;
 	case MAPPLE_PSLIST_GROUP_NETWORK:
 		if (object_type != MAPPLE_PSLIST_OBJECT_FILES) return EPROTO;
-		slot = &task->network_object_id;
+		slot = &task->group_object_ids[MAPPLE_PSLIST_OUTPUT_NETWORK];
 		break;
 	default:
 		return EPROTO;
@@ -357,11 +383,12 @@ static int mapple_pslist_decode_object_begin(struct mapple_pslist_snapshot *snap
 		return EPROTO;
 	if (group == MAPPLE_PSLIST_GROUP_IDENTITY && object_type == MAPPLE_PSLIST_OBJECT_MM)
 		return mapple_pslist_add_identity(snapshot, object_id);
-	if ((group == MAPPLE_PSLIST_GROUP_FDS ||
-	     group == MAPPLE_PSLIST_GROUP_FD_DETAILS ||
-	     group == MAPPLE_PSLIST_GROUP_NETWORK) &&
+	if (group == MAPPLE_PSLIST_GROUP_FDS &&
 	    object_type == MAPPLE_PSLIST_OBJECT_FILES)
 		return mapple_pslist_add_fd_table(snapshot, object_id);
+	if (group == MAPPLE_PSLIST_GROUP_NETWORK &&
+	    object_type == MAPPLE_PSLIST_OBJECT_FILES)
+		return mapple_pslist_add_network_table(snapshot, object_id);
 	return EPROTO;
 }
 
@@ -456,6 +483,7 @@ static int mapple_pslist_decode_object_end(struct mapple_pslist_snapshot *snapsh
 {
 	struct mapple_pslist_identity *identity;
 	struct mapple_pslist_fd_table *table;
+	struct mapple_pslist_network_table *network_table;
 	__u64 object_id = mapple_pslist_read_u64(
 		wire, offsetof(struct mapple_pslist_object_end, object_id));
 	__u16 status = mapple_pslist_read_u16(
@@ -472,22 +500,29 @@ static int mapple_pslist_decode_object_end(struct mapple_pslist_snapshot *snapsh
 		identity->status = status;
 		return 0;
 	}
-	table = mapple_pslist_find_fd_table(snapshot, object_id);
-	if (!table)
-		return EPROTO;
 	if (group == MAPPLE_PSLIST_GROUP_FDS) {
+		size_t index;
+		size_t details_count = 0;
+
+		table = mapple_pslist_find_fd_table(snapshot, object_id);
+		if (!table)
+			return EPROTO;
 		if (table->has_fds || count != table->count) return EPROTO;
 		table->has_fds = 1; table->fds_status = status;
-	} else if (group == MAPPLE_PSLIST_GROUP_FD_DETAILS) {
-		size_t index, actual = 0;
-		for (index = 0; index < table->count; ++index) actual += table->entries[index].details_available;
-		if (table->has_details || count != actual) return EPROTO;
-		table->has_details = 1; table->details_status = status;
+		if (snapshot->effective_groups & MAPPLE_PSLIST_GROUP_FDS_DETAILS) {
+			for (index = 0; index < table->count; ++index)
+				details_count += table->entries[index].details_available;
+			if (details_count != table->count)
+				return EPROTO;
+			table->has_details = 1;
+		}
 	} else if (group == MAPPLE_PSLIST_GROUP_NETWORK) {
-		size_t index, actual = 0;
-		for (index = 0; index < table->count; ++index) actual += table->entries[index].network_available;
-		if (table->has_network || count != actual) return EPROTO;
-		table->has_network = 1; table->network_status = status;
+		network_table = mapple_pslist_find_network_table(snapshot, object_id);
+		if (!network_table || network_table->has_records ||
+		    count != network_table->count)
+			return EPROTO;
+		network_table->has_records = 1;
+		network_table->status = status;
 	} else return EPROTO;
 	return 0;
 }
@@ -579,12 +614,12 @@ static int mapple_pslist_read_snapshot(int session_fd, struct mapple_pslist_snap
 		case MAPPLE_PSLIST_STREAM_FD_DETAILS: {
 			__u64 id = mapple_pslist_read_u64(record, offsetof(struct mapple_pslist_fd_details_record, object_id));
 			struct mapple_pslist_fd_table *table = mapple_pslist_find_fd_table(snapshot, id);
-			ret = !table || group != MAPPLE_PSLIST_GROUP_FD_DETAILS ? EPROTO : mapple_pslist_decode_fd_details_record(record, record_size, table);
+			ret = !table || group != MAPPLE_PSLIST_GROUP_FDS_DETAILS ? EPROTO : mapple_pslist_decode_fd_details_record(record, record_size, table);
 			break;
 		}
 		case MAPPLE_PSLIST_STREAM_NETWORK: {
 			__u64 id = mapple_pslist_read_u64(record, offsetof(struct mapple_pslist_network_record, object_id));
-			struct mapple_pslist_fd_table *table = mapple_pslist_find_fd_table(snapshot, id);
+			struct mapple_pslist_network_table *table = mapple_pslist_find_network_table(snapshot, id);
 			ret = !table || group != MAPPLE_PSLIST_GROUP_NETWORK ? EPROTO : mapple_pslist_decode_network_record(record, record_size, table);
 			break;
 		}
@@ -619,9 +654,12 @@ static void mapple_pslist_free_snapshot(struct mapple_pslist_snapshot *snapshot)
 	}
 	for (index = 0; index < snapshot->fd_table_count; ++index)
 		mapple_pslist_free_fd_table(&snapshot->fd_tables[index]);
+	for (index = 0; index < snapshot->network_table_count; ++index)
+		mapple_pslist_free_network_table(&snapshot->network_tables[index]);
 	free(snapshot->tasks);
 	free(snapshot->identities);
 	free(snapshot->fd_tables);
+	free(snapshot->network_tables);
 	memset(snapshot, 0, sizeof(*snapshot));
 }
 
@@ -655,25 +693,41 @@ static int mapple_pslist_print_group_names(__u64 groups)
 	return putchar(']') == EOF ? EIO : 0;
 }
 
-static int mapple_pslist_print_task(const struct mapple_pslist_task *task, int indent)
+static int mapple_pslist_print_task(const struct mapple_pslist_task *task,
+				     __u64 groups, int indent)
 {
 	const char *state = mapple_pslist_state_name(task->state);
+	int first_group = 1;
 	int ret;
 
 	if (!state) return EPROTO;
 	ret = mapple_pslist_print_json_indent(indent);
 	if (ret) return ret;
-	if (printf("{\"task_id\": %" PRIu64 ", \"pid\": %u, \"tgid\": %u, \"ppid\": %u, "
+	if (printf("{\"pid\": %u, \"tgid\": %u, \"ppid\": %u, "
 		   "\"start_boottime_ns\": %" PRIu64 ", \"state\": \"%s\", \"comm\": ",
-		   (uint64_t)task->task_id, task->pid, task->tgid, task->ppid,
+		   task->pid, task->tgid, task->ppid,
 		   (uint64_t)task->start_boottime_ns, state) < 0) return EIO;
 	ret = mapple_pslist_print_json_bytes((const unsigned char *)task->comm,
 					     strnlen(task->comm, sizeof(task->comm)));
 	if (ret) return ret;
-	return printf(", \"groups\": {\"identity\": %" PRIu64 ", \"fds\": %" PRIu64
-		      ", \"fd-details\": %" PRIu64 ", \"network\": %" PRIu64 "}}",
-		      (uint64_t)task->identity_object_id, (uint64_t)task->fds_object_id,
-		      (uint64_t)task->fd_details_object_id, (uint64_t)task->network_object_id) < 0 ? EIO : 0;
+	if (fputs(", \"groups\": {", stdout) == EOF)
+		return EIO;
+#define PRINT_TASK_GROUP(mask, name, index)                                      \
+	do {                                                                        \
+		if ((groups) & (mask)) {                                               \
+			if (printf("%s\"%s\": %" PRIu64, first_group ? "" : ", ", \
+				   (name), (uint64_t)task->group_object_ids[(index)]) < 0) \
+				return EIO;                                             \
+			first_group = 0;                                               \
+		}                                                                   \
+	} while (0)
+	PRINT_TASK_GROUP(MAPPLE_PSLIST_GROUP_IDENTITY, "identity",
+			 MAPPLE_PSLIST_OUTPUT_IDENTITY);
+	PRINT_TASK_GROUP(MAPPLE_PSLIST_GROUP_FDS, "fds", MAPPLE_PSLIST_OUTPUT_FDS);
+	PRINT_TASK_GROUP(MAPPLE_PSLIST_GROUP_NETWORK, "network",
+			 MAPPLE_PSLIST_OUTPUT_NETWORK);
+#undef PRINT_TASK_GROUP
+	return fputs("}}", stdout) == EOF ? EIO : 0;
 }
 
 static int mapple_pslist_print_argv(const struct mapple_pslist_identity *identity)
@@ -800,13 +854,15 @@ static int mapple_pslist_print_tasks(const struct mapple_pslist_snapshot *snapsh
 			if (fputs(first ? "\n      {\"process\": " :
 					  ",\n      {\"process\": ", stdout) == EOF)
 				return EIO;
-			ret = mapple_pslist_print_task(&snapshot->tasks[index], 0);
+			ret = mapple_pslist_print_task(&snapshot->tasks[index],
+						      snapshot->effective_groups, 0);
 			if (ret || fputs(", \"threads\": [", stdout) == EOF)
 				return ret ? ret : EIO;
 			for (thread = index + 1; thread < group_end; ++thread) {
 				if (fputs(thread == index + 1 ? "\n" : ",\n", stdout) == EOF)
 					return EIO;
-				ret = mapple_pslist_print_task(&snapshot->tasks[thread], 8);
+				ret = mapple_pslist_print_task(&snapshot->tasks[thread],
+							      snapshot->effective_groups, 8);
 				if (ret)
 					return ret;
 			}
@@ -835,7 +891,8 @@ static int mapple_pslist_print_tasks(const struct mapple_pslist_snapshot *snapsh
 			for (; index < group_end; ++index) {
 				if (fputs(first ? "\n" : ",\n", stdout) == EOF)
 					return EIO;
-				ret = mapple_pslist_print_task(&snapshot->tasks[index], 6);
+				ret = mapple_pslist_print_task(&snapshot->tasks[index],
+							      snapshot->effective_groups, 6);
 				if (ret)
 					return ret;
 				first = 0;
@@ -854,7 +911,8 @@ static int mapple_pslist_print_tasks(const struct mapple_pslist_snapshot *snapsh
 			continue;
 		if (fputs(first ? "\n" : ",\n", stdout) == EOF)
 			return EIO;
-		ret = mapple_pslist_print_task(&snapshot->tasks[index], 6);
+		ret = mapple_pslist_print_task(&snapshot->tasks[index],
+					      snapshot->effective_groups, 6);
 		if (ret)
 			return ret;
 		first = 0;
@@ -867,25 +925,67 @@ static int mapple_pslist_print_tasks(const struct mapple_pslist_snapshot *snapsh
 static int mapple_pslist_print_objects(const struct mapple_pslist_snapshot *snapshot)
 {
 	size_t index;
+	int first = 1;
 	int ret;
 
-	if (fputs("  \"objects\": {\n    \"identity\": {", stdout) == EOF) return EIO;
-	for (index = 0; index < snapshot->identity_count; ++index) {
-		if (printf("%s\n      \"%" PRIu64 "\": ", index ? "," : "",
-			   (uint64_t)snapshot->identities[index].object_id) < 0) return EIO;
-		ret = mapple_pslist_print_identity(&snapshot->identities[index], 6);
-		if (ret) return ret;
+	if (fputs("  \"objects\": {", stdout) == EOF)
+		return EIO;
+	if (snapshot->effective_groups & MAPPLE_PSLIST_GROUP_IDENTITY) {
+		if (fputs("\n    \"identity\": {", stdout) == EOF)
+			return EIO;
+		for (index = 0; index < snapshot->identity_count; ++index) {
+			if (printf("%s\n      \"%" PRIu64 "\": ", index ? "," : "",
+				   (uint64_t)snapshot->identities[index].object_id) < 0)
+				return EIO;
+			ret = mapple_pslist_print_identity(&snapshot->identities[index], 6);
+			if (ret)
+				return ret;
+		}
+		if (snapshot->identity_count && fputs("\n    ", stdout) == EOF)
+			return EIO;
+		if (putchar('}') == EOF)
+			return EIO;
+		first = 0;
 	}
-	if (snapshot->identity_count && fputs("\n    ", stdout) == EOF) return EIO;
-	if (fputs("},\n    \"fd_tables\": {", stdout) == EOF) return EIO;
-	for (index = 0; index < snapshot->fd_table_count; ++index) {
-		if (printf("%s\n      \"%" PRIu64 "\": ", index ? "," : "",
-			   (uint64_t)snapshot->fd_tables[index].object_id) < 0) return EIO;
-		ret = mapple_pslist_print_json_fd_table(&snapshot->fd_tables[index], 6);
-		if (ret) return ret;
+	if (snapshot->effective_groups & MAPPLE_PSLIST_GROUP_FDS) {
+		if (fputs(first ? "\n    \"fds\": {" : ",\n    \"fds\": {", stdout) == EOF)
+			return EIO;
+		for (index = 0; index < snapshot->fd_table_count; ++index) {
+			if (printf("%s\n      \"%" PRIu64 "\": ", index ? "," : "",
+				   (uint64_t)snapshot->fd_tables[index].object_id) < 0)
+				return EIO;
+			ret = mapple_pslist_print_json_fd_table(&snapshot->fd_tables[index], 6);
+			if (ret)
+				return ret;
+		}
+		if (snapshot->fd_table_count && fputs("\n    ", stdout) == EOF)
+			return EIO;
+		if (putchar('}') == EOF)
+			return EIO;
+		first = 0;
 	}
-	if (snapshot->fd_table_count && fputs("\n    ", stdout) == EOF) return EIO;
-	return fputs("}\n  }\n", stdout) == EOF ? EIO : 0;
+	if (snapshot->effective_groups & MAPPLE_PSLIST_GROUP_NETWORK) {
+		if (fputs(first ? "\n    \"network\": {" :
+				  ",\n    \"network\": {", stdout) == EOF)
+			return EIO;
+		for (index = 0; index < snapshot->network_table_count; ++index) {
+			if (printf("%s\n      \"%" PRIu64 "\": ", index ? "," : "",
+				   (uint64_t)snapshot->network_tables[index].object_id) < 0)
+				return EIO;
+			ret = mapple_pslist_print_json_network_table(
+				&snapshot->network_tables[index], 6);
+			if (ret)
+				return ret;
+		}
+		if (snapshot->network_table_count && fputs("\n    ", stdout) == EOF)
+			return EIO;
+		if (putchar('}') == EOF)
+			return EIO;
+		first = 0;
+	}
+	if (!first && putchar('\n') == EOF)
+		return EIO;
+	return fputs("  }\n", stdout) == EOF ? EIO : 0;
 }
 
 static int mapple_pslist_print_snapshot(struct mapple_pslist_snapshot *snapshot)
@@ -948,7 +1048,7 @@ int run_pslist_groups(int session_fd, const char *const *group_names, size_t gro
 int run_pslist(int session_fd)
 {
 	static const char *const default_groups[] = {
-		"identity", "fds", "fd-details", "network",
+		"identity", "fds", "fds-details", "network",
 	};
 
 	return run_pslist_groups(session_fd, default_groups,

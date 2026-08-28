@@ -26,10 +26,21 @@
 
 #define MAPPLE_PSLIST_OBJECT_HASH_BITS 8
 
+enum mapple_pslist_group_index {
+	MAPPLE_PSLIST_GROUP_INDEX_IDENTITY,
+	MAPPLE_PSLIST_GROUP_INDEX_FDS,
+	MAPPLE_PSLIST_GROUP_INDEX_NETWORK,
+	MAPPLE_PSLIST_GROUP_INDEX_COUNT,
+};
+
+struct mapple_pslist_group {
+	u64 next_object_id;
+};
+
 struct mapple_pslist_snapshot_object {
 	struct hlist_node node;
 	const void *key;
-	u64 id;
+	u64 group_ids[MAPPLE_PSLIST_GROUP_INDEX_COUNT];
 	u16 type;
 	struct mm_struct *mm;
 };
@@ -38,8 +49,7 @@ struct mapple_pslist_snapshot {
 	DECLARE_HASHTABLE(objects, MAPPLE_PSLIST_OBJECT_HASH_BITS);
 	u64 requested_groups;
 	u64 effective_groups;
-	u64 next_task_id;
-	u64 next_object_id;
+	struct mapple_pslist_group groups[MAPPLE_PSLIST_GROUP_INDEX_COUNT];
 	u32 task_count;
 	u32 object_count;
 	bool partial;
@@ -63,7 +73,7 @@ static void mapple_pslist_encode_record(struct mapple_pslist_stream_record *reco
 
 static u64 mapple_pslist_effective_groups(u64 requested)
 {
-	if (requested & (MAPPLE_PSLIST_GROUP_FD_DETAILS | MAPPLE_PSLIST_GROUP_NETWORK))
+	if (requested & (MAPPLE_PSLIST_GROUP_FDS_DETAILS | MAPPLE_PSLIST_GROUP_NETWORK))
 		requested |= MAPPLE_PSLIST_GROUP_FDS;
 	return requested;
 }
@@ -121,11 +131,21 @@ static int mapple_pslist_add_object(struct mapple_pslist_snapshot *snapshot, con
 	object->key = key;
 	object->type = type;
 	object->mm = mm;
-	object->id = snapshot->next_object_id++;
 	hash_add(snapshot->objects, &object->node,
 		 mapple_pslist_object_hash(key, type));
 	*result = object;
 	return 0;
+}
+
+static u64 mapple_pslist_group_object_id(struct mapple_pslist_snapshot *snapshot,
+					 struct mapple_pslist_snapshot_object *object,
+					 enum mapple_pslist_group_index group_index)
+{
+	u64 *object_id = &object->group_ids[group_index];
+
+	if (!*object_id)
+		*object_id = snapshot->groups[group_index].next_object_id++;
+	return *object_id;
 }
 
 static void mapple_pslist_release_snapshot(struct mapple_pslist_snapshot *snapshot)
@@ -196,21 +216,14 @@ static int mapple_pslist_task_type(struct task_struct *task, pid_t pid, pid_t tg
 }
 
 static int mapple_pslist_write_task(struct mapple_command_context *context,
-				    struct task_struct *task, u64 task_id)
+				    struct task_struct *task, pid_t pid, pid_t tgid)
 {
 	struct mapple_pslist_task_record record = { 0 };
 	u16 task_type;
-	pid_t tgid;
-	pid_t pid;
 
-	pid = task_pid_nr_ns(task, &init_pid_ns);
-	tgid = task_tgid_nr_ns(task, &init_pid_ns);
-	if (!pid || !tgid)
-		return -ESRCH;
 	task_type = mapple_pslist_task_type(task, pid, tgid);
 	mapple_pslist_encode_record(&record.record, sizeof(record),
 				    MAPPLE_PSLIST_STREAM_TASK, 0);
-	put_unaligned_be64(task_id, &record.task_id);
 	put_unaligned_be16(task_type, &record.task_type);
 	put_unaligned_be32(pid, &record.task.pid);
 	put_unaligned_be32(tgid, &record.task.tgid);
@@ -221,14 +234,14 @@ static int mapple_pslist_write_task(struct mapple_command_context *context,
 	return mapple_command_write(context, &record, sizeof(record));
 }
 
-static int mapple_pslist_write_link(struct mapple_command_context *context, u64 task_id,
+static int mapple_pslist_write_link(struct mapple_command_context *context, pid_t pid,
 				    u64 object_id, u16 object_type, u64 group)
 {
 	struct mapple_pslist_task_object_link link = { 0 };
 
 	mapple_pslist_encode_record(&link.record, sizeof(link),
 				    MAPPLE_PSLIST_STREAM_TASK_OBJECT_LINK, group);
-	put_unaligned_be64(task_id, &link.task_id);
+	put_unaligned_be32(pid, &link.pid);
 	put_unaligned_be64(object_id, &link.object_id);
 	put_unaligned_be16(object_type, &link.object_type);
 	return mapple_command_write(context, &link, sizeof(link));
@@ -471,10 +484,11 @@ release:
 
 static int mapple_pslist_process_mm(struct mapple_command_context *context,
 				    struct mapple_pslist_snapshot *snapshot,
-				    struct task_struct *task, u64 task_id)
+				    struct task_struct *task, pid_t pid)
 {
 	struct mapple_pslist_snapshot_object *object;
 	struct mm_struct *mm;
+	u64 object_id;
 	bool is_new = false;
 	int ret;
 
@@ -495,12 +509,14 @@ static int mapple_pslist_process_mm(struct mapple_command_context *context,
 	} else {
 		mmput(mm);
 	}
-	ret = mapple_pslist_write_link(context, task_id, object->id,
+	object_id = mapple_pslist_group_object_id(snapshot, object,
+						  MAPPLE_PSLIST_GROUP_INDEX_IDENTITY);
+	ret = mapple_pslist_write_link(context, pid, object_id,
 				       MAPPLE_PSLIST_OBJECT_MM,
 				       MAPPLE_PSLIST_GROUP_IDENTITY);
 	if (!ret && is_new)
 		ret = mapple_pslist_write_identity_object(context, task, object->mm,
-						  object->id, &snapshot->object_count,
+						  object_id, &snapshot->object_count,
 						  &snapshot->partial);
 	return ret;
 }
@@ -516,34 +532,29 @@ static struct files_struct *mapple_pslist_task_files(struct task_struct *task)
 }
 
 static int mapple_pslist_write_files_links(struct mapple_command_context *context,
-					   u64 task_id, u64 object_id, u64 groups)
+					   pid_t pid, u64 fds_object_id,
+					   u64 network_object_id, u64 groups)
 {
-	static const u64 file_groups[] = {
-		MAPPLE_PSLIST_GROUP_FDS,
-		MAPPLE_PSLIST_GROUP_FD_DETAILS,
-		MAPPLE_PSLIST_GROUP_NETWORK,
-	};
-	size_t index;
-	int ret = 0;
+	int ret;
 
-	for (index = 0; index < ARRAY_SIZE(file_groups); ++index) {
-		if (!(groups & file_groups[index]))
-			continue;
-		ret = mapple_pslist_write_link(context, task_id, object_id,
+	ret = mapple_pslist_write_link(context, pid, fds_object_id,
+				       MAPPLE_PSLIST_OBJECT_FILES,
+				       MAPPLE_PSLIST_GROUP_FDS);
+	if (!ret && (groups & MAPPLE_PSLIST_GROUP_NETWORK))
+		ret = mapple_pslist_write_link(context, pid, network_object_id,
 					       MAPPLE_PSLIST_OBJECT_FILES,
-					       file_groups[index]);
-		if (ret)
-			break;
-	}
+					       MAPPLE_PSLIST_GROUP_NETWORK);
 	return ret;
 }
 
 static int mapple_pslist_process_files(struct mapple_command_context *context,
 				       struct mapple_pslist_snapshot *snapshot,
-				       struct task_struct *task, u64 task_id)
+				       struct task_struct *task, pid_t pid)
 {
 	struct mapple_pslist_snapshot_object *object;
 	struct files_struct *files;
+	u64 network_object_id = 0;
+	u64 fds_object_id;
 	bool is_new = false;
 	int ret;
 
@@ -560,10 +571,16 @@ static int mapple_pslist_process_files(struct mapple_command_context *context,
 			return ret;
 		is_new = true;
 	}
-	ret = mapple_pslist_write_files_links(context, task_id, object->id,
-					      snapshot->effective_groups);
+	fds_object_id = mapple_pslist_group_object_id(snapshot, object,
+						     MAPPLE_PSLIST_GROUP_INDEX_FDS);
+	if (snapshot->effective_groups & MAPPLE_PSLIST_GROUP_NETWORK)
+		network_object_id = mapple_pslist_group_object_id(
+			snapshot, object, MAPPLE_PSLIST_GROUP_INDEX_NETWORK);
+	ret = mapple_pslist_write_files_links(context, pid, fds_object_id,
+					      network_object_id, snapshot->effective_groups);
 	if (!ret && is_new)
-		ret = mapple_pslist_write_files_objects(context, task, files, object->id,
+		ret = mapple_pslist_write_files_objects(context, task, files,
+						 fds_object_id, network_object_id,
 						 snapshot->effective_groups,
 						 &snapshot->object_count,
 						 &snapshot->partial);
@@ -574,16 +591,21 @@ static int mapple_pslist_process_task(struct mapple_command_context *context,
 				      struct mapple_pslist_snapshot *snapshot,
 				      struct task_struct *task)
 {
-	u64 task_id = snapshot->next_task_id++;
+	pid_t tgid;
+	pid_t pid;
 	int ret;
 
-	ret = mapple_pslist_write_task(context, task, task_id);
+	pid = task_pid_nr_ns(task, &init_pid_ns);
+	tgid = task_tgid_nr_ns(task, &init_pid_ns);
+	if (!pid || !tgid)
+		return -ESRCH;
+	ret = mapple_pslist_write_task(context, task, pid, tgid);
 	if (ret)
 		return ret;
 	++snapshot->task_count;
-	ret = mapple_pslist_process_mm(context, snapshot, task, task_id);
+	ret = mapple_pslist_process_mm(context, snapshot, task, pid);
 	if (!ret)
-		ret = mapple_pslist_process_files(context, snapshot, task, task_id);
+		ret = mapple_pslist_process_files(context, snapshot, task, pid);
 	return ret;
 }
 
@@ -593,6 +615,7 @@ int mapple_handle_pslist(struct mapple_command_context *context)
 	struct mapple_pslist_request request;
 	struct task_struct *task;
 	unsigned int next_tid = 1;
+	unsigned int group_index;
 	u64 requested_groups;
 	int ret;
 
@@ -611,8 +634,9 @@ int mapple_handle_pslist(struct mapple_command_context *context)
 	snapshot = kzalloc(sizeof(*snapshot), GFP_KERNEL);
 	if (!snapshot)
 		return -ENOMEM;
-	snapshot->next_task_id = 1;
-	snapshot->next_object_id = 1;
+	for (group_index = 0; group_index < MAPPLE_PSLIST_GROUP_INDEX_COUNT;
+	     ++group_index)
+		snapshot->groups[group_index].next_object_id = 1;
 	snapshot->requested_groups = requested_groups;
 	snapshot->effective_groups = mapple_pslist_effective_groups(requested_groups);
 	hash_init(snapshot->objects);

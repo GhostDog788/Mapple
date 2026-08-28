@@ -5,12 +5,15 @@
 
 #include <commands.h>
 
+enum mapple_pslist_output_group {
+	MAPPLE_PSLIST_OUTPUT_IDENTITY,
+	MAPPLE_PSLIST_OUTPUT_FDS,
+	MAPPLE_PSLIST_OUTPUT_NETWORK,
+	MAPPLE_PSLIST_OUTPUT_GROUP_COUNT,
+};
+
 struct mapple_pslist_task {
-	__u64 task_id;
-	__u64 identity_object_id;
-	__u64 fds_object_id;
-	__u64 fd_details_object_id;
-	__u64 network_object_id;
+	__u64 group_object_ids[MAPPLE_PSLIST_OUTPUT_GROUP_COUNT];
 	__u32 pid;
 	__u32 tgid;
 	__u32 ppid;
@@ -124,8 +127,6 @@ struct mapple_pslist_fd {
 	struct mapple_pslist_stat stat;
 	unsigned char *fdinfo;
 	__u32 fdinfo_length;
-	int network_available;
-	struct mapple_pslist_socket socket;
 };
 
 struct mapple_pslist_fd_table {
@@ -134,11 +135,22 @@ struct mapple_pslist_fd_table {
 	size_t count;
 	size_t capacity;
 	__u16 fds_status;
-	__u16 details_status;
-	__u16 network_status;
 	int has_fds;
 	int has_details;
-	int has_network;
+};
+
+struct mapple_pslist_network_entry {
+	__u32 fd;
+	struct mapple_pslist_socket socket;
+};
+
+struct mapple_pslist_network_table {
+	__u64 object_id;
+	struct mapple_pslist_network_entry *entries;
+	size_t count;
+	size_t capacity;
+	__u16 status;
+	int has_records;
 };
 
 struct mapple_pslist_identity {
@@ -172,6 +184,9 @@ struct mapple_pslist_snapshot {
 	struct mapple_pslist_fd_table *fd_tables;
 	size_t fd_table_count;
 	size_t fd_table_capacity;
+	struct mapple_pslist_network_table *network_tables;
+	size_t network_table_count;
+	size_t network_table_capacity;
 	__u64 requested_groups;
 	__u64 effective_groups;
 	__u64 supported_groups;

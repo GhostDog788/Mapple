@@ -562,13 +562,14 @@ done:
 }
 
 static void mapple_pslist_capture_fd(struct mapple_pslist_captured_fd *captured,
-				     struct task_struct *task, u64 object_id, u64 groups,
+				     struct task_struct *task, u64 fds_object_id,
+				     u64 network_object_id, u64 groups,
 				     const struct mapple_pslist_fd_reference *reference)
 {
 	struct file *file = reference->file;
 
 	memset(captured, 0, sizeof(*captured));
-	put_unaligned_be64(object_id, &captured->generic.object_id);
+	put_unaligned_be64(fds_object_id, &captured->generic.object_id);
 	put_unaligned_be32(reference->fd, &captured->generic.fd);
 	put_unaligned_be16(mapple_pslist_fd_kind(file), &captured->generic.kind);
 	put_unaligned_be32(reference->descriptor_flags, &captured->generic.descriptor_flags);
@@ -579,8 +580,8 @@ static void mapple_pslist_capture_fd(struct mapple_pslist_captured_fd *captured,
 				    sizeof(captured->generic) + captured->path_length,
 				    MAPPLE_PSLIST_STREAM_FD, MAPPLE_PSLIST_GROUP_FDS);
 
-	if (groups & MAPPLE_PSLIST_GROUP_FD_DETAILS) {
-		put_unaligned_be64(object_id, &captured->details.object_id);
+	if (groups & MAPPLE_PSLIST_GROUP_FDS_DETAILS) {
+		put_unaligned_be64(fds_object_id, &captured->details.object_id);
 		put_unaligned_be32(reference->fd, &captured->details.fd);
 		put_unaligned_be64(file->f_mode, &captured->details.file_mode);
 		put_unaligned_be64((u64)file->f_pos, &captured->details.position);
@@ -590,10 +591,11 @@ static void mapple_pslist_capture_fd(struct mapple_pslist_captured_fd *captured,
 		mapple_pslist_encode_record(&captured->details.record,
 					    sizeof(captured->details) + captured->fdinfo_length,
 					    MAPPLE_PSLIST_STREAM_FD_DETAILS,
-					    MAPPLE_PSLIST_GROUP_FD_DETAILS);
+					    MAPPLE_PSLIST_GROUP_FDS_DETAILS);
 	}
 	if (groups & MAPPLE_PSLIST_GROUP_NETWORK)
-		mapple_pslist_capture_socket(captured, file, object_id, reference->fd);
+		mapple_pslist_capture_socket(captured, file, network_object_id,
+					     reference->fd);
 }
 
 static void mapple_pslist_release_captured_fd(struct mapple_pslist_captured_fd *captured)
@@ -613,7 +615,7 @@ static int mapple_pslist_write_captured_fd(struct mapple_command_context *contex
 		ret = mapple_command_write(context, captured->path, captured->path_length);
 	if (ret)
 		return ret;
-	if (groups & MAPPLE_PSLIST_GROUP_FD_DETAILS) {
+	if (groups & MAPPLE_PSLIST_GROUP_FDS_DETAILS) {
 		ret = mapple_command_write(context, &captured->details,
 					   sizeof(captured->details));
 		if (!ret)
@@ -664,7 +666,8 @@ static int mapple_pslist_write_object_end(struct mapple_command_context *context
 
 int mapple_pslist_write_files_objects(struct mapple_command_context *context,
 				      struct task_struct *task,
-				      struct files_struct *expected_files, u64 object_id,
+				      struct files_struct *expected_files,
+				      u64 fds_object_id, u64 network_object_id,
 				      u64 groups, u32 *object_count, bool *partial)
 {
 	struct mapple_pslist_fd_snapshot snapshot;
@@ -678,19 +681,13 @@ int mapple_pslist_write_files_objects(struct mapple_command_context *context,
 		return ret;
 	if (snapshot.status != MAPPLE_PSLIST_OBJECT_COMPLETE)
 		*partial = true;
-	ret = mapple_pslist_write_object_begin(context, object_id, MAPPLE_PSLIST_GROUP_FDS);
+	ret = mapple_pslist_write_object_begin(context, fds_object_id,
+					      MAPPLE_PSLIST_GROUP_FDS);
 	if (ret)
 		goto release_snapshot;
 	++*object_count;
-	if (groups & MAPPLE_PSLIST_GROUP_FD_DETAILS) {
-		ret = mapple_pslist_write_object_begin(context, object_id,
-					       MAPPLE_PSLIST_GROUP_FD_DETAILS);
-		if (ret)
-			goto release_snapshot;
-		++*object_count;
-	}
 	if (groups & MAPPLE_PSLIST_GROUP_NETWORK) {
-		ret = mapple_pslist_write_object_begin(context, object_id,
+		ret = mapple_pslist_write_object_begin(context, network_object_id,
 					       MAPPLE_PSLIST_GROUP_NETWORK);
 		if (ret)
 			goto release_snapshot;
@@ -702,7 +699,8 @@ int mapple_pslist_write_files_objects(struct mapple_command_context *context,
 		goto release_snapshot;
 	}
 	for (index = 0; index < snapshot.count; ++index) {
-		mapple_pslist_capture_fd(captured, task, object_id, groups,
+		mapple_pslist_capture_fd(captured, task, fds_object_id,
+					 network_object_id, groups,
 					 &snapshot.entries[index]);
 		ret = mapple_pslist_write_captured_fd(context, captured, groups);
 		if (captured->socket)
@@ -711,14 +709,11 @@ int mapple_pslist_write_files_objects(struct mapple_command_context *context,
 		if (ret)
 			goto free_captured;
 	}
-	ret = mapple_pslist_write_object_end(context, object_id, MAPPLE_PSLIST_GROUP_FDS,
-					     snapshot.status, snapshot.count);
-	if (!ret && (groups & MAPPLE_PSLIST_GROUP_FD_DETAILS))
-		ret = mapple_pslist_write_object_end(context, object_id,
-					     MAPPLE_PSLIST_GROUP_FD_DETAILS,
+	ret = mapple_pslist_write_object_end(context, fds_object_id,
+					    MAPPLE_PSLIST_GROUP_FDS,
 					     snapshot.status, snapshot.count);
 	if (!ret && (groups & MAPPLE_PSLIST_GROUP_NETWORK))
-		ret = mapple_pslist_write_object_end(context, object_id,
+		ret = mapple_pslist_write_object_end(context, network_object_id,
 					     MAPPLE_PSLIST_GROUP_NETWORK,
 					     snapshot.status, network_count);
 

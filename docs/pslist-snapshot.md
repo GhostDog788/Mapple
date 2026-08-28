@@ -18,14 +18,14 @@ optional collectors:
 | 3 | `context` | CWD, root, namespaces and cgroups |
 | 4 | `resources` | CPU, memory and I/O counters |
 | 5 | `fds` | generic FD inventory |
-| 6 | `fd-details` | generic file metadata and raw type-specific fdinfo |
+| 6 | `fds-details` | generic file metadata and raw type-specific fdinfo |
 | 7 | `network` | socket-specific state and counters |
 | 8 | `memory-maps` | VMA and mapped-file metadata |
 | 9 | `elf` | static metadata for mapped ELF files |
 
-The current milestone implements `identity`, `fds`, `fd-details`, and `network`.
+The current milestone implements `identity`, `fds`, `fds-details`, and `network`.
 Requests for reserved but unimplemented groups fail with `EOPNOTSUPP` before the
-task walk. `fd-details` and `network` imply `fds`; the streamed response reports
+task walk. `fds-details` and `network` imply `fds`; the streamed response reports
 both the requested and effective masks.
 
 ## One-pass object model
@@ -35,15 +35,23 @@ The runtime is therefore linear in visited tasks plus the selected subordinate
 records, such as FDs, VMAs, and ELF symbols.
 
 Linux tasks frequently share objects such as `mm_struct` and `files_struct`.
-A request-local hash table maps the first observed object to an opaque 64-bit ID.
-The object is captured once; later tasks emit only links. IDs are meaningful only
-inside that response and must never be compared across snapshots.
+A request-local hash table maps the first observed object to an opaque 64-bit ID
+inside each output group. Every group's IDs independently begin at one. The object
+is captured once; later tasks emit only PID-based links. IDs are meaningful only
+inside that group and response and must never be compared across groups or
+snapshots.
 
 The FD table is snapshotted once on first encounter. One pass over its pinned file
-references conditionally produces the generic FD, FD-details, and network records.
+references conditionally produces the generic FD, `fds-details`, and network records.
 Socket-specific fields belong only to the network group. If a task replaces its
 FD table between discovery and capture, that object is marked raced rather than
 capturing the replacement under the original object ID.
+
+Userspace renders `identity`, `fds`, and `network` as sibling object sections.
+`fds-details` is an enrichment of `fds`, so it adds details to FD entries under
+the base FDS object's lifecycle instead of creating a separate object, section,
+status, or task reference. The network section contains only sockets; ordinary
+FDs do not receive `network: null` placeholders.
 
 ## Stream framing and races
 
