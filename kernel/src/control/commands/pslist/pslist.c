@@ -23,6 +23,7 @@
 #include <linux/threads.h>
 
 #include <control/commands/pslist/fd.h>
+#include <control/commands/pslist/context.h>
 #include <control/commands/pslist/security.h>
 
 #define MAPPLE_PSLIST_OBJECT_HASH_BITS 8
@@ -30,6 +31,7 @@
 enum mapple_pslist_group_index {
 	MAPPLE_PSLIST_GROUP_INDEX_IDENTITY,
 	MAPPLE_PSLIST_GROUP_INDEX_SECURITY,
+	MAPPLE_PSLIST_GROUP_INDEX_CONTEXT,
 	MAPPLE_PSLIST_GROUP_INDEX_FDS,
 	MAPPLE_PSLIST_GROUP_INDEX_NETWORK,
 	MAPPLE_PSLIST_GROUP_INDEX_COUNT,
@@ -546,6 +548,27 @@ static int mapple_pslist_process_security(struct mapple_command_context *context
 	return ret;
 }
 
+static int mapple_pslist_process_context(struct mapple_command_context *context,
+					 struct mapple_pslist_snapshot *snapshot,
+					 struct task_struct *task, pid_t pid)
+{
+	struct mapple_pslist_group *group;
+	u64 object_id;
+	int ret;
+
+	if (!(snapshot->effective_groups & MAPPLE_PSLIST_GROUP_CONTEXT))
+		return 0;
+	group = &snapshot->groups[MAPPLE_PSLIST_GROUP_INDEX_CONTEXT];
+	object_id = group->next_object_id++;
+	ret = mapple_pslist_write_link(context, pid, object_id,
+				       MAPPLE_PSLIST_OBJECT_TASK,
+				       MAPPLE_PSLIST_GROUP_CONTEXT);
+	if (!ret)
+		ret = mapple_pslist_write_context_object(context, task, object_id,
+						 &snapshot->object_count);
+	return ret;
+}
+
 static struct files_struct *mapple_pslist_task_files(struct task_struct *task)
 {
 	struct files_struct *files;
@@ -629,6 +652,8 @@ static int mapple_pslist_process_task(struct mapple_command_context *context,
 		return ret;
 	++snapshot->task_count;
 	ret = mapple_pslist_process_security(context, snapshot, task, pid);
+	if (!ret)
+		ret = mapple_pslist_process_context(context, snapshot, task, pid);
 	if (!ret)
 		ret = mapple_pslist_process_mm(context, snapshot, task, pid);
 	if (!ret)

@@ -8,6 +8,7 @@
 enum mapple_pslist_output_group {
 	MAPPLE_PSLIST_OUTPUT_IDENTITY,
 	MAPPLE_PSLIST_OUTPUT_SECURITY,
+	MAPPLE_PSLIST_OUTPUT_CONTEXT,
 	MAPPLE_PSLIST_OUTPUT_FDS,
 	MAPPLE_PSLIST_OUTPUT_NETWORK,
 	MAPPLE_PSLIST_OUTPUT_GROUP_COUNT,
@@ -213,6 +214,44 @@ struct mapple_pslist_security {
 	__u32 lsm_context_length;
 };
 
+struct mapple_pslist_context {
+	__u64 object_id;
+	__u16 status;
+	int has_record;
+	__u16 cwd_status;
+	__u16 root_status;
+	__u16 cgroup_status;
+	__u16 cgroup_host_path_status;
+	__u16 cgroup_namespace_path_status;
+	__s32 cwd_error;
+	__s32 root_error;
+	__s32 cgroup_error;
+	__s32 cgroup_host_path_error;
+	__s32 cgroup_namespace_path_error;
+	unsigned char *cwd;
+	unsigned char *root;
+	unsigned char *cgroup_host_path;
+	unsigned char *cgroup_namespace_path;
+	__u32 cwd_length;
+	__u32 root_length;
+	__u32 cgroup_host_path_length;
+	__u32 cgroup_namespace_path_length;
+	__u32 namespace_available_mask;
+	__u32 namespace_unsupported_mask;
+	__u32 user_namespace;
+	__u32 uts_namespace;
+	__u32 ipc_namespace;
+	__u32 pid_namespace_active;
+	__u32 pid_namespace_children;
+	__u32 network_namespace;
+	__u32 cgroup_namespace;
+	__u32 time_namespace;
+	__u32 time_namespace_children;
+	__u32 cgroup_hierarchy_id;
+	__u64 cgroup_id;
+	__u64 cgroup_inode;
+};
+
 struct mapple_pslist_snapshot {
 	struct mapple_pslist_task *tasks;
 	size_t task_count;
@@ -223,6 +262,9 @@ struct mapple_pslist_snapshot {
 	struct mapple_pslist_security *security;
 	size_t security_count;
 	size_t security_capacity;
+	struct mapple_pslist_context *contexts;
+	size_t context_count;
+	size_t context_capacity;
 	struct mapple_pslist_fd_table *fd_tables;
 	size_t fd_table_count;
 	size_t fd_table_capacity;

@@ -23,8 +23,8 @@ optional collectors:
 | 8 | `memory-maps` | VMA and mapped-file metadata |
 | 9 | `elf` | static metadata for mapped ELF files |
 
-The current milestone implements `identity`, `security`, `fds`, `fds-details`, and
-`network`.
+The current milestone implements `identity`, `security`, `context`, `fds`,
+`fds-details`, and `network`.
 Requests for reserved but unimplemented groups fail with `EOPNOTSUPP` before the
 task walk. `fds-details` and `network` imply `fds`; the streamed response reports
 both the requested and effective masks.
@@ -48,8 +48,8 @@ Socket-specific fields belong only to the network group. If a task replaces its
 FD table between discovery and capture, that object is marked raced rather than
 capturing the replacement under the original object ID.
 
-Userspace renders `identity`, `security`, `fds`, and `network` as sibling object
-sections.
+Userspace renders `identity`, `security`, `context`, `fds`, and `network` as
+sibling object sections.
 `fds-details` is an enrichment of `fds`, so it adds details to FD entries under
 the base FDS object's lifecycle instead of creating a separate object, section,
 status, or task reference. The network section contains only sockets; ordinary
@@ -75,6 +75,14 @@ the internal LSM-name registry to modules, so the collector performs read-only
 lookups of the kernel-created AppArmor, SELinux and Smack filesystem entries once
 per request. If none is visible, provider collection is reported as unavailable;
 the label text is never used to guess its provider.
+
+Context is a sibling section with one object per task because filesystem and
+namespace context can differ between threads. It reports CWD and root in the
+module's global path view, namespace inode identities, and the default-hierarchy
+cgroup identity with both global and task-cgroup-namespace paths. Linux 6.6 does
+not export the mount-namespace inode accessor to modules, so mount namespace
+identity is explicitly reported as unsupported rather than replaced by an
+unstable or pointer-derived identifier.
 
 ## Stream framing and races
 

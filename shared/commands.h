@@ -36,6 +36,7 @@ struct mapple_wire_header {
 #define MAPPLE_PSLIST_COMM_SIZE 16U
 #define MAPPLE_PSLIST_COMMAND_LINE_MAX_SIZE (6U * 1024U * 1024U)
 #define MAPPLE_PSLIST_FDINFO_MAX_SIZE (6U * 1024U * 1024U)
+#define MAPPLE_PSLIST_CONTEXT_PATH_MAX_SIZE 4096U
 
 #define MAPPLE_PSLIST_GROUP_IDENTITY (1ULL << 0)
 #define MAPPLE_PSLIST_GROUP_ENVIRONMENT (1ULL << 1)
@@ -57,6 +58,7 @@ struct mapple_wire_header {
 
 #define MAPPLE_PSLIST_SUPPORTED_GROUPS                                               \
 	(MAPPLE_PSLIST_GROUP_IDENTITY | MAPPLE_PSLIST_GROUP_SECURITY |                 \
+	 MAPPLE_PSLIST_GROUP_CONTEXT |                                                 \
 	 MAPPLE_PSLIST_GROUP_FDS |                                                    \
 	 MAPPLE_PSLIST_GROUP_FDS_DETAILS | MAPPLE_PSLIST_GROUP_NETWORK)
 
@@ -83,7 +85,8 @@ enum mapple_pslist_stream_record_type {
 	MAPPLE_PSLIST_STREAM_NETWORK = 8,
 	MAPPLE_PSLIST_STREAM_OBJECT_END = 9,
 	MAPPLE_PSLIST_STREAM_SNAPSHOT_END = 10,
-	MAPPLE_PSLIST_STREAM_SECURITY = 11
+	MAPPLE_PSLIST_STREAM_SECURITY = 11,
+	MAPPLE_PSLIST_STREAM_CONTEXT = 12
 };
 
 struct mapple_pslist_stream_record {
@@ -265,6 +268,59 @@ struct mapple_pslist_security_record {
 	__u64 capability_ambient;
 } PACKED_STRUCT;
 /* Followed by supplementary GIDs, LSM provider bytes, then LSM context bytes. */
+
+#define MAPPLE_PSLIST_NAMESPACE_USER (1U << 0)
+#define MAPPLE_PSLIST_NAMESPACE_UTS (1U << 1)
+#define MAPPLE_PSLIST_NAMESPACE_IPC (1U << 2)
+#define MAPPLE_PSLIST_NAMESPACE_MOUNT (1U << 3)
+#define MAPPLE_PSLIST_NAMESPACE_PID_ACTIVE (1U << 4)
+#define MAPPLE_PSLIST_NAMESPACE_PID_CHILDREN (1U << 5)
+#define MAPPLE_PSLIST_NAMESPACE_NETWORK (1U << 6)
+#define MAPPLE_PSLIST_NAMESPACE_CGROUP (1U << 7)
+#define MAPPLE_PSLIST_NAMESPACE_TIME (1U << 8)
+#define MAPPLE_PSLIST_NAMESPACE_TIME_CHILDREN (1U << 9)
+#define MAPPLE_PSLIST_NAMESPACE_KNOWN_MASK                                         \
+	(MAPPLE_PSLIST_NAMESPACE_USER | MAPPLE_PSLIST_NAMESPACE_UTS |                 \
+	 MAPPLE_PSLIST_NAMESPACE_IPC | MAPPLE_PSLIST_NAMESPACE_MOUNT |               \
+	 MAPPLE_PSLIST_NAMESPACE_PID_ACTIVE |                                        \
+	 MAPPLE_PSLIST_NAMESPACE_PID_CHILDREN | MAPPLE_PSLIST_NAMESPACE_NETWORK |    \
+	 MAPPLE_PSLIST_NAMESPACE_CGROUP | MAPPLE_PSLIST_NAMESPACE_TIME |             \
+	 MAPPLE_PSLIST_NAMESPACE_TIME_CHILDREN)
+
+struct mapple_pslist_context_record {
+	struct mapple_pslist_stream_record record;
+	__u64 object_id;
+	__u16 cwd_status;
+	__u16 root_status;
+	__u16 cgroup_status;
+	__u16 cgroup_host_path_status;
+	__u16 cgroup_namespace_path_status;
+	__u16 reserved;
+	__u32 cwd_error;
+	__u32 root_error;
+	__u32 cgroup_error;
+	__u32 cgroup_host_path_error;
+	__u32 cgroup_namespace_path_error;
+	__u32 cwd_length;
+	__u32 root_length;
+	__u32 cgroup_host_path_length;
+	__u32 cgroup_namespace_path_length;
+	__u32 namespace_available_mask;
+	__u32 namespace_unsupported_mask;
+	__u32 user_namespace;
+	__u32 uts_namespace;
+	__u32 ipc_namespace;
+	__u32 pid_namespace_active;
+	__u32 pid_namespace_children;
+	__u32 network_namespace;
+	__u32 cgroup_namespace;
+	__u32 time_namespace;
+	__u32 time_namespace_children;
+	__u32 cgroup_hierarchy_id;
+	__u64 cgroup_id;
+	__u64 cgroup_inode;
+} PACKED_STRUCT;
+/* Followed by cwd, root, host cgroup path, then namespaced cgroup path bytes. */
 
 enum mapple_pslist_data_status {
 	MAPPLE_PSLIST_DATA_AVAILABLE = 1,
