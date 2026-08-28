@@ -36,6 +36,16 @@
       ]
     },
     {
+      "label": "Build: Usermode (Go)",
+      "detail": "make user — go build/vet/test for the user/ Go module",
+      "type": "shell",
+      "command": "make user",
+      "group": "build",
+      "problemMatcher": [
+        "$go"
+      ]
+    },
+    {
       "label": "Kernel: Check Target",
       "type": "shell",
       "command": "./kernel/scripts/00-check-target.sh ${input:kernelTarget} ${input:debugMethod}",
