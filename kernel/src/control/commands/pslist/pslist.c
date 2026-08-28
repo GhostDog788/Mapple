@@ -25,6 +25,7 @@
 #include <control/commands/pslist/fd.h>
 #include <control/commands/pslist/context.h>
 #include <control/commands/pslist/environment.h>
+#include <control/commands/pslist/memory_maps.h>
 #include <control/commands/pslist/security.h>
 #include <control/commands/pslist/resources.h>
 
@@ -33,6 +34,7 @@
 enum mapple_pslist_group_index {
 	MAPPLE_PSLIST_GROUP_INDEX_IDENTITY,
 	MAPPLE_PSLIST_GROUP_INDEX_ENVIRONMENT,
+	MAPPLE_PSLIST_GROUP_INDEX_MEMORY_MAPS,
 	MAPPLE_PSLIST_GROUP_INDEX_SECURITY,
 	MAPPLE_PSLIST_GROUP_INDEX_CONTEXT,
 	MAPPLE_PSLIST_GROUP_INDEX_RESOURCES,
@@ -499,12 +501,14 @@ static int mapple_pslist_process_mm(struct mapple_command_context *context,
 	struct mm_struct *mm;
 	u64 identity_object_id = 0;
 	u64 environment_object_id = 0;
+	u64 memory_maps_object_id = 0;
 	u64 groups;
 	bool is_new = false;
 	int ret;
 
 	groups = snapshot->effective_groups &
-		 (MAPPLE_PSLIST_GROUP_IDENTITY | MAPPLE_PSLIST_GROUP_ENVIRONMENT);
+		 (MAPPLE_PSLIST_GROUP_IDENTITY | MAPPLE_PSLIST_GROUP_ENVIRONMENT |
+		  MAPPLE_PSLIST_GROUP_MEMORY_MAPS);
 	if (!groups)
 		return 0;
 	mm = get_task_mm(task);
@@ -528,6 +532,9 @@ static int mapple_pslist_process_mm(struct mapple_command_context *context,
 	if (groups & MAPPLE_PSLIST_GROUP_ENVIRONMENT)
 		environment_object_id = mapple_pslist_group_object_id(
 			snapshot, object, MAPPLE_PSLIST_GROUP_INDEX_ENVIRONMENT);
+	if (groups & MAPPLE_PSLIST_GROUP_MEMORY_MAPS)
+		memory_maps_object_id = mapple_pslist_group_object_id(
+			snapshot, object, MAPPLE_PSLIST_GROUP_INDEX_MEMORY_MAPS);
 	ret = 0;
 	if (groups & MAPPLE_PSLIST_GROUP_IDENTITY)
 		ret = mapple_pslist_write_link(context, pid, identity_object_id,
@@ -537,6 +544,10 @@ static int mapple_pslist_process_mm(struct mapple_command_context *context,
 		ret = mapple_pslist_write_link(context, pid, environment_object_id,
 					       MAPPLE_PSLIST_OBJECT_MM,
 					       MAPPLE_PSLIST_GROUP_ENVIRONMENT);
+	if (!ret && (groups & MAPPLE_PSLIST_GROUP_MEMORY_MAPS))
+		ret = mapple_pslist_write_link(context, pid, memory_maps_object_id,
+					       MAPPLE_PSLIST_OBJECT_MM,
+					       MAPPLE_PSLIST_GROUP_MEMORY_MAPS);
 	if (!ret && is_new && (groups & MAPPLE_PSLIST_GROUP_IDENTITY))
 		ret = mapple_pslist_write_identity_object(
 			context, task, object->mm, identity_object_id,
@@ -544,6 +555,10 @@ static int mapple_pslist_process_mm(struct mapple_command_context *context,
 	if (!ret && is_new && (groups & MAPPLE_PSLIST_GROUP_ENVIRONMENT))
 		ret = mapple_pslist_write_environment_object(
 			context, task, object->mm, environment_object_id,
+			&snapshot->object_count, &snapshot->partial);
+	if (!ret && is_new && (groups & MAPPLE_PSLIST_GROUP_MEMORY_MAPS))
+		ret = mapple_pslist_write_memory_maps_object(
+			context, object->mm, memory_maps_object_id,
 			&snapshot->object_count, &snapshot->partial);
 	return ret;
 }

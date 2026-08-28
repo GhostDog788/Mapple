@@ -24,7 +24,7 @@ optional collectors:
 | 9 | `elf` | static metadata for mapped ELF files |
 
 The current milestone implements `identity`, `environment`, `security`, `context`,
-`resources`, `fds`, `fds-details`, and `network`.
+`resources`, `fds`, `fds-details`, `network`, and `memory-maps`.
 Requests for reserved but unimplemented groups fail with `EOPNOTSUPP` before the
 task walk. `fds-details` and `network` imply `fds`; the streamed response reports
 both the requested and effective masks.
@@ -49,7 +49,7 @@ FD table between discovery and capture, that object is marked raced rather than
 capturing the replacement under the original object ID.
 
 Userspace renders `identity`, `environment`, `security`, `context`, `resources`,
-`fds`, and `network` as sibling object sections.
+`fds`, `network`, and `memory_maps` as sibling object sections.
 `fds-details` is an enrichment of `fds`, so it adds details to FD entries under
 the base FDS object's lifecycle instead of creating a separate object, section,
 status, or task reference. The network section contains only sockets; ordinary
@@ -97,6 +97,17 @@ including NUL delimiters, duplicate keys, empty entries, and whether the last
 entry is terminated. Userspace validates that framing and renders an ordered
 entry array; entries without `=` remain visible as raw values instead of being
 dropped or guessed.
+
+Memory maps are also `mm_struct`-scoped and captured once for all tasks sharing
+an address space. The collector copies the VMA ranges, page offsets, protection
+keys, raw VMA flags, mapping page sizes, kernel-provided VMA names, and pinned
+mapped-file references while holding the address-space read lock. It releases
+that lock before resolving paths, collecting file metadata, or writing the
+response. Userspace decodes known generic VMA flags while preserving any
+architecture-specific bits in an `unknown_mask`. If the VMA count changes while
+the collector allocates its bounded snapshot, the object is retried and then
+reported as raced; address spaces beyond the explicit mapping limit are reported
+as too large rather than partially emitted.
 
 ## Stream framing and races
 

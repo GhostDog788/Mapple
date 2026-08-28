@@ -38,6 +38,9 @@ struct mapple_wire_header {
 #define MAPPLE_PSLIST_ENVIRONMENT_MAX_SIZE (6U * 1024U * 1024U)
 #define MAPPLE_PSLIST_FDINFO_MAX_SIZE (6U * 1024U * 1024U)
 #define MAPPLE_PSLIST_CONTEXT_PATH_MAX_SIZE 4096U
+#define MAPPLE_PSLIST_MEMORY_MAP_MAX_COUNT 262144U
+#define MAPPLE_PSLIST_MEMORY_MAP_NAME_MAX_SIZE 256U
+#define MAPPLE_PSLIST_MEMORY_MAP_PATH_MAX_SIZE 4096U
 
 #define MAPPLE_PSLIST_GROUP_IDENTITY (1ULL << 0)
 #define MAPPLE_PSLIST_GROUP_ENVIRONMENT (1ULL << 1)
@@ -59,11 +62,10 @@ struct mapple_wire_header {
 
 #define MAPPLE_PSLIST_SUPPORTED_GROUPS                                               \
 	(MAPPLE_PSLIST_GROUP_IDENTITY | MAPPLE_PSLIST_GROUP_ENVIRONMENT |              \
-	 MAPPLE_PSLIST_GROUP_SECURITY |                                               \
-	 MAPPLE_PSLIST_GROUP_CONTEXT |                                                 \
-	 MAPPLE_PSLIST_GROUP_RESOURCES |                                               \
-	 MAPPLE_PSLIST_GROUP_FDS |                                                    \
-	 MAPPLE_PSLIST_GROUP_FDS_DETAILS | MAPPLE_PSLIST_GROUP_NETWORK)
+	 MAPPLE_PSLIST_GROUP_SECURITY | MAPPLE_PSLIST_GROUP_CONTEXT |                 \
+	 MAPPLE_PSLIST_GROUP_RESOURCES | MAPPLE_PSLIST_GROUP_FDS |                    \
+	 MAPPLE_PSLIST_GROUP_FDS_DETAILS | MAPPLE_PSLIST_GROUP_NETWORK |              \
+	 MAPPLE_PSLIST_GROUP_MEMORY_MAPS)
 
 #define MAPPLE_PSLIST_DEFAULT_GROUPS MAPPLE_PSLIST_SUPPORTED_GROUPS
 
@@ -91,7 +93,9 @@ enum mapple_pslist_stream_record_type {
 	MAPPLE_PSLIST_STREAM_SECURITY = 11,
 	MAPPLE_PSLIST_STREAM_CONTEXT = 12,
 	MAPPLE_PSLIST_STREAM_RESOURCES = 13,
-	MAPPLE_PSLIST_STREAM_ENVIRONMENT = 14
+	MAPPLE_PSLIST_STREAM_ENVIRONMENT = 14,
+	MAPPLE_PSLIST_STREAM_MEMORY_MAPS_METADATA = 15,
+	MAPPLE_PSLIST_STREAM_MEMORY_MAP = 16
 };
 
 struct mapple_pslist_stream_record {
@@ -398,6 +402,113 @@ struct mapple_pslist_environment_record {
 	__u32 reserved;
 } PACKED_STRUCT;
 /* Followed by the raw NUL-delimited environment block. */
+
+enum mapple_pslist_memory_mapping_type {
+	MAPPLE_PSLIST_MEMORY_MAPPING_ANONYMOUS = 1,
+	MAPPLE_PSLIST_MEMORY_MAPPING_FILE = 2,
+	MAPPLE_PSLIST_MEMORY_MAPPING_SPECIAL = 3
+};
+
+enum mapple_pslist_memory_mapping_name_kind {
+	MAPPLE_PSLIST_MEMORY_MAP_NAME_NONE = 0,
+	MAPPLE_PSLIST_MEMORY_MAP_NAME_HEAP = 1,
+	MAPPLE_PSLIST_MEMORY_MAP_NAME_STACK = 2,
+	MAPPLE_PSLIST_MEMORY_MAP_NAME_ANONYMOUS = 3,
+	MAPPLE_PSLIST_MEMORY_MAP_NAME_SHARED_ANONYMOUS = 4,
+	MAPPLE_PSLIST_MEMORY_MAP_NAME_SPECIAL = 5
+};
+
+#define MAPPLE_PSLIST_MEMORY_MAP_FILE_DELETED (1U << 0)
+#define MAPPLE_PSLIST_MEMORY_MAP_KNOWN_FILE_FLAGS MAPPLE_PSLIST_MEMORY_MAP_FILE_DELETED
+
+#define MAPPLE_PSLIST_VM_READ (1ULL << 0)
+#define MAPPLE_PSLIST_VM_WRITE (1ULL << 1)
+#define MAPPLE_PSLIST_VM_EXEC (1ULL << 2)
+#define MAPPLE_PSLIST_VM_SHARED (1ULL << 3)
+#define MAPPLE_PSLIST_VM_MAYREAD (1ULL << 4)
+#define MAPPLE_PSLIST_VM_MAYWRITE (1ULL << 5)
+#define MAPPLE_PSLIST_VM_MAYEXEC (1ULL << 6)
+#define MAPPLE_PSLIST_VM_MAYSHARE (1ULL << 7)
+#define MAPPLE_PSLIST_VM_GROWSDOWN (1ULL << 8)
+#define MAPPLE_PSLIST_VM_UFFD_MISSING (1ULL << 9)
+#define MAPPLE_PSLIST_VM_PFNMAP (1ULL << 10)
+#define MAPPLE_PSLIST_VM_UFFD_WP (1ULL << 12)
+#define MAPPLE_PSLIST_VM_LOCKED (1ULL << 13)
+#define MAPPLE_PSLIST_VM_IO (1ULL << 14)
+#define MAPPLE_PSLIST_VM_SEQ_READ (1ULL << 15)
+#define MAPPLE_PSLIST_VM_RAND_READ (1ULL << 16)
+#define MAPPLE_PSLIST_VM_DONTCOPY (1ULL << 17)
+#define MAPPLE_PSLIST_VM_DONTEXPAND (1ULL << 18)
+#define MAPPLE_PSLIST_VM_LOCKONFAULT (1ULL << 19)
+#define MAPPLE_PSLIST_VM_ACCOUNT (1ULL << 20)
+#define MAPPLE_PSLIST_VM_NORESERVE (1ULL << 21)
+#define MAPPLE_PSLIST_VM_HUGETLB (1ULL << 22)
+#define MAPPLE_PSLIST_VM_SYNC (1ULL << 23)
+#define MAPPLE_PSLIST_VM_WIPEONFORK (1ULL << 25)
+#define MAPPLE_PSLIST_VM_DONTDUMP (1ULL << 26)
+#define MAPPLE_PSLIST_VM_SOFTDIRTY (1ULL << 27)
+#define MAPPLE_PSLIST_VM_MIXEDMAP (1ULL << 28)
+#define MAPPLE_PSLIST_VM_HUGEPAGE (1ULL << 29)
+#define MAPPLE_PSLIST_VM_NOHUGEPAGE (1ULL << 30)
+#define MAPPLE_PSLIST_VM_MERGEABLE (1ULL << 31)
+
+#define MAPPLE_PSLIST_VM_KNOWN_FLAGS                                                \
+	(MAPPLE_PSLIST_VM_READ | MAPPLE_PSLIST_VM_WRITE | MAPPLE_PSLIST_VM_EXEC |    \
+	 MAPPLE_PSLIST_VM_SHARED | MAPPLE_PSLIST_VM_MAYREAD |                       \
+	 MAPPLE_PSLIST_VM_MAYWRITE | MAPPLE_PSLIST_VM_MAYEXEC |                     \
+	 MAPPLE_PSLIST_VM_MAYSHARE | MAPPLE_PSLIST_VM_GROWSDOWN |                   \
+	 MAPPLE_PSLIST_VM_UFFD_MISSING | MAPPLE_PSLIST_VM_PFNMAP |                  \
+	 MAPPLE_PSLIST_VM_UFFD_WP | MAPPLE_PSLIST_VM_LOCKED | MAPPLE_PSLIST_VM_IO | \
+	 MAPPLE_PSLIST_VM_SEQ_READ | MAPPLE_PSLIST_VM_RAND_READ |                   \
+	 MAPPLE_PSLIST_VM_DONTCOPY | MAPPLE_PSLIST_VM_DONTEXPAND |                  \
+	 MAPPLE_PSLIST_VM_LOCKONFAULT | MAPPLE_PSLIST_VM_ACCOUNT |                  \
+	 MAPPLE_PSLIST_VM_NORESERVE | MAPPLE_PSLIST_VM_HUGETLB |                   \
+	 MAPPLE_PSLIST_VM_SYNC | MAPPLE_PSLIST_VM_WIPEONFORK |                      \
+	 MAPPLE_PSLIST_VM_DONTDUMP | MAPPLE_PSLIST_VM_SOFTDIRTY |                   \
+	 MAPPLE_PSLIST_VM_MIXEDMAP | MAPPLE_PSLIST_VM_HUGEPAGE |                    \
+	 MAPPLE_PSLIST_VM_NOHUGEPAGE | MAPPLE_PSLIST_VM_MERGEABLE)
+
+struct mapple_pslist_memory_maps_metadata_record {
+	struct mapple_pslist_stream_record record;
+	__u64 object_id;
+	__u32 page_size_bytes;
+	__u32 mapping_count;
+	__u32 mapping_limit;
+	__u32 reserved;
+} PACKED_STRUCT;
+
+struct mapple_pslist_memory_map_record {
+	struct mapple_pslist_stream_record record;
+	__u64 object_id;
+	__u32 mapping_index;
+	__u16 mapping_type;
+	__u16 name_kind;
+	__u16 name_status;
+	__u16 path_status;
+	__u16 file_metadata_status;
+	__u16 reserved;
+	__u32 name_error;
+	__u32 path_error;
+	__u32 file_metadata_error;
+	__u32 file_flags;
+	__u32 name_length;
+	__u32 path_length;
+	__u32 file_device_major;
+	__u32 file_device_minor;
+	__u32 file_mode;
+	__u32 protection_key;
+	__u64 start_address;
+	__u64 end_address;
+	__u64 vm_flags;
+	__u64 page_offset;
+	__u64 mapping_page_size;
+	__u64 file_inode;
+	__u64 file_size;
+	__s64 file_mtime_ns;
+	__s64 file_ctime_ns;
+	__u64 file_filesystem_magic;
+} PACKED_STRUCT;
+/* Followed by mapping-name bytes, then mapped-file path bytes. */
 
 enum mapple_pslist_data_status {
 	MAPPLE_PSLIST_DATA_AVAILABLE = 1,

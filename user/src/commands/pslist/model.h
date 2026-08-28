@@ -13,6 +13,7 @@ enum mapple_pslist_output_group {
 	MAPPLE_PSLIST_OUTPUT_RESOURCES,
 	MAPPLE_PSLIST_OUTPUT_FDS,
 	MAPPLE_PSLIST_OUTPUT_NETWORK,
+	MAPPLE_PSLIST_OUTPUT_MEMORY_MAPS,
 	MAPPLE_PSLIST_OUTPUT_GROUP_COUNT,
 };
 
@@ -310,6 +311,49 @@ struct mapple_pslist_resources {
 	__u64 memory_swap_entries;
 };
 
+struct mapple_pslist_memory_map {
+	__u32 mapping_index;
+	__u16 mapping_type;
+	__u16 name_kind;
+	__u16 name_status;
+	__u16 path_status;
+	__u16 file_metadata_status;
+	__s32 name_error;
+	__s32 path_error;
+	__s32 file_metadata_error;
+	__u32 file_flags;
+	unsigned char *name;
+	__u32 name_length;
+	unsigned char *path;
+	__u32 path_length;
+	__u32 file_device_major;
+	__u32 file_device_minor;
+	__u32 file_mode;
+	__u32 protection_key;
+	__u64 start_address;
+	__u64 end_address;
+	__u64 vm_flags;
+	__u64 page_offset;
+	__u64 mapping_page_size;
+	__u64 file_inode;
+	__u64 file_size;
+	__s64 file_mtime_ns;
+	__s64 file_ctime_ns;
+	__u64 file_filesystem_magic;
+};
+
+struct mapple_pslist_memory_maps {
+	__u64 object_id;
+	__u16 status;
+	int has_metadata;
+	__u32 page_size_bytes;
+	__u32 mapping_count;
+	__u32 mapping_limit;
+	struct mapple_pslist_memory_map *mappings;
+	size_t count;
+	size_t capacity;
+};
+
 struct mapple_pslist_snapshot {
 	struct mapple_pslist_task *tasks;
 	size_t task_count;
@@ -335,6 +379,9 @@ struct mapple_pslist_snapshot {
 	struct mapple_pslist_network_table *network_tables;
 	size_t network_table_count;
 	size_t network_table_capacity;
+	struct mapple_pslist_memory_maps *memory_maps;
+	size_t memory_maps_count;
+	size_t memory_maps_capacity;
 	__u64 requested_groups;
 	__u64 effective_groups;
 	__u64 supported_groups;
