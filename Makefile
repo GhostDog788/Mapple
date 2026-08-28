@@ -7,6 +7,8 @@ kernel:
 
 user: api-verify
 	cd user && go build ./... && go vet ./... && go test ./...
+	cd user && CGO_ENABLED=0 go build -o bin/mappled ./cmd/mappled
+	cd user && CGO_ENABLED=0 go build -o bin/mapple ./cmd/mapple
 
 # Regenerates api/*.gen.go from openapi.yaml and fails if the committed,
 # checked-in output would change -- catches a hand-edited generated file or
@@ -22,6 +24,7 @@ clean-kernel:
 
 clean-user:
 	cd user && go clean ./...
+	rm -rf user/bin
 
 help:
 	@echo "Targets: all (default), kernel, user, api-verify, clean, clean-kernel, clean-user"

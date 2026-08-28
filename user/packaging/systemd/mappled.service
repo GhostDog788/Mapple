@@ -1,0 +1,44 @@
+[Unit]
+Description=mapple control-plane daemon
+Documentation=https://github.com/GhostDog788/Mapple/blob/main/docs/mapple-install.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/mappled -config /etc/mapple/mappled.json
+Restart=on-failure
+RestartSec=2s
+
+# mappled runs as root by design (docs/usermode-architecture-plan.md's
+# "Explicit Assumptions": arbitrary TCP destinations and arbitrary
+# character-device paths, opened as root, are intentional). The hardening
+# below narrows what root can do without blocking that: it does NOT set
+# DevicePolicy/DeviceAllow, since the whole point of the daemon is opening
+# operator-supplied chardev paths that aren't known at deploy time.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# All lease state is in-memory (docs/usermode-architecture-plan.md: "Keep
+# all lease state in memory"), so mappled needs no writable paths beyond
+# reading its config and TLS material -- both covered by ProtectSystem.
+ReadOnlyPaths=/etc/mapple
+
+[Install]
+WantedBy=multi-user.target
