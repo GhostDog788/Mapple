@@ -3,6 +3,7 @@ lab.local.env
 
 # Synced per-target kernel trees + generated GDB/build outputs.
 kernel/kernel-cache/
+kernel/kernel-cache
 kernel/.gdb/
 kernel/build/
 user/.gdb/

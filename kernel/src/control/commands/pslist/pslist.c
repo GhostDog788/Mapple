@@ -184,7 +184,7 @@ static int mapple_pslist_write_error(struct mapple_command_context *context, u32
 
 	put_unaligned_be32(error_code, &response.error_code);
 	put_unaligned_be64(MAPPLE_PSLIST_SUPPORTED_GROUPS, &response.supported_groups);
-	ret = mapple_command_write_response_header(context, MAPPLE_COMMAND_PSLIST, 0,
+	ret = mapple_command_write_response_header(context, MAPPLE_COMMAND_PSLIST, 0, MAPPLE_STATUS_OK,
 					   sizeof(response));
 	if (ret)
 		return ret;
@@ -762,7 +762,7 @@ int mapple_handle_pslist(struct mapple_command_context *context)
 		mapple_pslist_capture_security_metadata(&snapshot->security_metadata);
 	hash_init(snapshot->objects);
 	ret = mapple_command_write_response_header(context, MAPPLE_COMMAND_PSLIST,
-					   MAPPLE_HEADER_FLAG_STREAM, 0);
+					   MAPPLE_HEADER_FLAG_STREAM, MAPPLE_STATUS_OK, 0);
 	if (ret)
 		goto free_snapshot;
 	ret = mapple_pslist_write_snapshot_begin(context, snapshot);

@@ -32,6 +32,7 @@ int receive_response_header(int fd, struct mapple_wire_header *header)
 {
 	uint64_t payload_size;
 	uint32_t flags;
+	uint32_t status;
 	int ret;
 
 	ret = read_exact(fd, header, sizeof(struct mapple_wire_header));
@@ -39,6 +40,9 @@ int receive_response_header(int fd, struct mapple_wire_header *header)
 		return ret;
 
 	if (ntohl(header->magic) != MAPPLE_PROTOCOL_MAGIC || ntohs(header->version) != MAPPLE_PROTOCOL_VERSION)
+		return EPROTO;
+	status = ntohl(header->status);
+	if (status != MAPPLE_STATUS_OK)
 		return EPROTO;
 	flags = ntohl(header->flags);
 	payload_size = be64toh(header->payload_size);
