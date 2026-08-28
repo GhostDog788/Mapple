@@ -25,6 +25,7 @@
 #include <control/commands/pslist/fd.h>
 #include <control/commands/pslist/context.h>
 #include <control/commands/pslist/environment.h>
+#include <control/commands/pslist/elf.h>
 #include <control/commands/pslist/memory_maps.h>
 #include <control/commands/pslist/security.h>
 #include <control/commands/pslist/resources.h>
@@ -58,6 +59,7 @@ struct mapple_pslist_snapshot_object {
 struct mapple_pslist_snapshot {
 	DECLARE_HASHTABLE(objects, MAPPLE_PSLIST_OBJECT_HASH_BITS);
 	struct mapple_pslist_security_metadata security_metadata;
+	struct mapple_pslist_elf_registry elf_registry;
 	u64 requested_groups;
 	u64 effective_groups;
 	struct mapple_pslist_group groups[MAPPLE_PSLIST_GROUP_INDEX_COUNT];
@@ -86,6 +88,8 @@ static u64 mapple_pslist_effective_groups(u64 requested)
 {
 	if (requested & (MAPPLE_PSLIST_GROUP_FDS_DETAILS | MAPPLE_PSLIST_GROUP_NETWORK))
 		requested |= MAPPLE_PSLIST_GROUP_FDS;
+	if (requested & MAPPLE_PSLIST_GROUP_ELF)
+		requested |= MAPPLE_PSLIST_GROUP_MEMORY_MAPS;
 	return requested;
 }
 
@@ -559,6 +563,8 @@ static int mapple_pslist_process_mm(struct mapple_command_context *context,
 	if (!ret && is_new && (groups & MAPPLE_PSLIST_GROUP_MEMORY_MAPS))
 		ret = mapple_pslist_write_memory_maps_object(
 			context, object->mm, memory_maps_object_id,
+			snapshot->effective_groups & MAPPLE_PSLIST_GROUP_ELF ?
+				&snapshot->elf_registry : NULL,
 			&snapshot->object_count, &snapshot->partial);
 	return ret;
 }
@@ -751,6 +757,7 @@ int mapple_handle_pslist(struct mapple_command_context *context)
 		snapshot->groups[group_index].next_object_id = 1;
 	snapshot->requested_groups = requested_groups;
 	snapshot->effective_groups = mapple_pslist_effective_groups(requested_groups);
+	mapple_pslist_elf_registry_init(&snapshot->elf_registry);
 	if (snapshot->effective_groups & MAPPLE_PSLIST_GROUP_SECURITY)
 		mapple_pslist_capture_security_metadata(&snapshot->security_metadata);
 	hash_init(snapshot->objects);
@@ -767,9 +774,14 @@ int mapple_handle_pslist(struct mapple_command_context *context)
 		}
 		put_task_struct(task);
 	}
+	if (!ret && (snapshot->effective_groups & MAPPLE_PSLIST_GROUP_ELF))
+		ret = mapple_pslist_write_elf_objects(
+			context, &snapshot->elf_registry, &snapshot->object_count,
+			&snapshot->partial);
 	if (!ret)
 		ret = mapple_pslist_write_snapshot_end(context, snapshot);
 	mapple_pslist_release_snapshot(snapshot);
+	mapple_pslist_elf_registry_release(&snapshot->elf_registry);
 free_snapshot:
 	kfree(snapshot);
 	return ret;

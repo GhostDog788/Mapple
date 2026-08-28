@@ -11,6 +11,6 @@ int mapple_pslist_decode_memory_map(
 	const void *record, size_t size, struct mapple_pslist_memory_maps *memory_maps);
 void mapple_pslist_free_memory_maps(struct mapple_pslist_memory_maps *memory_maps);
 int mapple_pslist_print_json_memory_maps(
-	const struct mapple_pslist_memory_maps *memory_maps, int indent);
+	const struct mapple_pslist_memory_maps *memory_maps, int indent, int include_elf);
 
 #endif /* COMMAND_PSLIST_MEMORY_MAPS_H */

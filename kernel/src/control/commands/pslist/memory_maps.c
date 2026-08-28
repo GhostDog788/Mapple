@@ -275,14 +275,24 @@ static int mapple_pslist_write_metadata(struct mapple_command_context *context,
 
 static int mapple_pslist_write_mapping(
 	struct mapple_command_context *context,
-	struct mapple_pslist_memory_map_reference *reference, u64 object_id)
+	struct mapple_pslist_memory_map_reference *reference, u64 object_id,
+	struct mapple_pslist_elf_registry *elf)
 {
 	struct mapple_pslist_captured_memory_map captured = { 0 };
+	u64 elf_object_id = 0;
 	int ret;
 
 	memcpy(&captured.wire, &reference->wire, sizeof(captured.wire));
 	put_unaligned_be64(object_id, &captured.wire.object_id);
 	if (reference->file) {
+		if (elf) {
+			ret = mapple_pslist_elf_observe_file(
+				elf, reference->file, &elf_object_id);
+			if (ret)
+				return ret;
+			put_unaligned_be64(elf_object_id,
+					   &captured.wire.elf_object_id);
+		}
 		mapple_pslist_capture_path(&captured, reference->file);
 		mapple_pslist_capture_file_metadata(&captured, reference->file);
 	}
@@ -320,6 +330,7 @@ static int mapple_pslist_write_object_end(struct mapple_command_context *context
 
 int mapple_pslist_write_memory_maps_object(struct mapple_command_context *context,
 					    struct mm_struct *mm, u64 object_id,
+					    struct mapple_pslist_elf_registry *elf,
 					    u32 *object_count, bool *partial)
 {
 	struct mapple_pslist_memory_maps_snapshot snapshot = { 0 };
@@ -339,7 +350,7 @@ int mapple_pslist_write_memory_maps_object(struct mapple_command_context *contex
 	if (!ret && snapshot.status == MAPPLE_PSLIST_OBJECT_COMPLETE)
 		for (index = 0; !ret && index < snapshot.count; ++index)
 			ret = mapple_pslist_write_mapping(
-				context, &snapshot.entries[index], object_id);
+				context, &snapshot.entries[index], object_id, elf);
 	if (!ret)
 		ret = mapple_pslist_write_object_end(
 			context, object_id, snapshot.status,

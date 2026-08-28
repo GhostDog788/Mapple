@@ -12,6 +12,7 @@
 
 #include <commands.h>
 #include <commands/pslist/context.h>
+#include <commands/pslist/elf.h>
 #include <commands/pslist/environment.h>
 #include <commands/pslist/fd.h>
 #include <commands/pslist/json.h>
@@ -278,6 +279,17 @@ static struct mapple_pslist_memory_maps *mapple_pslist_find_memory_maps(
 	return NULL;
 }
 
+static struct mapple_pslist_elf *mapple_pslist_find_elf(
+	struct mapple_pslist_snapshot *snapshot, __u64 object_id)
+{
+	size_t index;
+
+	for (index = 0; index < snapshot->elf_count; ++index)
+		if (snapshot->elfs[index].object_id == object_id)
+			return &snapshot->elfs[index];
+	return NULL;
+}
+
 static int mapple_pslist_add_task(struct mapple_pslist_snapshot *snapshot,
 				  const struct mapple_pslist_task_record *wire)
 {
@@ -469,6 +481,26 @@ static int mapple_pslist_add_memory_maps(struct mapple_pslist_snapshot *snapshot
 	return 0;
 }
 
+static int mapple_pslist_add_elf(struct mapple_pslist_snapshot *snapshot,
+				  __u64 object_id)
+{
+	struct mapple_pslist_elf *elf;
+	int ret;
+
+	if (object_id != snapshot->elf_count + 1 ||
+	    mapple_pslist_find_elf(snapshot, object_id))
+		return EPROTO;
+	ret = mapple_pslist_grow((void **)&snapshot->elfs,
+				 &snapshot->elf_capacity, snapshot->elf_count,
+				 sizeof(*snapshot->elfs));
+	if (ret)
+		return ret;
+	elf = &snapshot->elfs[snapshot->elf_count++];
+	memset(elf, 0, sizeof(*elf));
+	elf->object_id = object_id;
+	return 0;
+}
+
 static int mapple_pslist_decode_snapshot_begin(struct mapple_pslist_snapshot *snapshot,
 					       const struct mapple_pslist_snapshot_begin *wire)
 {
@@ -582,6 +614,9 @@ static int mapple_pslist_decode_object_begin(struct mapple_pslist_snapshot *snap
 	if (group == MAPPLE_PSLIST_GROUP_MEMORY_MAPS &&
 	    object_type == MAPPLE_PSLIST_OBJECT_MM)
 		return mapple_pslist_add_memory_maps(snapshot, object_id);
+	if (group == MAPPLE_PSLIST_GROUP_ELF &&
+	    object_type == MAPPLE_PSLIST_OBJECT_ELF_FILE)
+		return mapple_pslist_add_elf(snapshot, object_id);
 	return EPROTO;
 }
 
@@ -682,6 +717,7 @@ static int mapple_pslist_decode_object_end(struct mapple_pslist_snapshot *snapsh
 	struct mapple_pslist_fd_table *table;
 	struct mapple_pslist_network_table *network_table;
 	struct mapple_pslist_memory_maps *memory_maps;
+	struct mapple_pslist_elf *elf;
 	__u64 object_id = mapple_pslist_read_u64(
 		wire, offsetof(struct mapple_pslist_object_end, object_id));
 	__u16 status = mapple_pslist_read_u16(
@@ -767,6 +803,17 @@ static int mapple_pslist_decode_object_end(struct mapple_pslist_snapshot *snapsh
 				return EPROTO;
 		}
 		memory_maps->status = status;
+	} else if (group == MAPPLE_PSLIST_GROUP_ELF) {
+		elf = mapple_pslist_find_elf(snapshot, object_id);
+		if (!elf || mapple_pslist_read_u16(
+				wire, offsetof(struct mapple_pslist_object_end, object_type)) !=
+				MAPPLE_PSLIST_OBJECT_ELF_FILE)
+			return EPROTO;
+		return mapple_pslist_finish_elf(
+			elf, status,
+			mapple_pslist_read_u32(
+				wire, offsetof(struct mapple_pslist_object_end, error_code)),
+			count);
 	} else return EPROTO;
 	return 0;
 }
@@ -791,6 +838,52 @@ static int mapple_pslist_decode_snapshot_end(struct mapple_pslist_snapshot *snap
 	    wire_object_count != object_count ||
 	    snapshot->end_boottime_ns < snapshot->start_boottime_ns)
 		return EPROTO;
+	if (snapshot->effective_groups & MAPPLE_PSLIST_GROUP_ELF) {
+		size_t map_index;
+		size_t object_index;
+		unsigned char *referenced;
+
+		referenced = calloc(snapshot->elf_count, 1);
+		if (snapshot->elf_count && !referenced)
+			return ENOMEM;
+		for (object_index = 0; object_index < snapshot->memory_maps_count;
+		     ++object_index) {
+			const struct mapple_pslist_memory_maps *maps =
+				&snapshot->memory_maps[object_index];
+
+			for (map_index = 0; map_index < maps->count; ++map_index) {
+				__u64 id = maps->mappings[map_index].elf_object_id;
+
+				if (!id)
+					continue;
+				if (id > snapshot->elf_count || !snapshot->elfs[id - 1].status) {
+					free(referenced);
+					return EPROTO;
+				}
+				referenced[id - 1] = 1;
+			}
+		}
+		for (object_index = 0; object_index < snapshot->elf_count; ++object_index)
+			if (!referenced[object_index]) {
+				free(referenced);
+				return EPROTO;
+			}
+		free(referenced);
+	} else {
+		size_t map_index;
+		size_t object_index;
+
+		if (snapshot->elf_count)
+			return EPROTO;
+		for (object_index = 0; object_index < snapshot->memory_maps_count;
+		     ++object_index)
+			for (map_index = 0;
+			     map_index < snapshot->memory_maps[object_index].count;
+			     ++map_index)
+				if (snapshot->memory_maps[object_index]
+					    .mappings[map_index].elf_object_id)
+					return EPROTO;
+	}
 	return 0;
 }
 
@@ -936,6 +1029,36 @@ static int mapple_pslist_read_snapshot(int session_fd, struct mapple_pslist_snap
 						 record, record_size, memory_maps);
 			break;
 		}
+		case MAPPLE_PSLIST_STREAM_ELF_METADATA: {
+			__u64 id = mapple_pslist_read_u64(
+				record, offsetof(struct mapple_pslist_elf_metadata_record,
+						 object_id));
+			struct mapple_pslist_elf *elf = mapple_pslist_find_elf(snapshot, id);
+
+			ret = !elf || group != MAPPLE_PSLIST_GROUP_ELF ? EPROTO :
+				mapple_pslist_decode_elf_metadata(record, record_size, elf);
+			break;
+		}
+		case MAPPLE_PSLIST_STREAM_ELF_STRING: {
+			__u64 id = mapple_pslist_read_u64(
+				record, offsetof(struct mapple_pslist_elf_string_record,
+						 object_id));
+			struct mapple_pslist_elf *elf = mapple_pslist_find_elf(snapshot, id);
+
+			ret = !elf || group != MAPPLE_PSLIST_GROUP_ELF ? EPROTO :
+				mapple_pslist_decode_elf_string(record, record_size, elf);
+			break;
+		}
+		case MAPPLE_PSLIST_STREAM_ELF_SYMBOL: {
+			__u64 id = mapple_pslist_read_u64(
+				record, offsetof(struct mapple_pslist_elf_symbol_record,
+						 object_id));
+			struct mapple_pslist_elf *elf = mapple_pslist_find_elf(snapshot, id);
+
+			ret = !elf || group != MAPPLE_PSLIST_GROUP_ELF ? EPROTO :
+				mapple_pslist_decode_elf_symbol(record, record_size, elf);
+			break;
+		}
 		case MAPPLE_PSLIST_STREAM_OBJECT_END:
 			if (!began || !group || record_size != sizeof(struct mapple_pslist_object_end)) { ret = EPROTO; break; }
 			ret = mapple_pslist_decode_object_end(snapshot, (const void *)record, group);
@@ -977,6 +1100,8 @@ static void mapple_pslist_free_snapshot(struct mapple_pslist_snapshot *snapshot)
 		mapple_pslist_free_network_table(&snapshot->network_tables[index]);
 	for (index = 0; index < snapshot->memory_maps_count; ++index)
 		mapple_pslist_free_memory_maps(&snapshot->memory_maps[index]);
+	for (index = 0; index < snapshot->elf_count; ++index)
+		mapple_pslist_free_elf(&snapshot->elfs[index]);
 	free(snapshot->tasks);
 	free(snapshot->identities);
 	free(snapshot->environments);
@@ -986,6 +1111,7 @@ static void mapple_pslist_free_snapshot(struct mapple_pslist_snapshot *snapshot)
 	free(snapshot->fd_tables);
 	free(snapshot->network_tables);
 	free(snapshot->memory_maps);
+	free(snapshot->elfs);
 	memset(snapshot, 0, sizeof(*snapshot));
 }
 
@@ -1402,11 +1528,29 @@ static int mapple_pslist_print_objects(const struct mapple_pslist_snapshot *snap
 				   (uint64_t)snapshot->memory_maps[index].object_id) < 0)
 				return EIO;
 			ret = mapple_pslist_print_json_memory_maps(
-				&snapshot->memory_maps[index], 6);
+				&snapshot->memory_maps[index], 6,
+				!!(snapshot->effective_groups & MAPPLE_PSLIST_GROUP_ELF));
 			if (ret)
 				return ret;
 		}
 		if (snapshot->memory_maps_count && fputs("\n    ", stdout) == EOF)
+			return EIO;
+		if (putchar('}') == EOF)
+			return EIO;
+		first = 0;
+	}
+	if (snapshot->effective_groups & MAPPLE_PSLIST_GROUP_ELF) {
+		if (fputs(first ? "\n    \"elf\": {" : ",\n    \"elf\": {", stdout) == EOF)
+			return EIO;
+		for (index = 0; index < snapshot->elf_count; ++index) {
+			if (printf("%s\n      \"%" PRIu64 "\": ", index ? "," : "",
+				   (uint64_t)snapshot->elfs[index].object_id) < 0)
+				return EIO;
+			ret = mapple_pslist_print_json_elf(&snapshot->elfs[index], 6);
+			if (ret)
+				return ret;
+		}
+		if (snapshot->elf_count && fputs("\n    ", stdout) == EOF)
 			return EIO;
 		if (putchar('}') == EOF)
 			return EIO;
@@ -1478,7 +1622,7 @@ int run_pslist(int session_fd)
 {
 	static const char *const default_groups[] = {
 		"identity", "environment", "security", "context", "resources", "fds",
-		"fds-details", "network", "memory-maps",
+		"fds-details", "network", "memory-maps", "elf",
 	};
 
 	return run_pslist_groups(session_fd, default_groups,

@@ -41,6 +41,13 @@ struct mapple_wire_header {
 #define MAPPLE_PSLIST_MEMORY_MAP_MAX_COUNT 262144U
 #define MAPPLE_PSLIST_MEMORY_MAP_NAME_MAX_SIZE 256U
 #define MAPPLE_PSLIST_MEMORY_MAP_PATH_MAX_SIZE 4096U
+#define MAPPLE_PSLIST_ELF_STRING_MAX_SIZE 4096U
+#define MAPPLE_PSLIST_ELF_BUILD_ID_MAX_SIZE 128U
+#define MAPPLE_PSLIST_ELF_MAX_PROGRAM_HEADERS 4096U
+#define MAPPLE_PSLIST_ELF_MAX_SECTION_HEADERS 65536U
+#define MAPPLE_PSLIST_ELF_MAX_DYNAMIC_STRINGS 65536U
+#define MAPPLE_PSLIST_ELF_MAX_DYNAMIC_SYMBOLS 262144U
+#define MAPPLE_PSLIST_ELF_MAX_TABLE_SIZE (16U * 1024U * 1024U)
 
 #define MAPPLE_PSLIST_GROUP_IDENTITY (1ULL << 0)
 #define MAPPLE_PSLIST_GROUP_ENVIRONMENT (1ULL << 1)
@@ -65,7 +72,7 @@ struct mapple_wire_header {
 	 MAPPLE_PSLIST_GROUP_SECURITY | MAPPLE_PSLIST_GROUP_CONTEXT |                 \
 	 MAPPLE_PSLIST_GROUP_RESOURCES | MAPPLE_PSLIST_GROUP_FDS |                    \
 	 MAPPLE_PSLIST_GROUP_FDS_DETAILS | MAPPLE_PSLIST_GROUP_NETWORK |              \
-	 MAPPLE_PSLIST_GROUP_MEMORY_MAPS)
+	 MAPPLE_PSLIST_GROUP_MEMORY_MAPS | MAPPLE_PSLIST_GROUP_ELF)
 
 #define MAPPLE_PSLIST_DEFAULT_GROUPS MAPPLE_PSLIST_SUPPORTED_GROUPS
 
@@ -95,7 +102,10 @@ enum mapple_pslist_stream_record_type {
 	MAPPLE_PSLIST_STREAM_RESOURCES = 13,
 	MAPPLE_PSLIST_STREAM_ENVIRONMENT = 14,
 	MAPPLE_PSLIST_STREAM_MEMORY_MAPS_METADATA = 15,
-	MAPPLE_PSLIST_STREAM_MEMORY_MAP = 16
+	MAPPLE_PSLIST_STREAM_MEMORY_MAP = 16,
+	MAPPLE_PSLIST_STREAM_ELF_METADATA = 17,
+	MAPPLE_PSLIST_STREAM_ELF_STRING = 18,
+	MAPPLE_PSLIST_STREAM_ELF_SYMBOL = 19
 };
 
 struct mapple_pslist_stream_record {
@@ -114,7 +124,8 @@ enum mapple_pslist_task_type {
 enum mapple_pslist_object_type {
 	MAPPLE_PSLIST_OBJECT_MM = 1,
 	MAPPLE_PSLIST_OBJECT_FILES = 2,
-	MAPPLE_PSLIST_OBJECT_TASK = 3
+	MAPPLE_PSLIST_OBJECT_TASK = 3,
+	MAPPLE_PSLIST_OBJECT_ELF_FILE = 4
 };
 
 enum mapple_pslist_snapshot_status {
@@ -480,6 +491,7 @@ struct mapple_pslist_memory_maps_metadata_record {
 struct mapple_pslist_memory_map_record {
 	struct mapple_pslist_stream_record record;
 	__u64 object_id;
+	__u64 elf_object_id;
 	__u32 mapping_index;
 	__u16 mapping_type;
 	__u16 name_kind;
@@ -509,6 +521,83 @@ struct mapple_pslist_memory_map_record {
 	__u64 file_filesystem_magic;
 } PACKED_STRUCT;
 /* Followed by mapping-name bytes, then mapped-file path bytes. */
+
+enum mapple_pslist_elf_string_kind {
+	MAPPLE_PSLIST_ELF_STRING_INTERPRETER = 1,
+	MAPPLE_PSLIST_ELF_STRING_NEEDED = 2,
+	MAPPLE_PSLIST_ELF_STRING_SONAME = 3,
+	MAPPLE_PSLIST_ELF_STRING_RPATH = 4,
+	MAPPLE_PSLIST_ELF_STRING_RUNPATH = 5,
+	MAPPLE_PSLIST_ELF_STRING_BUILD_ID = 6
+};
+
+enum mapple_pslist_elf_symbol_kind {
+	MAPPLE_PSLIST_ELF_SYMBOL_IMPORT = 1,
+	MAPPLE_PSLIST_ELF_SYMBOL_EXPORT = 2
+};
+
+struct mapple_pslist_elf_metadata_record {
+	struct mapple_pslist_stream_record record;
+	__u64 object_id;
+	__u8 elf_class;
+	__u8 data_encoding;
+	__u8 os_abi;
+	__u8 abi_version;
+	__u16 object_type;
+	__u16 machine;
+	__u32 elf_version;
+	__u32 flags;
+	__u32 program_header_count;
+	__u32 section_header_count;
+	__u32 string_record_count;
+	__u32 symbol_record_count;
+	__u32 import_count;
+	__u32 export_count;
+	__u64 entry_address;
+	__u64 program_header_offset;
+	__u64 section_header_offset;
+	__u16 program_header_entry_size;
+	__u16 section_header_entry_size;
+	__u16 section_name_index;
+	__u16 reserved;
+	__u32 file_device_major;
+	__u32 file_device_minor;
+	__u32 file_mode;
+	__u32 reserved2;
+	__u64 file_inode;
+	__u64 file_size;
+	__s64 file_mtime_ns;
+	__s64 file_ctime_ns;
+	__u64 file_filesystem_magic;
+} PACKED_STRUCT;
+
+struct mapple_pslist_elf_string_record {
+	struct mapple_pslist_stream_record record;
+	__u64 object_id;
+	__u32 string_index;
+	__u16 string_kind;
+	__u16 reserved;
+	__u32 byte_length;
+	__u32 reserved2;
+} PACKED_STRUCT;
+/* Followed by byte_length bytes. Build IDs are binary; all other kinds are text. */
+
+struct mapple_pslist_elf_symbol_record {
+	struct mapple_pslist_stream_record record;
+	__u64 object_id;
+	__u32 symbol_index;
+	__u16 symbol_kind;
+	__u8 binding;
+	__u8 symbol_type;
+	__u8 visibility;
+	__u8 reserved;
+	__u16 section_index;
+	__u32 name_length;
+	__u32 reserved2;
+	__u64 value;
+	__u64 size;
+} PACKED_STRUCT;
+/* Followed by name_length bytes. */
 
 enum mapple_pslist_data_status {
 	MAPPLE_PSLIST_DATA_AVAILABLE = 1,

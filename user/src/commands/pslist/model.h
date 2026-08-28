@@ -312,6 +312,7 @@ struct mapple_pslist_resources {
 };
 
 struct mapple_pslist_memory_map {
+	__u64 elf_object_id;
 	__u32 mapping_index;
 	__u16 mapping_type;
 	__u16 name_kind;
@@ -354,6 +355,65 @@ struct mapple_pslist_memory_maps {
 	size_t capacity;
 };
 
+struct mapple_pslist_elf_string {
+	__u16 kind;
+	unsigned char *bytes;
+	__u32 length;
+};
+
+struct mapple_pslist_elf_symbol {
+	__u16 kind;
+	__u8 binding;
+	__u8 type;
+	__u8 visibility;
+	__u16 section_index;
+	unsigned char *name;
+	__u32 name_length;
+	__u64 value;
+	__u64 size;
+};
+
+struct mapple_pslist_elf {
+	__u64 object_id;
+	__u16 status;
+	__u32 error;
+	int has_metadata;
+	__u8 elf_class;
+	__u8 data_encoding;
+	__u8 os_abi;
+	__u8 abi_version;
+	__u16 object_type;
+	__u16 machine;
+	__u32 elf_version;
+	__u32 flags;
+	__u32 program_header_count;
+	__u32 section_header_count;
+	__u32 string_record_count;
+	__u32 symbol_record_count;
+	__u32 import_count;
+	__u32 export_count;
+	__u64 entry_address;
+	__u64 program_header_offset;
+	__u64 section_header_offset;
+	__u16 program_header_entry_size;
+	__u16 section_header_entry_size;
+	__u16 section_name_index;
+	__u32 file_device_major;
+	__u32 file_device_minor;
+	__u32 file_mode;
+	__u64 file_inode;
+	__u64 file_size;
+	__s64 file_mtime_ns;
+	__s64 file_ctime_ns;
+	__u64 file_filesystem_magic;
+	struct mapple_pslist_elf_string *strings;
+	size_t string_count;
+	size_t string_capacity;
+	struct mapple_pslist_elf_symbol *symbols;
+	size_t symbol_count;
+	size_t symbol_capacity;
+};
+
 struct mapple_pslist_snapshot {
 	struct mapple_pslist_task *tasks;
 	size_t task_count;
@@ -382,6 +442,9 @@ struct mapple_pslist_snapshot {
 	struct mapple_pslist_memory_maps *memory_maps;
 	size_t memory_maps_count;
 	size_t memory_maps_capacity;
+	struct mapple_pslist_elf *elfs;
+	size_t elf_count;
+	size_t elf_capacity;
 	__u64 requested_groups;
 	__u64 effective_groups;
 	__u64 supported_groups;

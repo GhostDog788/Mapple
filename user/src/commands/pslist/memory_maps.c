@@ -181,6 +181,8 @@ int mapple_pslist_decode_memory_map(
 		return ret;
 	mapping = &memory_maps->mappings[memory_maps->count];
 	memset(mapping, 0, sizeof(*mapping));
+	mapping->elf_object_id = mapple_pslist_memory_maps_read_u64(
+		wire, offsetof(struct mapple_pslist_memory_map_record, elf_object_id));
 #define MAP_U16(field)                                                            \
 	mapping->field = mapple_pslist_memory_maps_read_u16(                         \
 		wire, offsetof(struct mapple_pslist_memory_map_record, field))
@@ -241,6 +243,9 @@ int mapple_pslist_decode_memory_map(
 	if (mapping->mapping_type == MAPPLE_PSLIST_MEMORY_MAPPING_FILE &&
 	    mapping->name_kind != MAPPLE_PSLIST_MEMORY_MAP_NAME_NONE &&
 	    mapping->name_kind != MAPPLE_PSLIST_MEMORY_MAP_NAME_SHARED_ANONYMOUS)
+		return EPROTO;
+	if (mapping->mapping_type != MAPPLE_PSLIST_MEMORY_MAPPING_FILE &&
+	    mapping->elf_object_id)
 		return EPROTO;
 	bytes = (const unsigned char *)record + sizeof(*wire);
 	ret = mapple_pslist_memory_map_copy_bytes(&mapping->name, &bytes,
@@ -467,7 +472,8 @@ static int mapple_pslist_print_mapped_file(
 }
 
 static int mapple_pslist_print_memory_mapping(
-	const struct mapple_pslist_memory_map *mapping, __u32 page_size, int indent)
+	const struct mapple_pslist_memory_map *mapping, __u32 page_size, int indent,
+	int include_elf)
 {
 	const char *type = mapple_pslist_memory_mapping_type_name(mapping->mapping_type);
 	__u64 byte_offset = 0;
@@ -515,11 +521,23 @@ static int mapple_pslist_print_memory_mapping(
 	if (ret || fputs(", \"file\": ", stdout) == EOF)
 		return ret ? ret : EIO;
 	ret = mapple_pslist_print_mapped_file(mapping);
-	return ret || putchar('}') == EOF ? (ret ? ret : EIO) : 0;
+	if (ret)
+		return ret;
+	if (include_elf) {
+		if (fputs(", \"elf\": ", stdout) == EOF)
+			return EIO;
+		if (mapping->elf_object_id) {
+			if (printf("%" PRIu64, (uint64_t)mapping->elf_object_id) < 0)
+				return EIO;
+		} else if (fputs("null", stdout) == EOF) {
+			return EIO;
+		}
+	}
+	return putchar('}') == EOF ? EIO : 0;
 }
 
 int mapple_pslist_print_json_memory_maps(
-	const struct mapple_pslist_memory_maps *memory_maps, int indent)
+	const struct mapple_pslist_memory_maps *memory_maps, int indent, int include_elf)
 {
 	const char *status = mapple_pslist_memory_maps_object_status_name(
 		memory_maps->status);
@@ -537,7 +555,7 @@ int mapple_pslist_print_json_memory_maps(
 			return EIO;
 		ret = mapple_pslist_print_memory_mapping(
 			&memory_maps->mappings[index], memory_maps->page_size_bytes,
-			indent + 4);
+			indent + 4, include_elf);
 		if (ret)
 			return ret;
 	}

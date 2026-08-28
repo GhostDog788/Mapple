@@ -23,11 +23,9 @@ optional collectors:
 | 8 | `memory-maps` | VMA and mapped-file metadata |
 | 9 | `elf` | static metadata for mapped ELF files |
 
-The current milestone implements `identity`, `environment`, `security`, `context`,
-`resources`, `fds`, `fds-details`, `network`, and `memory-maps`.
-Requests for reserved but unimplemented groups fail with `EOPNOTSUPP` before the
-task walk. `fds-details` and `network` imply `fds`; the streamed response reports
-both the requested and effective masks.
+The current milestone implements every listed group. `elf` implies
+`memory-maps`, just as `fds-details` and `network` imply `fds`.
+The streamed response reports both the requested and effective masks.
 
 ## One-pass object model
 
@@ -108,6 +106,23 @@ architecture-specific bits in an `unknown_mask`. If the VMA count changes while
 the collector allocates its bounded snapshot, the object is retried and then
 reported as raced; address spaces beyond the explicit mapping limit are reported
 as too large rather than partially emitted.
+
+ELF collection extends memory maps without rescanning the task list. While each
+address space is captured, file-backed mappings are checked through their pinned
+kernel file objects. A request-local inode registry assigns one ELF object ID to
+each mapped ELF image, so shared libraries mapped by many processes are parsed
+and emitted only once. Memory-map entries reference those objects; non-ELF
+mappings have no reference. The ELF section is therefore a sibling object catalog,
+not a task-linked group or a copy of every mapped file.
+
+The collector uses `kernel_read` with private offsets, so it never advances the
+target file's position. It normalizes the ELF identification and header fields,
+interpreter, dynamic dependencies, SONAME, RPATH/RUNPATH, GNU build ID, and
+visible dynamic imports and exports into bounded wire records. Both ELF32 and
+ELF64 and either byte order are decoded. Images are checked before and after
+collection for identity, size, and timestamp changes; detected mutation is
+reported as a raced object. Userspace only validates, groups, and renders the
+kernel-supplied records and never opens an image itself.
 
 ## Stream framing and races
 
