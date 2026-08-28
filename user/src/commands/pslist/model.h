@@ -7,6 +7,7 @@
 
 enum mapple_pslist_output_group {
 	MAPPLE_PSLIST_OUTPUT_IDENTITY,
+	MAPPLE_PSLIST_OUTPUT_SECURITY,
 	MAPPLE_PSLIST_OUTPUT_FDS,
 	MAPPLE_PSLIST_OUTPUT_NETWORK,
 	MAPPLE_PSLIST_OUTPUT_GROUP_COUNT,
@@ -174,6 +175,44 @@ struct mapple_pslist_identity {
 	__u64 executable_filesystem_magic;
 };
 
+struct mapple_pslist_security {
+	__u64 object_id;
+	__u16 status;
+	int has_record;
+	__u32 uid;
+	__u32 gid;
+	__u32 effective_uid;
+	__u32 effective_gid;
+	__u32 saved_uid;
+	__u32 saved_gid;
+	__u32 filesystem_uid;
+	__u32 filesystem_gid;
+	__u32 user_namespace;
+	__u32 securebits;
+	__u32 no_new_privs;
+	__u32 seccomp_mode;
+	__u32 seccomp_filter_count;
+	__u16 dumpable_status;
+	__u16 dumpable_reason;
+	__u16 lsm_status;
+	__u16 lsm_provider_status;
+	__u32 dumpable;
+	__s32 lsm_error;
+	__u32 lsm_secid;
+	__s32 lsm_provider_error;
+	__u64 capability_inheritable;
+	__u64 capability_permitted;
+	__u64 capability_effective;
+	__u64 capability_bounding;
+	__u64 capability_ambient;
+	__u32 *supplementary_groups;
+	__u32 supplementary_group_count;
+	unsigned char *lsm_provider;
+	__u32 lsm_provider_length;
+	unsigned char *lsm_context;
+	__u32 lsm_context_length;
+};
+
 struct mapple_pslist_snapshot {
 	struct mapple_pslist_task *tasks;
 	size_t task_count;
@@ -181,6 +220,9 @@ struct mapple_pslist_snapshot {
 	struct mapple_pslist_identity *identities;
 	size_t identity_count;
 	size_t identity_capacity;
+	struct mapple_pslist_security *security;
+	size_t security_count;
+	size_t security_capacity;
 	struct mapple_pslist_fd_table *fd_tables;
 	size_t fd_table_count;
 	size_t fd_table_capacity;

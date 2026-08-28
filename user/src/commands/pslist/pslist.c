@@ -14,6 +14,7 @@
 #include <commands/pslist/fd.h>
 #include <commands/pslist/json.h>
 #include <commands/pslist/model.h>
+#include <commands/pslist/security.h>
 #include <communication/command.h>
 #include <communication/stream.h>
 
@@ -194,6 +195,17 @@ mapple_pslist_find_identity(struct mapple_pslist_snapshot *snapshot, __u64 objec
 	return NULL;
 }
 
+static struct mapple_pslist_security *
+mapple_pslist_find_security(struct mapple_pslist_snapshot *snapshot, __u64 object_id)
+{
+	size_t index;
+
+	for (index = 0; index < snapshot->security_count; ++index)
+		if (snapshot->security[index].object_id == object_id)
+			return &snapshot->security[index];
+	return NULL;
+}
+
 static struct mapple_pslist_fd_table *
 mapple_pslist_find_fd_table(struct mapple_pslist_snapshot *snapshot, __u64 object_id)
 {
@@ -270,6 +282,25 @@ static int mapple_pslist_add_identity(struct mapple_pslist_snapshot *snapshot, _
 	identity = &snapshot->identities[snapshot->identity_count++];
 	memset(identity, 0, sizeof(*identity));
 	identity->object_id = object_id;
+	return 0;
+}
+
+static int mapple_pslist_add_security(struct mapple_pslist_snapshot *snapshot,
+				      __u64 object_id)
+{
+	struct mapple_pslist_security *security;
+	int ret;
+
+	if (mapple_pslist_find_security(snapshot, object_id))
+		return EPROTO;
+	ret = mapple_pslist_grow((void **)&snapshot->security,
+				 &snapshot->security_capacity, snapshot->security_count,
+				 sizeof(*snapshot->security));
+	if (ret)
+		return ret;
+	security = &snapshot->security[snapshot->security_count++];
+	memset(security, 0, sizeof(*security));
+	security->object_id = object_id;
 	return 0;
 }
 
@@ -353,6 +384,10 @@ static int mapple_pslist_decode_link(struct mapple_pslist_snapshot *snapshot,
 		if (object_type != MAPPLE_PSLIST_OBJECT_MM) return EPROTO;
 		slot = &task->group_object_ids[MAPPLE_PSLIST_OUTPUT_IDENTITY];
 		break;
+	case MAPPLE_PSLIST_GROUP_SECURITY:
+		if (object_type != MAPPLE_PSLIST_OBJECT_TASK) return EPROTO;
+		slot = &task->group_object_ids[MAPPLE_PSLIST_OUTPUT_SECURITY];
+		break;
 	case MAPPLE_PSLIST_GROUP_FDS:
 		if (object_type != MAPPLE_PSLIST_OBJECT_FILES) return EPROTO;
 		slot = &task->group_object_ids[MAPPLE_PSLIST_OUTPUT_FDS];
@@ -383,6 +418,9 @@ static int mapple_pslist_decode_object_begin(struct mapple_pslist_snapshot *snap
 		return EPROTO;
 	if (group == MAPPLE_PSLIST_GROUP_IDENTITY && object_type == MAPPLE_PSLIST_OBJECT_MM)
 		return mapple_pslist_add_identity(snapshot, object_id);
+	if (group == MAPPLE_PSLIST_GROUP_SECURITY &&
+	    object_type == MAPPLE_PSLIST_OBJECT_TASK)
+		return mapple_pslist_add_security(snapshot, object_id);
 	if (group == MAPPLE_PSLIST_GROUP_FDS &&
 	    object_type == MAPPLE_PSLIST_OBJECT_FILES)
 		return mapple_pslist_add_fd_table(snapshot, object_id);
@@ -482,6 +520,7 @@ static int mapple_pslist_decode_object_end(struct mapple_pslist_snapshot *snapsh
 					   __u64 group)
 {
 	struct mapple_pslist_identity *identity;
+	struct mapple_pslist_security *security;
 	struct mapple_pslist_fd_table *table;
 	struct mapple_pslist_network_table *network_table;
 	__u64 object_id = mapple_pslist_read_u64(
@@ -498,6 +537,13 @@ static int mapple_pslist_decode_object_end(struct mapple_pslist_snapshot *snapsh
 		if (!identity || !identity->has_record || identity->status || count != 1)
 			return EPROTO;
 		identity->status = status;
+		return 0;
+	}
+	if (group == MAPPLE_PSLIST_GROUP_SECURITY) {
+		security = mapple_pslist_find_security(snapshot, object_id);
+		if (!security || !security->has_record || security->status || count != 1)
+			return EPROTO;
+		security->status = status;
 		return 0;
 	}
 	if (group == MAPPLE_PSLIST_GROUP_FDS) {
@@ -605,6 +651,17 @@ static int mapple_pslist_read_snapshot(int session_fd, struct mapple_pslist_snap
 			if (!began || group != MAPPLE_PSLIST_GROUP_IDENTITY) { ret = EPROTO; break; }
 			ret = mapple_pslist_decode_identity(snapshot, (const void *)record, record_size);
 			break;
+		case MAPPLE_PSLIST_STREAM_SECURITY: {
+			__u64 id = mapple_pslist_read_u64(
+				record, offsetof(struct mapple_pslist_security_record, object_id));
+			struct mapple_pslist_security *security =
+				mapple_pslist_find_security(snapshot, id);
+
+			ret = !security || group != MAPPLE_PSLIST_GROUP_SECURITY ?
+				EPROTO : mapple_pslist_decode_security_record(
+						 record, record_size, security);
+			break;
+		}
 		case MAPPLE_PSLIST_STREAM_FD: {
 			__u64 id = mapple_pslist_read_u64(record, offsetof(struct mapple_pslist_fd_record, object_id));
 			struct mapple_pslist_fd_table *table = mapple_pslist_find_fd_table(snapshot, id);
@@ -652,12 +709,15 @@ static void mapple_pslist_free_snapshot(struct mapple_pslist_snapshot *snapshot)
 		free(snapshot->identities[index].command_line);
 		free(snapshot->identities[index].executable_path);
 	}
+	for (index = 0; index < snapshot->security_count; ++index)
+		mapple_pslist_free_security(&snapshot->security[index]);
 	for (index = 0; index < snapshot->fd_table_count; ++index)
 		mapple_pslist_free_fd_table(&snapshot->fd_tables[index]);
 	for (index = 0; index < snapshot->network_table_count; ++index)
 		mapple_pslist_free_network_table(&snapshot->network_tables[index]);
 	free(snapshot->tasks);
 	free(snapshot->identities);
+	free(snapshot->security);
 	free(snapshot->fd_tables);
 	free(snapshot->network_tables);
 	memset(snapshot, 0, sizeof(*snapshot));
@@ -723,6 +783,8 @@ static int mapple_pslist_print_task(const struct mapple_pslist_task *task,
 	} while (0)
 	PRINT_TASK_GROUP(MAPPLE_PSLIST_GROUP_IDENTITY, "identity",
 			 MAPPLE_PSLIST_OUTPUT_IDENTITY);
+	PRINT_TASK_GROUP(MAPPLE_PSLIST_GROUP_SECURITY, "security",
+			 MAPPLE_PSLIST_OUTPUT_SECURITY);
 	PRINT_TASK_GROUP(MAPPLE_PSLIST_GROUP_FDS, "fds", MAPPLE_PSLIST_OUTPUT_FDS);
 	PRINT_TASK_GROUP(MAPPLE_PSLIST_GROUP_NETWORK, "network",
 			 MAPPLE_PSLIST_OUTPUT_NETWORK);
@@ -947,6 +1009,24 @@ static int mapple_pslist_print_objects(const struct mapple_pslist_snapshot *snap
 			return EIO;
 		first = 0;
 	}
+	if (snapshot->effective_groups & MAPPLE_PSLIST_GROUP_SECURITY) {
+		if (fputs(first ? "\n    \"security\": {" :
+				  ",\n    \"security\": {", stdout) == EOF)
+			return EIO;
+		for (index = 0; index < snapshot->security_count; ++index) {
+			if (printf("%s\n      \"%" PRIu64 "\": ", index ? "," : "",
+				   (uint64_t)snapshot->security[index].object_id) < 0)
+				return EIO;
+			ret = mapple_pslist_print_json_security(&snapshot->security[index], 6);
+			if (ret)
+				return ret;
+		}
+		if (snapshot->security_count && fputs("\n    ", stdout) == EOF)
+			return EIO;
+		if (putchar('}') == EOF)
+			return EIO;
+		first = 0;
+	}
 	if (snapshot->effective_groups & MAPPLE_PSLIST_GROUP_FDS) {
 		if (fputs(first ? "\n    \"fds\": {" : ",\n    \"fds\": {", stdout) == EOF)
 			return EIO;
@@ -1048,7 +1128,7 @@ int run_pslist_groups(int session_fd, const char *const *group_names, size_t gro
 int run_pslist(int session_fd)
 {
 	static const char *const default_groups[] = {
-		"identity", "fds", "fds-details", "network",
+		"identity", "security", "fds", "fds-details", "network",
 	};
 
 	return run_pslist_groups(session_fd, default_groups,

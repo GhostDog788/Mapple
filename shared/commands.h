@@ -56,7 +56,8 @@ struct mapple_wire_header {
 	 MAPPLE_PSLIST_GROUP_MEMORY_MAPS | MAPPLE_PSLIST_GROUP_ELF)
 
 #define MAPPLE_PSLIST_SUPPORTED_GROUPS                                               \
-	(MAPPLE_PSLIST_GROUP_IDENTITY | MAPPLE_PSLIST_GROUP_FDS |                      \
+	(MAPPLE_PSLIST_GROUP_IDENTITY | MAPPLE_PSLIST_GROUP_SECURITY |                 \
+	 MAPPLE_PSLIST_GROUP_FDS |                                                    \
 	 MAPPLE_PSLIST_GROUP_FDS_DETAILS | MAPPLE_PSLIST_GROUP_NETWORK)
 
 #define MAPPLE_PSLIST_DEFAULT_GROUPS MAPPLE_PSLIST_SUPPORTED_GROUPS
@@ -81,7 +82,8 @@ enum mapple_pslist_stream_record_type {
 	MAPPLE_PSLIST_STREAM_FD_DETAILS = 7,
 	MAPPLE_PSLIST_STREAM_NETWORK = 8,
 	MAPPLE_PSLIST_STREAM_OBJECT_END = 9,
-	MAPPLE_PSLIST_STREAM_SNAPSHOT_END = 10
+	MAPPLE_PSLIST_STREAM_SNAPSHOT_END = 10,
+	MAPPLE_PSLIST_STREAM_SECURITY = 11
 };
 
 struct mapple_pslist_stream_record {
@@ -99,7 +101,8 @@ enum mapple_pslist_task_type {
 
 enum mapple_pslist_object_type {
 	MAPPLE_PSLIST_OBJECT_MM = 1,
-	MAPPLE_PSLIST_OBJECT_FILES = 2
+	MAPPLE_PSLIST_OBJECT_FILES = 2,
+	MAPPLE_PSLIST_OBJECT_TASK = 3
 };
 
 enum mapple_pslist_snapshot_status {
@@ -218,6 +221,50 @@ struct mapple_pslist_identity_record {
 	__u64 object_id;
 	struct mapple_pslist_process_data identity;
 } PACKED_STRUCT;
+
+#define MAPPLE_PSLIST_SECURITY_MAX_SUPPLEMENTARY_GROUPS 65536U
+#define MAPPLE_PSLIST_LSM_PROVIDER_MAX_SIZE 64U
+
+enum mapple_pslist_dumpable_reason {
+	MAPPLE_PSLIST_DUMPABLE_REASON_NONE = 0,
+	MAPPLE_PSLIST_DUMPABLE_REASON_NO_MM = 1
+};
+
+struct mapple_pslist_security_record {
+	struct mapple_pslist_stream_record record;
+	__u64 object_id;
+	__u32 uid;
+	__u32 gid;
+	__u32 effective_uid;
+	__u32 effective_gid;
+	__u32 saved_uid;
+	__u32 saved_gid;
+	__u32 filesystem_uid;
+	__u32 filesystem_gid;
+	__u32 user_namespace;
+	__u32 securebits;
+	__u32 no_new_privs;
+	__u32 seccomp_mode;
+	__u32 seccomp_filter_count;
+	__u16 dumpable_status;
+	__u16 dumpable_reason;
+	__u16 lsm_status;
+	__u16 lsm_provider_status;
+	__u32 dumpable;
+	__u32 lsm_error;
+	__u32 lsm_secid;
+	__u32 lsm_provider_error;
+	__u32 supplementary_group_count;
+	__u32 lsm_provider_length;
+	__u32 lsm_context_length;
+	__u32 reserved;
+	__u64 capability_inheritable;
+	__u64 capability_permitted;
+	__u64 capability_effective;
+	__u64 capability_bounding;
+	__u64 capability_ambient;
+} PACKED_STRUCT;
+/* Followed by supplementary GIDs, LSM provider bytes, then LSM context bytes. */
 
 enum mapple_pslist_data_status {
 	MAPPLE_PSLIST_DATA_AVAILABLE = 1,

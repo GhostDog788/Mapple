@@ -14,7 +14,7 @@ optional collectors:
 | ---: | --- | --- |
 | 0 | `identity` | argv and executable identity |
 | 1 | `environment` | environment entries |
-| 2 | `security` | credentials, capabilities, seccomp and LSM context |
+| 2 | `security` | credentials, capabilities, securebits, seccomp, dumpability and LSM context |
 | 3 | `context` | CWD, root, namespaces and cgroups |
 | 4 | `resources` | CPU, memory and I/O counters |
 | 5 | `fds` | generic FD inventory |
@@ -23,7 +23,8 @@ optional collectors:
 | 8 | `memory-maps` | VMA and mapped-file metadata |
 | 9 | `elf` | static metadata for mapped ELF files |
 
-The current milestone implements `identity`, `fds`, `fds-details`, and `network`.
+The current milestone implements `identity`, `security`, `fds`, `fds-details`, and
+`network`.
 Requests for reserved but unimplemented groups fail with `EOPNOTSUPP` before the
 task walk. `fds-details` and `network` imply `fds`; the streamed response reports
 both the requested and effective masks.
@@ -47,11 +48,33 @@ Socket-specific fields belong only to the network group. If a task replaces its
 FD table between discovery and capture, that object is marked raced rather than
 capturing the replacement under the original object ID.
 
-Userspace renders `identity`, `fds`, and `network` as sibling object sections.
+Userspace renders `identity`, `security`, `fds`, and `network` as sibling object
+sections.
 `fds-details` is an enrichment of `fds`, so it adds details to FD entries under
 the base FDS object's lifecycle instead of creating a separate object, section,
 status, or task reference. The network section contains only sockets; ordinary
 FDs do not receive `network: null` placeholders.
+
+Security is a sibling section with one object per task. Although credentials are
+often shared, `no_new_privs`, seccomp state, dumpability and objective LSM state
+can differ per task, so deduplicating only by `cred` would associate the wrong
+security state. Each record includes init-user-namespace credential values,
+supplementary groups, all five capability sets, the credential user namespace,
+securebits, seccomp mode and filter count, dumpability, and the LSM secid/context.
+Userspace groups real, effective, saved and filesystem IDs under `uids` and
+`gids`. `ids_mapped_to` identifies the namespace view used for those numeric
+IDs, while `credential_user_namespace.inode` identifies the namespace attached
+to the credential. Capability, securebit and dumpability names use canonical
+Linux symbols. Optional values use `collection_status`; failures include a
+numeric errno and its symbolic name. Seccomp reports a `filter_program_count`,
+not a count of individual syscall rules. A task without an `mm_struct`, such as
+a kernel thread, reports dumpability with the reason `no_memory_descriptor`.
+
+The objective LSM context includes its major provider. Linux 6.6 does not export
+the internal LSM-name registry to modules, so the collector performs read-only
+lookups of the kernel-created AppArmor, SELinux and Smack filesystem entries once
+per request. If none is visible, provider collection is reported as unavailable;
+the label text is never used to guess its provider.
 
 ## Stream framing and races
 
