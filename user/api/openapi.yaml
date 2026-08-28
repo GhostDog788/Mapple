@@ -1,0 +1,369 @@
+openapi: 3.0.3
+info:
+  title: mappled control plane API
+  version: "1"
+  description: >
+    HTTPS control plane for the mapple kernel module. This is the sole
+    public contract: mappled is the only process permitted to speak the
+    kernel wire protocol; every other client (the mapple TUI, curl,
+    automation) goes through this API.
+servers:
+  - url: /v1
+security:
+  - bearerAuth: []
+paths:
+  /health/live:
+    get:
+      summary: Unauthenticated daemon liveness check.
+      security: []
+      responses:
+        "200":
+          description: Daemon is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+  /status:
+    get:
+      summary: Authenticated daemon information.
+      responses:
+        "200":
+          description: Daemon status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /sessions:
+    get:
+      summary: List all leases.
+      responses:
+        "200":
+          description: Current leases.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Session"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      summary: Create a lease against a module TCP host:port or chardev path.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Destination"
+      responses:
+        "201":
+          description: Lease created; module INFO already verified.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "504":
+          description: Connect or INFO handshake timed out.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /sessions/{id}:
+    parameters:
+      - $ref: "#/components/parameters/SessionID"
+    get:
+      summary: Inspect a lease's state, destination, cached INFO, and expiry.
+      responses:
+        "200":
+          description: Lease detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      summary: Idempotently force-close and remove a lease, even while busy.
+      responses:
+        "204":
+          description: Lease removed (or already absent).
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /sessions/{id}/renew:
+    parameters:
+      - $ref: "#/components/parameters/SessionID"
+    post:
+      summary: Refresh an idle lease's expiry.
+      responses:
+        "200":
+          description: Renewed lease.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Busy"
+  /sessions/{id}/commands/info:
+    parameters:
+      - $ref: "#/components/parameters/SessionID"
+    post:
+      summary: Send INFO on this lease's session.
+      responses:
+        "200":
+          description: Module INFO.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InfoResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Busy"
+        "410":
+          $ref: "#/components/responses/Broken"
+  /sessions/{id}/commands/echo:
+    parameters:
+      - $ref: "#/components/parameters/SessionID"
+    post:
+      summary: Send ECHO on this lease's session. Binary data is base64.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EchoPayload"
+      responses:
+        "200":
+          description: Echoed payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EchoPayload"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Busy"
+        "410":
+          $ref: "#/components/responses/Broken"
+  /sessions/{id}/commands/pslist:
+    parameters:
+      - $ref: "#/components/parameters/SessionID"
+    post:
+      summary: >
+        Send PSLIST on this lease's session, returning semantic
+        process/thread JSON. requested_groups defaults to the module's
+        supported set if omitted.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                requested_groups:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/PslistGroup"
+      responses:
+        "200":
+          description: >
+            Process/thread snapshot. tasks/status/counts are the stable
+            envelope; identities/securities/files carry the full nested
+            per-object detail and mirror the internal wire protocol
+            fairly directly rather than being independently specified
+            field-by-field here.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProcessSnapshot"
+        "400":
+          description: Requested groups include bits the module doesn't support.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Busy"
+        "410":
+          $ref: "#/components/responses/Broken"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    SessionID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: Invalid request.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: No such lease.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Busy:
+      description: A command is already in flight on this lease.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Broken:
+      description: The lease's session is broken and must be deleted/recreated.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Status:
+      type: object
+      required: [max_sessions, active_leases]
+      properties:
+        max_sessions:
+          type: integer
+        active_leases:
+          type: integer
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        request_id:
+          type: string
+    Destination:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [tcp, chardev]
+        host:
+          type: string
+          description: Required when type=tcp.
+        port:
+          type: integer
+          description: Required when type=tcp.
+        path:
+          type: string
+          description: Required when type=chardev; must be absolute.
+    SessionState:
+      type: string
+      enum: [ready, busy, broken]
+    Session:
+      type: object
+      required: [id, state, destination, created_at, expires_at]
+      properties:
+        id:
+          type: string
+        state:
+          $ref: "#/components/schemas/SessionState"
+        destination:
+          $ref: "#/components/schemas/Destination"
+        info:
+          $ref: "#/components/schemas/InfoResult"
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+    InfoResult:
+      type: object
+      required: [session_id, max_sessions, supported_commands]
+      properties:
+        session_id:
+          type: integer
+          format: int64
+        max_sessions:
+          type: integer
+        supported_commands:
+          type: integer
+          format: int64
+    EchoPayload:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: string
+          format: byte
+    PslistGroup:
+      type: string
+      enum: [identity, security, fds, fds_details, network]
+    ProcessSnapshot:
+      type: object
+      required: [status, task_count, object_count, tasks]
+      properties:
+        status:
+          type: string
+          enum: [complete, partial]
+        requested_groups:
+          type: array
+          items:
+            $ref: "#/components/schemas/PslistGroup"
+        effective_groups:
+          type: array
+          items:
+            $ref: "#/components/schemas/PslistGroup"
+        supported_groups:
+          type: array
+          items:
+            $ref: "#/components/schemas/PslistGroup"
+        task_count:
+          type: integer
+        object_count:
+          type: integer
+        tasks:
+          type: array
+          items:
+            type: object
+        identities:
+          type: object
+          additionalProperties: true
+        securities:
+          type: object
+          additionalProperties: true
+        files:
+          type: object
+          additionalProperties: true

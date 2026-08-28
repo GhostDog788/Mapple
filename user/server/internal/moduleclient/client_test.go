@@ -41,7 +41,7 @@ func newHandshakedClient(t *testing.T, sessionID uint64) (*ModuleClient, net.Con
 	t.Helper()
 	clientSide, serverSide := net.Pipe()
 	go serveInfoOnce(t, serverSide, sessionID)
-	c, err := newClient(clientSide)
+	c, err := newClient(context.Background(), clientSide)
 	if err != nil {
 		t.Fatalf("newClient() error = %v", err)
 	}
@@ -62,7 +62,7 @@ func TestNewClient_BadHandshakeResponse(t *testing.T) {
 		serverSide.Write([]byte("not a valid header!!!!!"))
 		serverSide.Close()
 	}()
-	if _, err := newClient(clientSide); err == nil {
+	if _, err := newClient(context.Background(), clientSide); err == nil {
 		t.Fatal("newClient() with garbage handshake response: want error, got nil")
 	}
 }

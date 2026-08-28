@@ -26,9 +26,10 @@ type InfoResult struct {
 }
 
 type ModuleClient struct {
-	t      transport
-	cmdMu  sync.Mutex
-	broken atomic.Bool
+	t           transport
+	cmdMu       sync.Mutex
+	broken      atomic.Bool
+	initialInfo InfoResult
 }
 
 func NewTCP(ctx context.Context, host string, port uint16) (*ModuleClient, error) {
@@ -39,7 +40,7 @@ func NewTCP(ctx context.Context, host string, port uint16) (*ModuleClient, error
 	if err != nil {
 		return nil, err
 	}
-	return newClient(t)
+	return newClient(ctx, t)
 }
 
 func NewCharDev(ctx context.Context, path string) (*ModuleClient, error) {
@@ -50,19 +51,46 @@ func NewCharDev(ctx context.Context, path string) (*ModuleClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newClient(t)
+	return newClient(ctx, t)
 }
 
-func newClient(t transport) (*ModuleClient, error) {
+// Busy reports whether a command is currently in flight.
+func (c *ModuleClient) Busy() bool {
+	if !c.cmdMu.TryLock() {
+		return true
+	}
+	c.cmdMu.Unlock()
+	return false
+}
+
+// Broken reports whether a fatal protocol/transport error has latched this
+// session; only Close() is meaningful on it after that.
+func (c *ModuleClient) Broken() bool {
+	return c.broken.Load()
+}
+
+// InitialInfo returns the INFO result captured during the connect handshake,
+// so callers don't need a second round trip just to cache it.
+func (c *ModuleClient) InitialInfo() InfoResult {
+	return c.initialInfo
+}
+
+func newClient(ctx context.Context, t transport) (*ModuleClient, error) {
 	c := &ModuleClient{t: t}
-	if err := t.SetDeadline(time.Now().Add(connectTimeout)); err != nil {
+	deadline := time.Now().Add(connectTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	if err := t.SetDeadline(deadline); err != nil {
 		t.Close()
 		return nil, fmt.Errorf("moduleclient: set connect deadline: %w", err)
 	}
-	if _, err := c.info(); err != nil {
+	info, err := c.info()
+	if err != nil {
 		t.Close()
 		return nil, fmt.Errorf("moduleclient: initial INFO verification failed: %w", err)
 	}
+	c.initialInfo = info
 	if err := t.SetDeadline(time.Time{}); err != nil {
 		t.Close()
 		return nil, fmt.Errorf("moduleclient: clear connect deadline: %w", err)
