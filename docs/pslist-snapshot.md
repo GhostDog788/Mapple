@@ -23,8 +23,8 @@ optional collectors:
 | 8 | `memory-maps` | VMA and mapped-file metadata |
 | 9 | `elf` | static metadata for mapped ELF files |
 
-The current milestone implements `identity`, `security`, `context`, `resources`,
-`fds`, `fds-details`, and `network`.
+The current milestone implements `identity`, `environment`, `security`, `context`,
+`resources`, `fds`, `fds-details`, and `network`.
 Requests for reserved but unimplemented groups fail with `EOPNOTSUPP` before the
 task walk. `fds-details` and `network` imply `fds`; the streamed response reports
 both the requested and effective masks.
@@ -48,8 +48,8 @@ Socket-specific fields belong only to the network group. If a task replaces its
 FD table between discovery and capture, that object is marked raced rather than
 capturing the replacement under the original object ID.
 
-Userspace renders `identity`, `security`, `context`, `resources`, `fds`, and
-`network` as sibling object sections.
+Userspace renders `identity`, `environment`, `security`, `context`, `resources`,
+`fds`, and `network` as sibling object sections.
 `fds-details` is an enrichment of `fds`, so it adds details to FD entries under
 the base FDS object's lifecycle instead of creating a separate object, section,
 status, or task reference. The network section contains only sockets; ordinary
@@ -90,6 +90,13 @@ space's memory counters. Memory units stay in pages and include the kernel page
 size; I/O and CPU units are named in bytes and nanoseconds. Per-task network byte
 accounting is explicitly unsupported: obtaining it would require retained
 history or hooks, which this request-scoped snapshot intentionally forbids.
+
+Environment is an `mm_struct`-scoped section and is captured once for all tasks
+sharing an address space. The module returns the raw bounded environment block,
+including NUL delimiters, duplicate keys, empty entries, and whether the last
+entry is terminated. Userspace validates that framing and renders an ordered
+entry array; entries without `=` remain visible as raw values instead of being
+dropped or guessed.
 
 ## Stream framing and races
 

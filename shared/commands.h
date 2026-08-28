@@ -35,6 +35,7 @@ struct mapple_wire_header {
 
 #define MAPPLE_PSLIST_COMM_SIZE 16U
 #define MAPPLE_PSLIST_COMMAND_LINE_MAX_SIZE (6U * 1024U * 1024U)
+#define MAPPLE_PSLIST_ENVIRONMENT_MAX_SIZE (6U * 1024U * 1024U)
 #define MAPPLE_PSLIST_FDINFO_MAX_SIZE (6U * 1024U * 1024U)
 #define MAPPLE_PSLIST_CONTEXT_PATH_MAX_SIZE 4096U
 
@@ -57,7 +58,8 @@ struct mapple_wire_header {
 	 MAPPLE_PSLIST_GROUP_MEMORY_MAPS | MAPPLE_PSLIST_GROUP_ELF)
 
 #define MAPPLE_PSLIST_SUPPORTED_GROUPS                                               \
-	(MAPPLE_PSLIST_GROUP_IDENTITY | MAPPLE_PSLIST_GROUP_SECURITY |                 \
+	(MAPPLE_PSLIST_GROUP_IDENTITY | MAPPLE_PSLIST_GROUP_ENVIRONMENT |              \
+	 MAPPLE_PSLIST_GROUP_SECURITY |                                               \
 	 MAPPLE_PSLIST_GROUP_CONTEXT |                                                 \
 	 MAPPLE_PSLIST_GROUP_RESOURCES |                                               \
 	 MAPPLE_PSLIST_GROUP_FDS |                                                    \
@@ -88,7 +90,8 @@ enum mapple_pslist_stream_record_type {
 	MAPPLE_PSLIST_STREAM_SNAPSHOT_END = 10,
 	MAPPLE_PSLIST_STREAM_SECURITY = 11,
 	MAPPLE_PSLIST_STREAM_CONTEXT = 12,
-	MAPPLE_PSLIST_STREAM_RESOURCES = 13
+	MAPPLE_PSLIST_STREAM_RESOURCES = 13,
+	MAPPLE_PSLIST_STREAM_ENVIRONMENT = 14
 };
 
 struct mapple_pslist_stream_record {
@@ -371,6 +374,30 @@ struct mapple_pslist_resources_record {
 	__u64 memory_shared_pages;
 	__u64 memory_swap_entries;
 } PACKED_STRUCT;
+
+#define MAPPLE_PSLIST_ENVIRONMENT_FLAG_TERMINATED (1U << 0)
+#define MAPPLE_PSLIST_ENVIRONMENT_KNOWN_FLAGS                                      \
+	MAPPLE_PSLIST_ENVIRONMENT_FLAG_TERMINATED
+
+enum mapple_pslist_environment_status {
+	MAPPLE_PSLIST_ENVIRONMENT_AVAILABLE = 1,
+	MAPPLE_PSLIST_ENVIRONMENT_EMPTY = 2,
+	MAPPLE_PSLIST_ENVIRONMENT_UNAVAILABLE = 3,
+	MAPPLE_PSLIST_ENVIRONMENT_TOO_LARGE = 4,
+	MAPPLE_PSLIST_ENVIRONMENT_RACED = 5
+};
+
+struct mapple_pslist_environment_record {
+	struct mapple_pslist_stream_record record;
+	__u64 object_id;
+	__u16 status;
+	__u16 flags;
+	__u32 error;
+	__u32 byte_length;
+	__u32 entry_count;
+	__u32 reserved;
+} PACKED_STRUCT;
+/* Followed by the raw NUL-delimited environment block. */
 
 enum mapple_pslist_data_status {
 	MAPPLE_PSLIST_DATA_AVAILABLE = 1,

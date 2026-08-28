@@ -24,6 +24,7 @@
 
 #include <control/commands/pslist/fd.h>
 #include <control/commands/pslist/context.h>
+#include <control/commands/pslist/environment.h>
 #include <control/commands/pslist/security.h>
 #include <control/commands/pslist/resources.h>
 
@@ -31,6 +32,7 @@
 
 enum mapple_pslist_group_index {
 	MAPPLE_PSLIST_GROUP_INDEX_IDENTITY,
+	MAPPLE_PSLIST_GROUP_INDEX_ENVIRONMENT,
 	MAPPLE_PSLIST_GROUP_INDEX_SECURITY,
 	MAPPLE_PSLIST_GROUP_INDEX_CONTEXT,
 	MAPPLE_PSLIST_GROUP_INDEX_RESOURCES,
@@ -495,11 +497,15 @@ static int mapple_pslist_process_mm(struct mapple_command_context *context,
 {
 	struct mapple_pslist_snapshot_object *object;
 	struct mm_struct *mm;
-	u64 object_id;
+	u64 identity_object_id = 0;
+	u64 environment_object_id = 0;
+	u64 groups;
 	bool is_new = false;
 	int ret;
 
-	if (!(snapshot->effective_groups & MAPPLE_PSLIST_GROUP_IDENTITY))
+	groups = snapshot->effective_groups &
+		 (MAPPLE_PSLIST_GROUP_IDENTITY | MAPPLE_PSLIST_GROUP_ENVIRONMENT);
+	if (!groups)
 		return 0;
 	mm = get_task_mm(task);
 	if (!mm)
@@ -516,15 +522,29 @@ static int mapple_pslist_process_mm(struct mapple_command_context *context,
 	} else {
 		mmput(mm);
 	}
-	object_id = mapple_pslist_group_object_id(snapshot, object,
-						  MAPPLE_PSLIST_GROUP_INDEX_IDENTITY);
-	ret = mapple_pslist_write_link(context, pid, object_id,
-				       MAPPLE_PSLIST_OBJECT_MM,
-				       MAPPLE_PSLIST_GROUP_IDENTITY);
-	if (!ret && is_new)
-		ret = mapple_pslist_write_identity_object(context, task, object->mm,
-						  object_id, &snapshot->object_count,
-						  &snapshot->partial);
+	if (groups & MAPPLE_PSLIST_GROUP_IDENTITY)
+		identity_object_id = mapple_pslist_group_object_id(
+			snapshot, object, MAPPLE_PSLIST_GROUP_INDEX_IDENTITY);
+	if (groups & MAPPLE_PSLIST_GROUP_ENVIRONMENT)
+		environment_object_id = mapple_pslist_group_object_id(
+			snapshot, object, MAPPLE_PSLIST_GROUP_INDEX_ENVIRONMENT);
+	ret = 0;
+	if (groups & MAPPLE_PSLIST_GROUP_IDENTITY)
+		ret = mapple_pslist_write_link(context, pid, identity_object_id,
+					       MAPPLE_PSLIST_OBJECT_MM,
+					       MAPPLE_PSLIST_GROUP_IDENTITY);
+	if (!ret && (groups & MAPPLE_PSLIST_GROUP_ENVIRONMENT))
+		ret = mapple_pslist_write_link(context, pid, environment_object_id,
+					       MAPPLE_PSLIST_OBJECT_MM,
+					       MAPPLE_PSLIST_GROUP_ENVIRONMENT);
+	if (!ret && is_new && (groups & MAPPLE_PSLIST_GROUP_IDENTITY))
+		ret = mapple_pslist_write_identity_object(
+			context, task, object->mm, identity_object_id,
+			&snapshot->object_count, &snapshot->partial);
+	if (!ret && is_new && (groups & MAPPLE_PSLIST_GROUP_ENVIRONMENT))
+		ret = mapple_pslist_write_environment_object(
+			context, task, object->mm, environment_object_id,
+			&snapshot->object_count, &snapshot->partial);
 	return ret;
 }
 

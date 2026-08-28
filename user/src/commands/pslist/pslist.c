@@ -12,6 +12,7 @@
 
 #include <commands.h>
 #include <commands/pslist/context.h>
+#include <commands/pslist/environment.h>
 #include <commands/pslist/fd.h>
 #include <commands/pslist/json.h>
 #include <commands/pslist/model.h>
@@ -197,6 +198,18 @@ mapple_pslist_find_identity(struct mapple_pslist_snapshot *snapshot, __u64 objec
 	return NULL;
 }
 
+static struct mapple_pslist_environment *
+mapple_pslist_find_environment(struct mapple_pslist_snapshot *snapshot,
+				       __u64 object_id)
+{
+	size_t index;
+
+	for (index = 0; index < snapshot->environment_count; ++index)
+		if (snapshot->environments[index].object_id == object_id)
+			return &snapshot->environments[index];
+	return NULL;
+}
+
 static struct mapple_pslist_security *
 mapple_pslist_find_security(struct mapple_pslist_snapshot *snapshot, __u64 object_id)
 {
@@ -306,6 +319,26 @@ static int mapple_pslist_add_identity(struct mapple_pslist_snapshot *snapshot, _
 	identity = &snapshot->identities[snapshot->identity_count++];
 	memset(identity, 0, sizeof(*identity));
 	identity->object_id = object_id;
+	return 0;
+}
+
+static int mapple_pslist_add_environment(struct mapple_pslist_snapshot *snapshot,
+					  __u64 object_id)
+{
+	struct mapple_pslist_environment *environment;
+	int ret;
+
+	if (mapple_pslist_find_environment(snapshot, object_id))
+		return EPROTO;
+	ret = mapple_pslist_grow((void **)&snapshot->environments,
+				 &snapshot->environment_capacity,
+				 snapshot->environment_count,
+				 sizeof(*snapshot->environments));
+	if (ret)
+		return ret;
+	environment = &snapshot->environments[snapshot->environment_count++];
+	memset(environment, 0, sizeof(*environment));
+	environment->object_id = object_id;
 	return 0;
 }
 
@@ -446,6 +479,10 @@ static int mapple_pslist_decode_link(struct mapple_pslist_snapshot *snapshot,
 		if (object_type != MAPPLE_PSLIST_OBJECT_MM) return EPROTO;
 		slot = &task->group_object_ids[MAPPLE_PSLIST_OUTPUT_IDENTITY];
 		break;
+	case MAPPLE_PSLIST_GROUP_ENVIRONMENT:
+		if (object_type != MAPPLE_PSLIST_OBJECT_MM) return EPROTO;
+		slot = &task->group_object_ids[MAPPLE_PSLIST_OUTPUT_ENVIRONMENT];
+		break;
 	case MAPPLE_PSLIST_GROUP_SECURITY:
 		if (object_type != MAPPLE_PSLIST_OBJECT_TASK) return EPROTO;
 		slot = &task->group_object_ids[MAPPLE_PSLIST_OUTPUT_SECURITY];
@@ -488,6 +525,9 @@ static int mapple_pslist_decode_object_begin(struct mapple_pslist_snapshot *snap
 		return EPROTO;
 	if (group == MAPPLE_PSLIST_GROUP_IDENTITY && object_type == MAPPLE_PSLIST_OBJECT_MM)
 		return mapple_pslist_add_identity(snapshot, object_id);
+	if (group == MAPPLE_PSLIST_GROUP_ENVIRONMENT &&
+	    object_type == MAPPLE_PSLIST_OBJECT_MM)
+		return mapple_pslist_add_environment(snapshot, object_id);
 	if (group == MAPPLE_PSLIST_GROUP_SECURITY &&
 	    object_type == MAPPLE_PSLIST_OBJECT_TASK)
 		return mapple_pslist_add_security(snapshot, object_id);
@@ -596,6 +636,7 @@ static int mapple_pslist_decode_object_end(struct mapple_pslist_snapshot *snapsh
 					   __u64 group)
 {
 	struct mapple_pslist_identity *identity;
+	struct mapple_pslist_environment *environment;
 	struct mapple_pslist_security *security;
 	struct mapple_pslist_context *context;
 	struct mapple_pslist_resources *resources;
@@ -615,6 +656,14 @@ static int mapple_pslist_decode_object_end(struct mapple_pslist_snapshot *snapsh
 		if (!identity || !identity->has_record || identity->status || count != 1)
 			return EPROTO;
 		identity->status = status;
+		return 0;
+	}
+	if (group == MAPPLE_PSLIST_GROUP_ENVIRONMENT) {
+		environment = mapple_pslist_find_environment(snapshot, object_id);
+		if (!environment || !environment->has_record || environment->status ||
+		    count != 1)
+			return EPROTO;
+		environment->status = status;
 		return 0;
 	}
 	if (group == MAPPLE_PSLIST_GROUP_SECURITY) {
@@ -743,6 +792,18 @@ static int mapple_pslist_read_snapshot(int session_fd, struct mapple_pslist_snap
 			if (!began || group != MAPPLE_PSLIST_GROUP_IDENTITY) { ret = EPROTO; break; }
 			ret = mapple_pslist_decode_identity(snapshot, (const void *)record, record_size);
 			break;
+		case MAPPLE_PSLIST_STREAM_ENVIRONMENT: {
+			__u64 id = mapple_pslist_read_u64(
+				record, offsetof(struct mapple_pslist_environment_record,
+						 object_id));
+			struct mapple_pslist_environment *environment =
+				mapple_pslist_find_environment(snapshot, id);
+
+			ret = !environment || group != MAPPLE_PSLIST_GROUP_ENVIRONMENT ?
+				EPROTO : mapple_pslist_decode_environment_record(
+						 record, record_size, environment);
+			break;
+		}
 		case MAPPLE_PSLIST_STREAM_SECURITY: {
 			__u64 id = mapple_pslist_read_u64(
 				record, offsetof(struct mapple_pslist_security_record, object_id));
@@ -823,6 +884,8 @@ static void mapple_pslist_free_snapshot(struct mapple_pslist_snapshot *snapshot)
 		free(snapshot->identities[index].command_line);
 		free(snapshot->identities[index].executable_path);
 	}
+	for (index = 0; index < snapshot->environment_count; ++index)
+		mapple_pslist_free_environment(&snapshot->environments[index]);
 	for (index = 0; index < snapshot->security_count; ++index)
 		mapple_pslist_free_security(&snapshot->security[index]);
 	for (index = 0; index < snapshot->context_count; ++index)
@@ -833,6 +896,7 @@ static void mapple_pslist_free_snapshot(struct mapple_pslist_snapshot *snapshot)
 		mapple_pslist_free_network_table(&snapshot->network_tables[index]);
 	free(snapshot->tasks);
 	free(snapshot->identities);
+	free(snapshot->environments);
 	free(snapshot->security);
 	free(snapshot->contexts);
 	free(snapshot->resources);
@@ -901,6 +965,8 @@ static int mapple_pslist_print_task(const struct mapple_pslist_task *task,
 	} while (0)
 	PRINT_TASK_GROUP(MAPPLE_PSLIST_GROUP_IDENTITY, "identity",
 			 MAPPLE_PSLIST_OUTPUT_IDENTITY);
+	PRINT_TASK_GROUP(MAPPLE_PSLIST_GROUP_ENVIRONMENT, "environment",
+			 MAPPLE_PSLIST_OUTPUT_ENVIRONMENT);
 	PRINT_TASK_GROUP(MAPPLE_PSLIST_GROUP_SECURITY, "security",
 			 MAPPLE_PSLIST_OUTPUT_SECURITY);
 	PRINT_TASK_GROUP(MAPPLE_PSLIST_GROUP_CONTEXT, "context",
@@ -1131,6 +1197,25 @@ static int mapple_pslist_print_objects(const struct mapple_pslist_snapshot *snap
 			return EIO;
 		first = 0;
 	}
+	if (snapshot->effective_groups & MAPPLE_PSLIST_GROUP_ENVIRONMENT) {
+		if (fputs(first ? "\n    \"environment\": {" :
+				  ",\n    \"environment\": {", stdout) == EOF)
+			return EIO;
+		for (index = 0; index < snapshot->environment_count; ++index) {
+			if (printf("%s\n      \"%" PRIu64 "\": ", index ? "," : "",
+				   (uint64_t)snapshot->environments[index].object_id) < 0)
+				return EIO;
+			ret = mapple_pslist_print_json_environment(
+				&snapshot->environments[index], 6);
+			if (ret)
+				return ret;
+		}
+		if (snapshot->environment_count && fputs("\n    ", stdout) == EOF)
+			return EIO;
+		if (putchar('}') == EOF)
+			return EIO;
+		first = 0;
+	}
 	if (snapshot->effective_groups & MAPPLE_PSLIST_GROUP_SECURITY) {
 		if (fputs(first ? "\n    \"security\": {" :
 				  ",\n    \"security\": {", stdout) == EOF)
@@ -1287,8 +1372,8 @@ int run_pslist_groups(int session_fd, const char *const *group_names, size_t gro
 int run_pslist(int session_fd)
 {
 	static const char *const default_groups[] = {
-		"identity", "security", "context", "resources", "fds", "fds-details",
-		"network",
+		"identity", "environment", "security", "context", "resources", "fds",
+		"fds-details", "network",
 	};
 
 	return run_pslist_groups(session_fd, default_groups,

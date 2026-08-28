@@ -7,6 +7,7 @@
 
 enum mapple_pslist_output_group {
 	MAPPLE_PSLIST_OUTPUT_IDENTITY,
+	MAPPLE_PSLIST_OUTPUT_ENVIRONMENT,
 	MAPPLE_PSLIST_OUTPUT_SECURITY,
 	MAPPLE_PSLIST_OUTPUT_CONTEXT,
 	MAPPLE_PSLIST_OUTPUT_RESOURCES,
@@ -177,6 +178,18 @@ struct mapple_pslist_identity {
 	__u64 executable_filesystem_magic;
 };
 
+struct mapple_pslist_environment {
+	__u64 object_id;
+	__u16 status;
+	int has_record;
+	__u16 data_status;
+	__u16 flags;
+	__s32 error;
+	unsigned char *bytes;
+	__u32 byte_length;
+	__u32 entry_count;
+};
+
 struct mapple_pslist_security {
 	__u64 object_id;
 	__u16 status;
@@ -304,6 +317,9 @@ struct mapple_pslist_snapshot {
 	struct mapple_pslist_identity *identities;
 	size_t identity_count;
 	size_t identity_capacity;
+	struct mapple_pslist_environment *environments;
+	size_t environment_count;
+	size_t environment_capacity;
 	struct mapple_pslist_security *security;
 	size_t security_count;
 	size_t security_capacity;
