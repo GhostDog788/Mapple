@@ -47,7 +47,7 @@ struct mapple_pslist_fd_snapshot {
 };
 
 struct mapple_pslist_captured_socket {
-	struct mapple_pslist_socket_data wire;
+	struct mapple_pslist_network_record wire;
 	u8 local_address[sizeof_field(struct sockaddr_un, sun_path)];
 	u8 peer_address[sizeof_field(struct sockaddr_un, sun_path)];
 	u32 local_length;
@@ -55,14 +55,23 @@ struct mapple_pslist_captured_socket {
 };
 
 struct mapple_pslist_captured_fd {
-	struct mapple_pslist_fd_record wire;
-	struct mapple_pslist_captured_socket socket;
+	struct mapple_pslist_fd_record generic;
+	struct mapple_pslist_fd_details_record details;
+	struct mapple_pslist_captured_socket network;
 	char *path;
 	char *fdinfo;
 	u32 path_length;
 	u32 fdinfo_length;
-	u32 detail_size;
+	bool socket;
 };
+
+static void mapple_pslist_encode_record(struct mapple_pslist_stream_record *record,
+					u32 size, u16 type, u64 group)
+{
+	put_unaligned_be32(size, &record->record_size);
+	put_unaligned_be16(type, &record->record_type);
+	put_unaligned_be64(group, &record->group);
+}
 
 static void mapple_pslist_encode_timespec(struct mapple_pslist_timespec *wire,
 					  const struct timespec64 *value)
@@ -81,11 +90,11 @@ static void mapple_pslist_release_snapshot(struct mapple_pslist_fd_snapshot *sna
 }
 
 static int mapple_pslist_capture_snapshot_once(struct task_struct *task,
+					       struct files_struct *expected_files,
 					       struct mapple_pslist_fd_snapshot *snapshot,
 					       bool accept_partial, bool *retry)
 {
 	struct mapple_pslist_fd_reference *entries = NULL;
-	struct files_struct *expected_files;
 	struct files_struct *files;
 	struct fdtable *table;
 	size_t capacity;
@@ -94,10 +103,9 @@ static int mapple_pslist_capture_snapshot_once(struct task_struct *task,
 
 	*retry = false;
 	task_lock(task);
-	expected_files = task->files;
-	if (!expected_files) {
+	if (task->files != expected_files) {
 		task_unlock(task);
-		snapshot->status = MAPPLE_PSLIST_FD_TABLE_UNAVAILABLE;
+		snapshot->status = MAPPLE_PSLIST_OBJECT_RACED;
 		return 0;
 	}
 	spin_lock(&expected_files->file_lock);
@@ -150,12 +158,13 @@ static int mapple_pslist_capture_snapshot_once(struct task_struct *task,
 	}
 	snapshot->entries = entries;
 	snapshot->count = count;
-	snapshot->status = *retry ? MAPPLE_PSLIST_FD_TABLE_PARTIAL :
-				    MAPPLE_PSLIST_FD_TABLE_COMPLETE;
+	snapshot->status = *retry ? MAPPLE_PSLIST_OBJECT_PARTIAL :
+					    MAPPLE_PSLIST_OBJECT_COMPLETE;
 	return 0;
 }
 
 static int mapple_pslist_capture_snapshot(struct task_struct *task,
+					  struct files_struct *expected_files,
 					  struct mapple_pslist_fd_snapshot *snapshot)
 {
 	bool retry;
@@ -165,8 +174,8 @@ static int mapple_pslist_capture_snapshot(struct task_struct *task,
 	memset(snapshot, 0, sizeof(*snapshot));
 	for (attempt = 0; attempt < MAPPLE_PSLIST_FD_SNAPSHOT_RETRIES; ++attempt) {
 		ret = mapple_pslist_capture_snapshot_once(
-			task, snapshot, attempt == MAPPLE_PSLIST_FD_SNAPSHOT_RETRIES - 1,
-			&retry);
+			task, expected_files, snapshot,
+			attempt == MAPPLE_PSLIST_FD_SNAPSHOT_RETRIES - 1, &retry);
 		if (ret || !retry)
 			return ret;
 	}
@@ -201,29 +210,31 @@ static void mapple_pslist_capture_path(struct mapple_pslist_captured_fd *capture
 
 	buffer = kvmalloc(PATH_MAX, GFP_KERNEL);
 	if (!buffer) {
-		put_unaligned_be16(MAPPLE_PSLIST_DATA_UNAVAILABLE, &captured->wire.path_status);
-		put_unaligned_be32(ENOMEM, &captured->wire.path_error);
+		put_unaligned_be16(MAPPLE_PSLIST_DATA_UNAVAILABLE,
+				   &captured->generic.path_status);
+		put_unaligned_be32(ENOMEM, &captured->generic.path_error);
 		return;
 	}
 	path = file_path(file, buffer, PATH_MAX);
 	if (IS_ERR(path)) {
 		error = -PTR_ERR(path);
 		kvfree(buffer);
-		put_unaligned_be16(MAPPLE_PSLIST_DATA_UNAVAILABLE, &captured->wire.path_status);
-		put_unaligned_be32(error, &captured->wire.path_error);
+		put_unaligned_be16(MAPPLE_PSLIST_DATA_UNAVAILABLE,
+				   &captured->generic.path_status);
+		put_unaligned_be32(error, &captured->generic.path_error);
 		return;
 	}
 	captured->path_length = strlen(path);
 	memmove(buffer, path, captured->path_length);
 	captured->path = buffer;
-	put_unaligned_be16(MAPPLE_PSLIST_DATA_AVAILABLE, &captured->wire.path_status);
-	put_unaligned_be32(captured->path_length, &captured->wire.path_length);
+	put_unaligned_be16(MAPPLE_PSLIST_DATA_AVAILABLE, &captured->generic.path_status);
+	put_unaligned_be32(captured->path_length, &captured->generic.path_length);
 }
 
 static void mapple_pslist_capture_stat(struct mapple_pslist_captured_fd *captured,
 				       struct file *file)
 {
-	struct mapple_pslist_fd_stat *wire = &captured->wire.stat;
+	struct mapple_pslist_fd_stat *wire = &captured->details.stat;
 	struct kstat stat;
 	int ret;
 
@@ -231,29 +242,36 @@ static void mapple_pslist_capture_stat(struct mapple_pslist_captured_fd *capture
 				 STATX_BASIC_STATS | STATX_BTIME | STATX_MNT_ID | STATX_DIOALIGN,
 				 AT_STATX_DONT_SYNC);
 	if (ret) {
-		put_unaligned_be16(MAPPLE_PSLIST_DATA_UNAVAILABLE, &captured->wire.stat_status);
-		put_unaligned_be32(-ret, &captured->wire.stat_error);
+		put_unaligned_be16(MAPPLE_PSLIST_DATA_UNAVAILABLE,
+				   &captured->generic.identity_status);
+		put_unaligned_be32(-ret, &captured->generic.identity_error);
+		put_unaligned_be16(MAPPLE_PSLIST_DATA_UNAVAILABLE,
+				   &captured->details.stat_status);
+		put_unaligned_be32(-ret, &captured->details.stat_error);
 		return;
 	}
-	put_unaligned_be16(MAPPLE_PSLIST_DATA_AVAILABLE, &captured->wire.stat_status);
+	put_unaligned_be16(MAPPLE_PSLIST_DATA_AVAILABLE,
+			   &captured->generic.identity_status);
+	put_unaligned_be32(MAJOR(stat.dev), &captured->generic.device_major);
+	put_unaligned_be32(MINOR(stat.dev), &captured->generic.device_minor);
+	put_unaligned_be64(stat.ino, &captured->generic.inode);
+	put_unaligned_be64(stat.mnt_id, &captured->generic.mount_id);
+
+	put_unaligned_be16(MAPPLE_PSLIST_DATA_AVAILABLE, &captured->details.stat_status);
 	put_unaligned_be32(stat.result_mask, &wire->result_mask);
 	put_unaligned_be32(stat.mode, &wire->mode);
 	put_unaligned_be32(stat.nlink, &wire->link_count);
 	put_unaligned_be32(stat.blksize, &wire->block_size);
 	put_unaligned_be32(from_kuid_munged(&init_user_ns, stat.uid), &wire->uid);
 	put_unaligned_be32(from_kgid_munged(&init_user_ns, stat.gid), &wire->gid);
-	put_unaligned_be32(MAJOR(stat.dev), &wire->device_major);
-	put_unaligned_be32(MINOR(stat.dev), &wire->device_minor);
 	put_unaligned_be32(MAJOR(stat.rdev), &wire->special_device_major);
 	put_unaligned_be32(MINOR(stat.rdev), &wire->special_device_minor);
 	put_unaligned_be32(stat.dio_mem_align, &wire->direct_io_memory_alignment);
 	put_unaligned_be32(stat.dio_offset_align, &wire->direct_io_offset_alignment);
-	put_unaligned_be64(stat.ino, &wire->inode);
 	put_unaligned_be64((u64)stat.size, &wire->size);
 	put_unaligned_be64(stat.blocks, &wire->blocks);
 	put_unaligned_be64(stat.attributes, &wire->attributes);
 	put_unaligned_be64(stat.attributes_mask, &wire->attributes_mask);
-	put_unaligned_be64(stat.mnt_id, &wire->mount_id);
 	put_unaligned_be64(stat.change_cookie, &wire->change_cookie);
 	put_unaligned_be64(file_inode(file)->i_sb->s_magic, &wire->filesystem_magic);
 	mapple_pslist_encode_timespec(&wire->access_time, &stat.atime);
@@ -285,7 +303,7 @@ static u16 mapple_pslist_fd_kind(struct file *file)
 	return MAPPLE_PSLIST_FD_OTHER;
 }
 
-static void mapple_pslist_capture_credentials(struct mapple_pslist_fd_record *wire,
+static void mapple_pslist_capture_credentials(struct mapple_pslist_fd_details_record *wire,
 					      struct file *file)
 {
 	const struct cred *cred = file->f_cred;
@@ -381,10 +399,10 @@ static void mapple_pslist_encode_endpoint(struct mapple_pslist_socket_endpoint *
 }
 
 static void mapple_pslist_capture_socket(struct mapple_pslist_captured_fd *captured,
-					 struct file *file)
+					 struct file *file, u64 object_id, u32 fd)
 {
-	struct mapple_pslist_captured_socket *captured_socket = &captured->socket;
-	struct mapple_pslist_socket_data *wire = &captured_socket->wire;
+	struct mapple_pslist_captured_socket *captured_socket = &captured->network;
+	struct mapple_pslist_socket_data *wire = &captured_socket->wire.socket;
 	struct sockaddr_storage address;
 	struct socket *socket = sock_from_file(file);
 	struct sock *sk;
@@ -392,8 +410,9 @@ static void mapple_pslist_capture_socket(struct mapple_pslist_captured_fd *captu
 
 	if (!socket)
 		return;
-	captured->detail_size = sizeof(*wire);
-	put_unaligned_be16(MAPPLE_PSLIST_FD_DETAIL_SOCKET, &captured->wire.detail_type);
+	captured->socket = true;
+	put_unaligned_be64(object_id, &captured_socket->wire.object_id);
+	put_unaligned_be32(fd, &captured_socket->wire.fd);
 	put_unaligned_be16(socket->type, &wire->type);
 	put_unaligned_be16(socket->state, &wire->socket_state);
 	sk = READ_ONCE(socket->sk);
@@ -425,17 +444,21 @@ static void mapple_pslist_capture_socket(struct mapple_pslist_captured_fd *captu
 	mapple_pslist_encode_endpoint(&wire->peer, &address, length,
 				      captured_socket->peer_address,
 				      &captured_socket->peer_length, true);
-	captured->detail_size += captured_socket->local_length + captured_socket->peer_length;
-	put_unaligned_be32(captured->detail_size, &captured->wire.detail_size);
+	put_unaligned_be32(captured_socket->local_length,
+			   &captured_socket->wire.local_address_length);
+	put_unaligned_be32(captured_socket->peer_length,
+			   &captured_socket->wire.peer_address_length);
+	mapple_pslist_encode_record(&captured_socket->wire.record,
+				    sizeof(captured_socket->wire) +
+				    captured_socket->local_length + captured_socket->peer_length,
+				    MAPPLE_PSLIST_STREAM_NETWORK,
+				    MAPPLE_PSLIST_GROUP_NETWORK);
 }
 
 static ssize_t mapple_pslist_read_fdinfo_file(struct file *file, void *buffer,
 					       size_t size, loff_t *position)
 {
-	struct kvec vector = {
-		.iov_base = buffer,
-		.iov_len = size,
-	};
+	struct kvec vector = { .iov_base = buffer, .iov_len = size };
 	struct iov_iter iterator;
 	struct kiocb request;
 	ssize_t ret;
@@ -465,7 +488,8 @@ static void mapple_pslist_capture_fdinfo(struct mapple_pslist_captured_fd *captu
 	int error = 0;
 
 	if (!mapple_pslist_fd_still_matches(task, fd, expected)) {
-		put_unaligned_be16(MAPPLE_PSLIST_DATA_RACED, &captured->wire.fdinfo_status);
+		put_unaligned_be16(MAPPLE_PSLIST_DATA_RACED,
+				   &captured->details.fdinfo_status);
 		return;
 	}
 	snprintf(proc_path, sizeof(proc_path), "/proc/%u/fdinfo/%u",
@@ -514,49 +538,62 @@ close:
 done:
 	if (!mapple_pslist_fd_still_matches(task, fd, expected)) {
 		kvfree(buffer);
-		put_unaligned_be16(MAPPLE_PSLIST_DATA_RACED, &captured->wire.fdinfo_status);
+		put_unaligned_be16(MAPPLE_PSLIST_DATA_RACED,
+				   &captured->details.fdinfo_status);
 		return;
 	}
 	if (error) {
 		kvfree(buffer);
-		put_unaligned_be16(MAPPLE_PSLIST_DATA_UNAVAILABLE, &captured->wire.fdinfo_status);
-		put_unaligned_be32(error, &captured->wire.fdinfo_error);
+		put_unaligned_be16(MAPPLE_PSLIST_DATA_UNAVAILABLE,
+				   &captured->details.fdinfo_status);
+		put_unaligned_be32(error, &captured->details.fdinfo_error);
 		return;
 	}
 	if (count > MAPPLE_PSLIST_FDINFO_MAX_SIZE) {
 		kvfree(buffer);
-		put_unaligned_be16(MAPPLE_PSLIST_DATA_TOO_LARGE, &captured->wire.fdinfo_status);
+		put_unaligned_be16(MAPPLE_PSLIST_DATA_TOO_LARGE,
+				   &captured->details.fdinfo_status);
 		return;
 	}
 	captured->fdinfo = buffer;
 	captured->fdinfo_length = count;
-	put_unaligned_be16(MAPPLE_PSLIST_DATA_AVAILABLE, &captured->wire.fdinfo_status);
-	put_unaligned_be32(count, &captured->wire.fdinfo_length);
+	put_unaligned_be16(MAPPLE_PSLIST_DATA_AVAILABLE, &captured->details.fdinfo_status);
+	put_unaligned_be32(count, &captured->details.fdinfo_length);
 }
 
 static void mapple_pslist_capture_fd(struct mapple_pslist_captured_fd *captured,
-				     struct task_struct *task,
+				     struct task_struct *task, u64 object_id, u64 groups,
 				     const struct mapple_pslist_fd_reference *reference)
 {
 	struct file *file = reference->file;
-	u32 record_size;
 
 	memset(captured, 0, sizeof(*captured));
-	put_unaligned_be32(reference->fd, &captured->wire.fd);
-	put_unaligned_be16(mapple_pslist_fd_kind(file), &captured->wire.kind);
-	put_unaligned_be32(reference->descriptor_flags, &captured->wire.descriptor_flags);
-	put_unaligned_be32(reference->open_flags, &captured->wire.open_flags);
-	put_unaligned_be64(file->f_mode, &captured->wire.file_mode);
-	put_unaligned_be64((u64)file->f_pos, &captured->wire.position);
-	put_unaligned_be64(file->f_version, &captured->wire.version);
-	mapple_pslist_capture_credentials(&captured->wire, file);
+	put_unaligned_be64(object_id, &captured->generic.object_id);
+	put_unaligned_be32(reference->fd, &captured->generic.fd);
+	put_unaligned_be16(mapple_pslist_fd_kind(file), &captured->generic.kind);
+	put_unaligned_be32(reference->descriptor_flags, &captured->generic.descriptor_flags);
+	put_unaligned_be32(reference->open_flags, &captured->generic.open_flags);
 	mapple_pslist_capture_path(captured, file);
 	mapple_pslist_capture_stat(captured, file);
-	mapple_pslist_capture_socket(captured, file);
-	mapple_pslist_capture_fdinfo(captured, task, reference->fd, file);
-	record_size = sizeof(captured->wire) + captured->detail_size + captured->path_length +
-		      captured->fdinfo_length;
-	put_unaligned_be32(record_size, &captured->wire.record_size);
+	mapple_pslist_encode_record(&captured->generic.record,
+				    sizeof(captured->generic) + captured->path_length,
+				    MAPPLE_PSLIST_STREAM_FD, MAPPLE_PSLIST_GROUP_FDS);
+
+	if (groups & MAPPLE_PSLIST_GROUP_FD_DETAILS) {
+		put_unaligned_be64(object_id, &captured->details.object_id);
+		put_unaligned_be32(reference->fd, &captured->details.fd);
+		put_unaligned_be64(file->f_mode, &captured->details.file_mode);
+		put_unaligned_be64((u64)file->f_pos, &captured->details.position);
+		put_unaligned_be64(file->f_version, &captured->details.version);
+		mapple_pslist_capture_credentials(&captured->details, file);
+		mapple_pslist_capture_fdinfo(captured, task, reference->fd, file);
+		mapple_pslist_encode_record(&captured->details.record,
+					    sizeof(captured->details) + captured->fdinfo_length,
+					    MAPPLE_PSLIST_STREAM_FD_DETAILS,
+					    MAPPLE_PSLIST_GROUP_FD_DETAILS);
+	}
+	if (groups & MAPPLE_PSLIST_GROUP_NETWORK)
+		mapple_pslist_capture_socket(captured, file, object_id, reference->fd);
 }
 
 static void mapple_pslist_release_captured_fd(struct mapple_pslist_captured_fd *captured)
@@ -566,58 +603,124 @@ static void mapple_pslist_release_captured_fd(struct mapple_pslist_captured_fd *
 }
 
 static int mapple_pslist_write_captured_fd(struct mapple_command_context *context,
-					   const struct mapple_pslist_captured_fd *captured)
+					   const struct mapple_pslist_captured_fd *captured,
+					   u64 groups)
 {
 	int ret;
 
-	ret = mapple_command_write(context, &captured->wire, sizeof(captured->wire));
+	ret = mapple_command_write(context, &captured->generic, sizeof(captured->generic));
+	if (!ret)
+		ret = mapple_command_write(context, captured->path, captured->path_length);
 	if (ret)
 		return ret;
-	if (captured->detail_size) {
-		ret = mapple_command_write(context, &captured->socket.wire,
-					   sizeof(captured->socket.wire));
+	if (groups & MAPPLE_PSLIST_GROUP_FD_DETAILS) {
+		ret = mapple_command_write(context, &captured->details,
+					   sizeof(captured->details));
 		if (!ret)
-			ret = mapple_command_write(context, captured->socket.local_address,
-						   captured->socket.local_length);
-		if (!ret)
-			ret = mapple_command_write(context, captured->socket.peer_address,
-						   captured->socket.peer_length);
+			ret = mapple_command_write(context, captured->fdinfo,
+						   captured->fdinfo_length);
 		if (ret)
 			return ret;
 	}
-	ret = mapple_command_write(context, captured->path, captured->path_length);
-	if (ret)
-		return ret;
-	return mapple_command_write(context, captured->fdinfo, captured->fdinfo_length);
+	if (!(groups & MAPPLE_PSLIST_GROUP_NETWORK) || !captured->socket)
+		return 0;
+	ret = mapple_command_write(context, &captured->network.wire,
+				   sizeof(captured->network.wire));
+	if (!ret)
+		ret = mapple_command_write(context, captured->network.local_address,
+					   captured->network.local_length);
+	if (!ret)
+		ret = mapple_command_write(context, captured->network.peer_address,
+					   captured->network.peer_length);
+	return ret;
 }
 
-int mapple_pslist_write_fd_table(struct mapple_command_context *context,
-				 struct task_struct *task)
+static int mapple_pslist_write_object_begin(struct mapple_command_context *context,
+					    u64 object_id, u64 group)
 {
-	struct mapple_pslist_fd_table_end end = { 0 };
+	struct mapple_pslist_object_begin begin = { 0 };
+
+	mapple_pslist_encode_record(&begin.record, sizeof(begin),
+				    MAPPLE_PSLIST_STREAM_OBJECT_BEGIN, group);
+	put_unaligned_be64(object_id, &begin.object_id);
+	put_unaligned_be16(MAPPLE_PSLIST_OBJECT_FILES, &begin.object_type);
+	return mapple_command_write(context, &begin, sizeof(begin));
+}
+
+static int mapple_pslist_write_object_end(struct mapple_command_context *context,
+					  u64 object_id, u64 group, u16 status,
+					  u32 count)
+{
+	struct mapple_pslist_object_end end = { 0 };
+
+	mapple_pslist_encode_record(&end.record, sizeof(end),
+				    MAPPLE_PSLIST_STREAM_OBJECT_END, group);
+	put_unaligned_be64(object_id, &end.object_id);
+	put_unaligned_be16(MAPPLE_PSLIST_OBJECT_FILES, &end.object_type);
+	put_unaligned_be16(status, &end.status);
+	put_unaligned_be32(count, &end.record_count);
+	return mapple_command_write(context, &end, sizeof(end));
+}
+
+int mapple_pslist_write_files_objects(struct mapple_command_context *context,
+				      struct task_struct *task,
+				      struct files_struct *expected_files, u64 object_id,
+				      u64 groups, u32 *object_count, bool *partial)
+{
 	struct mapple_pslist_fd_snapshot snapshot;
 	struct mapple_pslist_captured_fd *captured;
+	u32 network_count = 0;
 	size_t index;
 	int ret;
 
-	ret = mapple_pslist_capture_snapshot(task, &snapshot);
+	ret = mapple_pslist_capture_snapshot(task, expected_files, &snapshot);
 	if (ret)
 		return ret;
+	if (snapshot.status != MAPPLE_PSLIST_OBJECT_COMPLETE)
+		*partial = true;
+	ret = mapple_pslist_write_object_begin(context, object_id, MAPPLE_PSLIST_GROUP_FDS);
+	if (ret)
+		goto release_snapshot;
+	++*object_count;
+	if (groups & MAPPLE_PSLIST_GROUP_FD_DETAILS) {
+		ret = mapple_pslist_write_object_begin(context, object_id,
+					       MAPPLE_PSLIST_GROUP_FD_DETAILS);
+		if (ret)
+			goto release_snapshot;
+		++*object_count;
+	}
+	if (groups & MAPPLE_PSLIST_GROUP_NETWORK) {
+		ret = mapple_pslist_write_object_begin(context, object_id,
+					       MAPPLE_PSLIST_GROUP_NETWORK);
+		if (ret)
+			goto release_snapshot;
+		++*object_count;
+	}
 	captured = kmalloc(sizeof(*captured), GFP_KERNEL);
 	if (!captured) {
 		ret = -ENOMEM;
 		goto release_snapshot;
 	}
 	for (index = 0; index < snapshot.count; ++index) {
-		mapple_pslist_capture_fd(captured, task, &snapshot.entries[index]);
-		ret = mapple_pslist_write_captured_fd(context, captured);
+		mapple_pslist_capture_fd(captured, task, object_id, groups,
+					 &snapshot.entries[index]);
+		ret = mapple_pslist_write_captured_fd(context, captured, groups);
+		if (captured->socket)
+			++network_count;
 		mapple_pslist_release_captured_fd(captured);
 		if (ret)
 			goto free_captured;
 	}
-	put_unaligned_be16(snapshot.status, &end.status);
-	put_unaligned_be32(snapshot.count, &end.record_count);
-	ret = mapple_command_write(context, &end, sizeof(end));
+	ret = mapple_pslist_write_object_end(context, object_id, MAPPLE_PSLIST_GROUP_FDS,
+					     snapshot.status, snapshot.count);
+	if (!ret && (groups & MAPPLE_PSLIST_GROUP_FD_DETAILS))
+		ret = mapple_pslist_write_object_end(context, object_id,
+					     MAPPLE_PSLIST_GROUP_FD_DETAILS,
+					     snapshot.status, snapshot.count);
+	if (!ret && (groups & MAPPLE_PSLIST_GROUP_NETWORK))
+		ret = mapple_pslist_write_object_end(context, object_id,
+					     MAPPLE_PSLIST_GROUP_NETWORK,
+					     snapshot.status, network_count);
 
 free_captured:
 	kfree(captured);

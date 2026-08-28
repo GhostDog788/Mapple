@@ -20,3 +20,8 @@ int test_command(int session_fd, enum mapple_command_id command)
 		return EOPNOTSUPP;
 	return command_tests[command](session_fd);
 }
+
+int test_pslist_command(int session_fd, const char *const *groups, size_t group_count)
+{
+	return run_pslist_groups(session_fd, groups, group_count);
+}

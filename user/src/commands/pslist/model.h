@@ -6,10 +6,16 @@
 #include <commands.h>
 
 struct mapple_pslist_task {
+	__u64 task_id;
+	__u64 identity_object_id;
+	__u64 fds_object_id;
+	__u64 fd_details_object_id;
+	__u64 network_object_id;
 	__u32 pid;
 	__u32 tgid;
 	__u32 ppid;
 	__u64 start_boottime_ns;
+	__u16 type;
 	__u8 state;
 	char comm[MAPPLE_PSLIST_COMM_SIZE];
 };
@@ -86,9 +92,15 @@ struct mapple_pslist_socket {
 struct mapple_pslist_fd {
 	__u32 fd;
 	__u16 kind;
-	__u16 detail_type;
 	__u32 descriptor_flags;
 	__u32 open_flags;
+	__u16 path_status;
+	__u16 identity_status;
+	__s32 path_error;
+	__s32 identity_error;
+	unsigned char *path;
+	__u32 path_length;
+	int details_available;
 	__u64 file_mode;
 	__s64 position;
 	__u64 version;
@@ -105,28 +117,34 @@ struct mapple_pslist_fd {
 	__u16 async_signal;
 	__u32 async_owner_uid;
 	__u32 async_owner_effective_uid;
-	__u16 path_status;
 	__u16 stat_status;
 	__u16 fdinfo_status;
-	__s32 path_error;
 	__s32 stat_error;
 	__s32 fdinfo_error;
 	struct mapple_pslist_stat stat;
-	struct mapple_pslist_socket socket;
-	unsigned char *path;
-	__u32 path_length;
 	unsigned char *fdinfo;
 	__u32 fdinfo_length;
+	int network_available;
+	struct mapple_pslist_socket socket;
 };
 
 struct mapple_pslist_fd_table {
+	__u64 object_id;
 	struct mapple_pslist_fd *entries;
 	size_t count;
 	size_t capacity;
-	__u16 status;
+	__u16 fds_status;
+	__u16 details_status;
+	__u16 network_status;
+	int has_fds;
+	int has_details;
+	int has_network;
 };
 
-struct mapple_pslist_process {
+struct mapple_pslist_identity {
+	__u64 object_id;
+	__u16 status;
+	int has_record;
 	__u16 command_line_status;
 	__u16 executable_status;
 	__u32 executable_flags;
@@ -142,23 +160,24 @@ struct mapple_pslist_process {
 	__s64 executable_mtime_ns;
 	__s64 executable_ctime_ns;
 	__u64 executable_filesystem_magic;
-	struct mapple_pslist_fd_table fd_table;
-};
-
-union mapple_pslist_entry_data {
-	struct mapple_pslist_process process;
-};
-
-struct mapple_pslist_entry {
-	__u16 type;
-	struct mapple_pslist_task task;
-	union mapple_pslist_entry_data data;
 };
 
 struct mapple_pslist_snapshot {
-	struct mapple_pslist_entry *entries;
-	size_t count;
-	size_t capacity;
+	struct mapple_pslist_task *tasks;
+	size_t task_count;
+	size_t task_capacity;
+	struct mapple_pslist_identity *identities;
+	size_t identity_count;
+	size_t identity_capacity;
+	struct mapple_pslist_fd_table *fd_tables;
+	size_t fd_table_count;
+	size_t fd_table_capacity;
+	__u64 requested_groups;
+	__u64 effective_groups;
+	__u64 supported_groups;
+	__u64 start_boottime_ns;
+	__u64 end_boottime_ns;
+	__u16 status;
 };
 
 #endif /* COMMAND_PSLIST_MODEL_H */

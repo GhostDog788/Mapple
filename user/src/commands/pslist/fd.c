@@ -15,16 +15,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <communication/stream.h>
 #include <commands/pslist/json.h>
 
 #define MAPPLE_PSLIST_FD_INITIAL_CAPACITY 16U
-#define MAPPLE_PSLIST_FD_SKIP_BUFFER_SIZE 4096U
 
 static __u16 mapple_pslist_fd_read_u16(const void *record, size_t offset)
 {
 	__u16 value;
-
 	memcpy(&value, (const unsigned char *)record + offset, sizeof(value));
 	return ntohs(value);
 }
@@ -32,7 +29,6 @@ static __u16 mapple_pslist_fd_read_u16(const void *record, size_t offset)
 static __u32 mapple_pslist_fd_read_u32(const void *record, size_t offset)
 {
 	__u32 value;
-
 	memcpy(&value, (const unsigned char *)record + offset, sizeof(value));
 	return ntohl(value);
 }
@@ -40,49 +36,35 @@ static __u32 mapple_pslist_fd_read_u32(const void *record, size_t offset)
 static __u64 mapple_pslist_fd_read_u64(const void *record, size_t offset)
 {
 	__u64 value;
-
 	memcpy(&value, (const unsigned char *)record + offset, sizeof(value));
 	return be64toh(value);
 }
 
-static int mapple_pslist_fd_skip(int session_fd, size_t size)
-{
-	unsigned char buffer[MAPPLE_PSLIST_FD_SKIP_BUFFER_SIZE];
-	int ret;
-
-	while (size) {
-		size_t chunk = size < sizeof(buffer) ? size : sizeof(buffer);
-
-		ret = read_exact(session_fd, buffer, chunk);
-		if (ret)
-			return ret;
-		size -= chunk;
-	}
-	return 0;
-}
-
 static int mapple_pslist_fd_grow(struct mapple_pslist_fd_table *table)
 {
-	struct mapple_pslist_fd *new_entries;
-	size_t new_capacity;
+	struct mapple_pslist_fd *entries;
+	size_t capacity;
 
 	if (table->count < table->capacity)
 		return 0;
-	if (!table->capacity)
-		new_capacity = MAPPLE_PSLIST_FD_INITIAL_CAPACITY;
-	else {
-		if (table->capacity > SIZE_MAX / 2)
-			return EOVERFLOW;
-		new_capacity = table->capacity * 2;
-	}
-	if (new_capacity > SIZE_MAX / sizeof(*table->entries))
+	capacity = table->capacity ? table->capacity * 2 : MAPPLE_PSLIST_FD_INITIAL_CAPACITY;
+	if (capacity < table->capacity || capacity > SIZE_MAX / sizeof(*entries))
 		return EOVERFLOW;
-	new_entries = realloc(table->entries, new_capacity * sizeof(*table->entries));
-	if (!new_entries)
+	entries = realloc(table->entries, capacity * sizeof(*entries));
+	if (!entries)
 		return ENOMEM;
-	table->entries = new_entries;
-	table->capacity = new_capacity;
+	table->entries = entries;
+	table->capacity = capacity;
 	return 0;
+}
+
+static struct mapple_pslist_fd *mapple_pslist_find_fd(struct mapple_pslist_fd_table *table, __u32 fd)
+{
+	size_t index;
+	for (index = 0; index < table->count; ++index)
+		if (table->entries[index].fd == fd)
+			return &table->entries[index];
+	return NULL;
 }
 
 static void mapple_pslist_free_fd(struct mapple_pslist_fd *fd)
@@ -96,373 +78,184 @@ static void mapple_pslist_free_fd(struct mapple_pslist_fd *fd)
 void mapple_pslist_free_fd_table(struct mapple_pslist_fd_table *table)
 {
 	size_t index;
-
 	for (index = 0; index < table->count; ++index)
 		mapple_pslist_free_fd(&table->entries[index]);
 	free(table->entries);
 	memset(table, 0, sizeof(*table));
 }
 
-static void mapple_pslist_decode_time(const struct mapple_pslist_timespec *wire,
-				      struct mapple_pslist_time *time)
+static void mapple_pslist_decode_time(const struct mapple_pslist_timespec *wire, struct mapple_pslist_time *time)
 {
-	time->seconds = (__s64)mapple_pslist_fd_read_u64(
-		wire, offsetof(struct mapple_pslist_timespec, seconds));
-	time->nanoseconds = mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_timespec, nanoseconds));
+	time->seconds = (__s64)mapple_pslist_fd_read_u64(wire, offsetof(struct mapple_pslist_timespec, seconds));
+	time->nanoseconds = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_timespec, nanoseconds));
 }
 
-static int mapple_pslist_decode_stat(const struct mapple_pslist_fd_stat *wire,
-				     struct mapple_pslist_stat *stat)
+static int mapple_pslist_decode_stat(const struct mapple_pslist_fd_stat *wire, struct mapple_pslist_stat *stat)
 {
-	if (wire->access_time.reserved || wire->birth_time.reserved ||
-	    wire->change_time.reserved || wire->modification_time.reserved)
+	if (wire->access_time.reserved || wire->birth_time.reserved || wire->change_time.reserved || wire->modification_time.reserved)
 		return EPROTO;
-	stat->result_mask = mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_fd_stat, result_mask));
-	stat->mode = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_fd_stat, mode));
-	stat->link_count = mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_fd_stat, link_count));
-	stat->block_size = mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_fd_stat, block_size));
-	stat->uid = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_fd_stat, uid));
-	stat->gid = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_fd_stat, gid));
-	stat->device_major = mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_fd_stat, device_major));
-	stat->device_minor = mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_fd_stat, device_minor));
-	stat->special_device_major = mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_fd_stat, special_device_major));
-	stat->special_device_minor = mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_fd_stat, special_device_minor));
-	stat->direct_io_memory_alignment = mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_fd_stat, direct_io_memory_alignment));
-	stat->direct_io_offset_alignment = mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_fd_stat, direct_io_offset_alignment));
-	stat->inode = mapple_pslist_fd_read_u64(wire, offsetof(struct mapple_pslist_fd_stat, inode));
-	stat->size = (__s64)mapple_pslist_fd_read_u64(
-		wire, offsetof(struct mapple_pslist_fd_stat, size));
-	stat->blocks = mapple_pslist_fd_read_u64(wire, offsetof(struct mapple_pslist_fd_stat, blocks));
-	stat->attributes = mapple_pslist_fd_read_u64(
-		wire, offsetof(struct mapple_pslist_fd_stat, attributes));
-	stat->attributes_mask = mapple_pslist_fd_read_u64(
-		wire, offsetof(struct mapple_pslist_fd_stat, attributes_mask));
-	stat->mount_id = mapple_pslist_fd_read_u64(
-		wire, offsetof(struct mapple_pslist_fd_stat, mount_id));
-	stat->change_cookie = mapple_pslist_fd_read_u64(
-		wire, offsetof(struct mapple_pslist_fd_stat, change_cookie));
-	stat->filesystem_magic = mapple_pslist_fd_read_u64(
-		wire, offsetof(struct mapple_pslist_fd_stat, filesystem_magic));
+#define STAT_U32(field) stat->field = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_fd_stat, field))
+#define STAT_U64(field) stat->field = mapple_pslist_fd_read_u64(wire, offsetof(struct mapple_pslist_fd_stat, field))
+	STAT_U32(result_mask); STAT_U32(mode); STAT_U32(link_count); STAT_U32(block_size);
+	STAT_U32(uid); STAT_U32(gid); STAT_U32(special_device_major); STAT_U32(special_device_minor);
+	STAT_U32(direct_io_memory_alignment); STAT_U32(direct_io_offset_alignment);
+	stat->size = (__s64)mapple_pslist_fd_read_u64(wire, offsetof(struct mapple_pslist_fd_stat, size));
+	STAT_U64(blocks); STAT_U64(attributes); STAT_U64(attributes_mask); STAT_U64(change_cookie); STAT_U64(filesystem_magic);
+#undef STAT_U64
+#undef STAT_U32
 	mapple_pslist_decode_time(&wire->access_time, &stat->access_time);
 	mapple_pslist_decode_time(&wire->birth_time, &stat->birth_time);
 	mapple_pslist_decode_time(&wire->change_time, &stat->change_time);
 	mapple_pslist_decode_time(&wire->modification_time, &stat->modification_time);
-	if (stat->access_time.nanoseconds >= 1000000000U ||
-	    stat->birth_time.nanoseconds >= 1000000000U ||
-	    stat->change_time.nanoseconds >= 1000000000U ||
-	    stat->modification_time.nanoseconds >= 1000000000U)
+	if (stat->access_time.nanoseconds >= 1000000000U || stat->birth_time.nanoseconds >= 1000000000U ||
+	    stat->change_time.nanoseconds >= 1000000000U || stat->modification_time.nanoseconds >= 1000000000U)
 		return EPROTO;
 	return 0;
 }
 
-static int mapple_pslist_read_endpoint(int session_fd,
-				       const struct mapple_pslist_socket_endpoint *wire,
-				       struct mapple_pslist_socket_endpoint_data *endpoint,
-				       size_t *remaining_detail)
+int mapple_pslist_decode_fd_record(const void *record, size_t size, struct mapple_pslist_fd_table *table)
 {
-	int ret;
-
-	endpoint->status = mapple_pslist_fd_read_u16(
-		wire, offsetof(struct mapple_pslist_socket_endpoint, status));
-	endpoint->type = mapple_pslist_fd_read_u16(
-		wire, offsetof(struct mapple_pslist_socket_endpoint, type));
-	endpoint->error = (__s32)mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_socket_endpoint, error));
-	endpoint->port = mapple_pslist_fd_read_u16(
-		wire, offsetof(struct mapple_pslist_socket_endpoint, port));
-	endpoint->flags = mapple_pslist_fd_read_u16(
-		wire, offsetof(struct mapple_pslist_socket_endpoint, flags));
-	endpoint->scope_id = mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_socket_endpoint, scope_id));
-	endpoint->flow_info = mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_socket_endpoint, flow_info));
-	endpoint->netlink_pid = mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_socket_endpoint, netlink_pid));
-	endpoint->netlink_groups = mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_socket_endpoint, netlink_groups));
-	endpoint->address_length = mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_socket_endpoint, address_length));
-	if (endpoint->status < MAPPLE_PSLIST_SOCKET_ENDPOINT_AVAILABLE ||
-	    endpoint->status > MAPPLE_PSLIST_SOCKET_ENDPOINT_UNSUPPORTED ||
-	    endpoint->type > MAPPLE_PSLIST_SOCKET_ENDPOINT_NETLINK ||
-	    (endpoint->flags & ~MAPPLE_PSLIST_SOCKET_ENDPOINT_KNOWN_FLAGS) ||
-	    endpoint->address_length > *remaining_detail)
-		return EPROTO;
-	if (endpoint->status != MAPPLE_PSLIST_SOCKET_ENDPOINT_AVAILABLE &&
-	    (endpoint->type != MAPPLE_PSLIST_SOCKET_ENDPOINT_NONE || endpoint->port ||
-	     endpoint->flags || endpoint->scope_id || endpoint->flow_info ||
-	     endpoint->netlink_pid || endpoint->netlink_groups ||
-	     endpoint->address_length))
-		return EPROTO;
-	if (endpoint->status == MAPPLE_PSLIST_SOCKET_ENDPOINT_AVAILABLE &&
-	    endpoint->type == MAPPLE_PSLIST_SOCKET_ENDPOINT_NONE)
-		return EPROTO;
-	if (endpoint->type == MAPPLE_PSLIST_SOCKET_ENDPOINT_IPV4 &&
-	    endpoint->address_length != sizeof(struct in_addr))
-		return EPROTO;
-	if (endpoint->type == MAPPLE_PSLIST_SOCKET_ENDPOINT_IPV6 &&
-	    endpoint->address_length != sizeof(struct in6_addr))
-		return EPROTO;
-	if ((endpoint->type == MAPPLE_PSLIST_SOCKET_ENDPOINT_NONE ||
-	     endpoint->type == MAPPLE_PSLIST_SOCKET_ENDPOINT_NETLINK) &&
-	    endpoint->address_length)
-		return EPROTO;
-	if ((endpoint->flags & MAPPLE_PSLIST_SOCKET_ENDPOINT_ABSTRACT) &&
-	    (endpoint->type != MAPPLE_PSLIST_SOCKET_ENDPOINT_UNIX ||
-	     !endpoint->address_length))
-		return EPROTO;
-	if (endpoint->address_length) {
-		endpoint->address = malloc(endpoint->address_length);
-		if (!endpoint->address)
-			return ENOMEM;
-		ret = read_exact(session_fd, endpoint->address, endpoint->address_length);
-		if (ret)
-			return ret;
-		if (endpoint->type == MAPPLE_PSLIST_SOCKET_ENDPOINT_UNIX &&
-		    (!!(endpoint->flags & MAPPLE_PSLIST_SOCKET_ENDPOINT_ABSTRACT) !=
-		     !endpoint->address[0]))
-			return EPROTO;
-	}
-	*remaining_detail -= endpoint->address_length;
-	return 0;
-}
-
-static int mapple_pslist_read_socket(int session_fd, size_t detail_size,
-				     struct mapple_pslist_socket *socket)
-{
-	struct mapple_pslist_socket_data wire;
-	size_t remaining_detail;
-	int ret;
-
-	if (detail_size < sizeof(wire))
-		return EPROTO;
-	ret = read_exact(session_fd, &wire, sizeof(wire));
-	if (ret)
-		return ret;
-	remaining_detail = detail_size - sizeof(wire);
-#define DECODE_SOCKET_U16(field) \
-	socket->field = mapple_pslist_fd_read_u16(&wire, offsetof(struct mapple_pslist_socket_data, field))
-#define DECODE_SOCKET_U32(field) \
-	socket->field = mapple_pslist_fd_read_u32(&wire, offsetof(struct mapple_pslist_socket_data, field))
-	DECODE_SOCKET_U16(family);
-	DECODE_SOCKET_U16(type);
-	DECODE_SOCKET_U16(protocol);
-	DECODE_SOCKET_U16(socket_state);
-	DECODE_SOCKET_U16(protocol_state);
-	DECODE_SOCKET_U16(shutdown);
-	socket->error = (__s32)mapple_pslist_fd_read_u32(
-		&wire, offsetof(struct mapple_pslist_socket_data, error));
-	socket->soft_error = (__s32)mapple_pslist_fd_read_u32(
-		&wire, offsetof(struct mapple_pslist_socket_data, soft_error));
-	DECODE_SOCKET_U32(bound_device);
-	DECODE_SOCKET_U32(mark);
-	DECODE_SOCKET_U32(priority);
-	DECODE_SOCKET_U32(uid);
-	DECODE_SOCKET_U32(network_namespace);
-	DECODE_SOCKET_U32(receive_buffer);
-	DECODE_SOCKET_U32(send_buffer);
-	DECODE_SOCKET_U32(receive_queued);
-	DECODE_SOCKET_U32(send_queued);
-	DECODE_SOCKET_U32(drops);
-#undef DECODE_SOCKET_U32
-#undef DECODE_SOCKET_U16
-	ret = mapple_pslist_read_endpoint(session_fd, &wire.local, &socket->local,
-					 &remaining_detail);
-	if (!ret)
-		ret = mapple_pslist_read_endpoint(session_fd, &wire.peer, &socket->peer,
-						 &remaining_detail);
-	if (!ret)
-		ret = mapple_pslist_fd_skip(session_fd, remaining_detail);
-	return ret;
-}
-
-static int mapple_pslist_decode_fd(const struct mapple_pslist_fd_record *wire,
-				   struct mapple_pslist_fd *fd, __u32 record_size,
-				   __u32 *detail_size, __u32 *path_length,
-				   __u32 *fdinfo_length)
-{
-	__u64 minimum_size;
-
-#define DECODE_FD_U16(field) \
-	fd->field = mapple_pslist_fd_read_u16(wire, offsetof(struct mapple_pslist_fd_record, field))
-#define DECODE_FD_U32(field) \
-	fd->field = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_fd_record, field))
-#define DECODE_FD_U64(field) \
-	fd->field = mapple_pslist_fd_read_u64(wire, offsetof(struct mapple_pslist_fd_record, field))
-	DECODE_FD_U32(fd);
-	DECODE_FD_U16(kind);
-	DECODE_FD_U16(detail_type);
-	DECODE_FD_U32(descriptor_flags);
-	DECODE_FD_U32(open_flags);
-	DECODE_FD_U64(file_mode);
-	fd->position = (__s64)mapple_pslist_fd_read_u64(
-		wire, offsetof(struct mapple_pslist_fd_record, position));
-	DECODE_FD_U64(version);
-	DECODE_FD_U32(credential_uid);
-	DECODE_FD_U32(credential_gid);
-	DECODE_FD_U32(credential_effective_uid);
-	DECODE_FD_U32(credential_effective_gid);
-	DECODE_FD_U32(credential_saved_uid);
-	DECODE_FD_U32(credential_saved_gid);
-	DECODE_FD_U32(credential_filesystem_uid);
-	DECODE_FD_U32(credential_filesystem_gid);
-	fd->async_owner_pid = (__s32)mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_fd_record, async_owner_pid));
-	DECODE_FD_U16(async_owner_type);
-	DECODE_FD_U16(async_signal);
-	DECODE_FD_U32(async_owner_uid);
-	DECODE_FD_U32(async_owner_effective_uid);
-	DECODE_FD_U16(path_status);
-	DECODE_FD_U16(stat_status);
-	DECODE_FD_U16(fdinfo_status);
-	fd->path_error = (__s32)mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_fd_record, path_error));
-	fd->stat_error = (__s32)mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_fd_record, stat_error));
-	fd->fdinfo_error = (__s32)mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_fd_record, fdinfo_error));
-	*detail_size = mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_fd_record, detail_size));
-	*path_length = mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_fd_record, path_length));
-	*fdinfo_length = mapple_pslist_fd_read_u32(
-		wire, offsetof(struct mapple_pslist_fd_record, fdinfo_length));
-#undef DECODE_FD_U64
-#undef DECODE_FD_U32
-#undef DECODE_FD_U16
-	minimum_size = sizeof(*wire) + (__u64)*detail_size + *path_length + *fdinfo_length;
-	if (wire->reserved || fd->kind < MAPPLE_PSLIST_FD_REGULAR ||
-	    fd->kind > MAPPLE_PSLIST_FD_OTHER ||
-	    (fd->descriptor_flags & ~MAPPLE_PSLIST_FD_KNOWN_DESCRIPTOR_FLAGS) ||
-	    fd->path_status < MAPPLE_PSLIST_DATA_AVAILABLE ||
-	    fd->path_status > MAPPLE_PSLIST_DATA_UNSUPPORTED ||
-	    fd->stat_status < MAPPLE_PSLIST_DATA_AVAILABLE ||
-	    fd->stat_status > MAPPLE_PSLIST_DATA_UNSUPPORTED ||
-	    fd->fdinfo_status < MAPPLE_PSLIST_DATA_AVAILABLE ||
-	    fd->fdinfo_status > MAPPLE_PSLIST_DATA_UNSUPPORTED ||
-	    *fdinfo_length > MAPPLE_PSLIST_FDINFO_MAX_SIZE || minimum_size > record_size ||
-	    (fd->path_status == MAPPLE_PSLIST_DATA_AVAILABLE) != !!*path_length ||
-	    (fd->fdinfo_status != MAPPLE_PSLIST_DATA_AVAILABLE && *fdinfo_length) ||
-	    (fd->path_status == MAPPLE_PSLIST_DATA_AVAILABLE && fd->path_error) ||
-	    (fd->stat_status == MAPPLE_PSLIST_DATA_AVAILABLE && fd->stat_error) ||
-	    (fd->fdinfo_status == MAPPLE_PSLIST_DATA_AVAILABLE && fd->fdinfo_error) ||
-	    (fd->detail_type == MAPPLE_PSLIST_FD_DETAIL_NONE && *detail_size) ||
-	    (fd->detail_type == MAPPLE_PSLIST_FD_DETAIL_SOCKET &&
-	     fd->kind != MAPPLE_PSLIST_FD_SOCKET))
-		return EPROTO;
-	return mapple_pslist_decode_stat(&wire->stat, &fd->stat);
-}
-
-static int mapple_pslist_read_fd_record(int session_fd, __u32 record_size,
-					struct mapple_pslist_fd_table *table)
-{
-	struct mapple_pslist_fd_record wire;
+	const struct mapple_pslist_fd_record *wire = record;
 	struct mapple_pslist_fd fd = { 0 };
-	__u32 detail_size;
 	__u32 path_length;
-	__u32 fdinfo_length;
-	__u64 consumed;
 	int ret;
-
-	if (record_size < sizeof(wire))
+	if (size < sizeof(*wire)) return EPROTO;
+	fd.fd = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_fd_record, fd));
+	fd.kind = mapple_pslist_fd_read_u16(wire, offsetof(struct mapple_pslist_fd_record, kind));
+	fd.path_status = mapple_pslist_fd_read_u16(wire, offsetof(struct mapple_pslist_fd_record, path_status));
+	fd.identity_status = mapple_pslist_fd_read_u16(wire, offsetof(struct mapple_pslist_fd_record, identity_status));
+	fd.descriptor_flags = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_fd_record, descriptor_flags));
+	fd.open_flags = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_fd_record, open_flags));
+	fd.path_error = (__s32)mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_fd_record, path_error));
+	fd.identity_error = (__s32)mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_fd_record, identity_error));
+	path_length = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_fd_record, path_length));
+	fd.stat.device_major = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_fd_record, device_major));
+	fd.stat.device_minor = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_fd_record, device_minor));
+	fd.stat.inode = mapple_pslist_fd_read_u64(wire, offsetof(struct mapple_pslist_fd_record, inode));
+	fd.stat.mount_id = mapple_pslist_fd_read_u64(wire, offsetof(struct mapple_pslist_fd_record, mount_id));
+	if (wire->reserved || fd.kind < MAPPLE_PSLIST_FD_REGULAR || fd.kind > MAPPLE_PSLIST_FD_OTHER ||
+	    (fd.descriptor_flags & ~MAPPLE_PSLIST_FD_KNOWN_DESCRIPTOR_FLAGS) ||
+	    fd.path_status < MAPPLE_PSLIST_DATA_AVAILABLE || fd.path_status > MAPPLE_PSLIST_DATA_UNSUPPORTED ||
+	    fd.identity_status < MAPPLE_PSLIST_DATA_AVAILABLE || fd.identity_status > MAPPLE_PSLIST_DATA_UNSUPPORTED ||
+	    sizeof(*wire) + (__u64)path_length > size ||
+	    (fd.path_status == MAPPLE_PSLIST_DATA_AVAILABLE) != !!path_length || mapple_pslist_find_fd(table, fd.fd))
 		return EPROTO;
-	wire.record_size = htonl(record_size);
-	ret = read_exact(session_fd, (unsigned char *)&wire + sizeof(wire.record_size),
-			 sizeof(wire) - sizeof(wire.record_size));
-	if (ret)
-		return ret;
-	ret = mapple_pslist_decode_fd(&wire, &fd, record_size, &detail_size, &path_length,
-				      &fdinfo_length);
-	if (ret)
-		return ret;
-	if (fd.detail_type == MAPPLE_PSLIST_FD_DETAIL_SOCKET)
-		ret = mapple_pslist_read_socket(session_fd, detail_size, &fd.socket);
-	else
-		ret = mapple_pslist_fd_skip(session_fd, detail_size);
-	if (ret)
-		goto free_fd;
 	if (path_length) {
 		fd.path = malloc(path_length);
-		if (!fd.path) {
-			ret = ENOMEM;
-			goto free_fd;
-		}
+		if (!fd.path) return ENOMEM;
+		memcpy(fd.path, (const unsigned char *)record + sizeof(*wire), path_length);
 		fd.path_length = path_length;
-		ret = read_exact(session_fd, fd.path, path_length);
-		if (ret)
-			goto free_fd;
-	}
-	if (fdinfo_length) {
-		fd.fdinfo = malloc(fdinfo_length);
-		if (!fd.fdinfo) {
-			ret = ENOMEM;
-			goto free_fd;
-		}
-		fd.fdinfo_length = fdinfo_length;
-		ret = read_exact(session_fd, fd.fdinfo, fdinfo_length);
-		if (ret)
-			goto free_fd;
-	}
-	consumed = sizeof(wire) + (__u64)detail_size + path_length + fdinfo_length;
-	ret = mapple_pslist_fd_skip(session_fd, record_size - (size_t)consumed);
-	if (ret)
-		goto free_fd;
-	if (table->count && table->entries[table->count - 1].fd >= fd.fd) {
-		ret = EPROTO;
-		goto free_fd;
 	}
 	ret = mapple_pslist_fd_grow(table);
-	if (ret)
-		goto free_fd;
+	if (ret) { free(fd.path); return ret; }
 	table->entries[table->count++] = fd;
 	return 0;
-
-free_fd:
-	mapple_pslist_free_fd(&fd);
-	return ret;
 }
 
-int mapple_pslist_read_fd_table(int session_fd, struct mapple_pslist_fd_table *table)
+int mapple_pslist_decode_fd_details_record(const void *record, size_t size, struct mapple_pslist_fd_table *table)
 {
-	struct mapple_pslist_fd_table_end end = { 0 };
-	__u32 record_size;
-	__u32 record_count;
+	const struct mapple_pslist_fd_details_record *wire = record;
+	struct mapple_pslist_fd *fd;
+	__u32 fdinfo_length, number;
 	int ret;
-
-	for (;;) {
-		ret = read_exact(session_fd, &end.record_size, sizeof(end.record_size));
-		if (ret)
-			return ret;
-		record_size = ntohl(end.record_size);
-		if (record_size) {
-			ret = mapple_pslist_read_fd_record(session_fd, record_size, table);
-			if (ret)
-				return ret;
-			continue;
-		}
-		ret = read_exact(session_fd, (unsigned char *)&end + sizeof(end.record_size),
-				 sizeof(end) - sizeof(end.record_size));
-		if (ret)
-			return ret;
-		table->status = ntohs(end.status);
-		record_count = ntohl(end.record_count);
-		if (end.reserved || table->status < MAPPLE_PSLIST_FD_TABLE_COMPLETE ||
-		    table->status > MAPPLE_PSLIST_FD_TABLE_UNAVAILABLE ||
-		    record_count != table->count ||
-		    (table->status == MAPPLE_PSLIST_FD_TABLE_UNAVAILABLE && table->count))
-			return EPROTO;
-		return 0;
+	if (size < sizeof(*wire)) return EPROTO;
+	number = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_fd_details_record, fd));
+	fd = mapple_pslist_find_fd(table, number);
+	if (!fd || fd->details_available) return EPROTO;
+	fd->stat_status = mapple_pslist_fd_read_u16(wire, offsetof(struct mapple_pslist_fd_details_record, stat_status));
+	fd->fdinfo_status = mapple_pslist_fd_read_u16(wire, offsetof(struct mapple_pslist_fd_details_record, fdinfo_status));
+	fd->file_mode = mapple_pslist_fd_read_u64(wire, offsetof(struct mapple_pslist_fd_details_record, file_mode));
+	fd->position = (__s64)mapple_pslist_fd_read_u64(wire, offsetof(struct mapple_pslist_fd_details_record, position));
+	fd->version = mapple_pslist_fd_read_u64(wire, offsetof(struct mapple_pslist_fd_details_record, version));
+#define DETAILS_U32(field) fd->field = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_fd_details_record, field))
+	DETAILS_U32(credential_uid); DETAILS_U32(credential_gid); DETAILS_U32(credential_effective_uid); DETAILS_U32(credential_effective_gid);
+	DETAILS_U32(credential_saved_uid); DETAILS_U32(credential_saved_gid); DETAILS_U32(credential_filesystem_uid); DETAILS_U32(credential_filesystem_gid);
+	fd->async_owner_pid = (__s32)mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_fd_details_record, async_owner_pid));
+	fd->async_owner_type = mapple_pslist_fd_read_u16(wire, offsetof(struct mapple_pslist_fd_details_record, async_owner_type));
+	fd->async_signal = mapple_pslist_fd_read_u16(wire, offsetof(struct mapple_pslist_fd_details_record, async_signal));
+	DETAILS_U32(async_owner_uid); DETAILS_U32(async_owner_effective_uid);
+#undef DETAILS_U32
+	fd->stat_error = (__s32)mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_fd_details_record, stat_error));
+	fd->fdinfo_error = (__s32)mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_fd_details_record, fdinfo_error));
+	fdinfo_length = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_fd_details_record, fdinfo_length));
+	if (wire->reserved || fd->stat_status < MAPPLE_PSLIST_DATA_AVAILABLE || fd->stat_status > MAPPLE_PSLIST_DATA_UNSUPPORTED ||
+	    fd->fdinfo_status < MAPPLE_PSLIST_DATA_AVAILABLE || fd->fdinfo_status > MAPPLE_PSLIST_DATA_UNSUPPORTED ||
+	    fdinfo_length > MAPPLE_PSLIST_FDINFO_MAX_SIZE || sizeof(*wire) + (__u64)fdinfo_length > size)
+		return EPROTO;
+	ret = mapple_pslist_decode_stat(&wire->stat, &fd->stat);
+	if (ret) return ret;
+	if (fdinfo_length) {
+		fd->fdinfo = malloc(fdinfo_length);
+		if (!fd->fdinfo) return ENOMEM;
+		memcpy(fd->fdinfo, (const unsigned char *)record + sizeof(*wire), fdinfo_length);
+		fd->fdinfo_length = fdinfo_length;
 	}
+	fd->details_available = 1;
+	return 0;
+}
+
+static int mapple_pslist_decode_endpoint(const struct mapple_pslist_socket_endpoint *wire,
+	struct mapple_pslist_socket_endpoint_data *endpoint, const unsigned char **bytes, size_t *remaining)
+{
+	endpoint->status = mapple_pslist_fd_read_u16(wire, offsetof(struct mapple_pslist_socket_endpoint, status));
+	endpoint->type = mapple_pslist_fd_read_u16(wire, offsetof(struct mapple_pslist_socket_endpoint, type));
+	endpoint->error = (__s32)mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_socket_endpoint, error));
+	endpoint->port = mapple_pslist_fd_read_u16(wire, offsetof(struct mapple_pslist_socket_endpoint, port));
+	endpoint->flags = mapple_pslist_fd_read_u16(wire, offsetof(struct mapple_pslist_socket_endpoint, flags));
+	endpoint->scope_id = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_socket_endpoint, scope_id));
+	endpoint->flow_info = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_socket_endpoint, flow_info));
+	endpoint->netlink_pid = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_socket_endpoint, netlink_pid));
+	endpoint->netlink_groups = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_socket_endpoint, netlink_groups));
+	endpoint->address_length = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_socket_endpoint, address_length));
+	if (endpoint->status < MAPPLE_PSLIST_SOCKET_ENDPOINT_AVAILABLE || endpoint->status > MAPPLE_PSLIST_SOCKET_ENDPOINT_UNSUPPORTED ||
+	    endpoint->type > MAPPLE_PSLIST_SOCKET_ENDPOINT_NETLINK || (endpoint->flags & ~MAPPLE_PSLIST_SOCKET_ENDPOINT_KNOWN_FLAGS) ||
+	    endpoint->address_length > *remaining) return EPROTO;
+	if (endpoint->address_length) {
+		endpoint->address = malloc(endpoint->address_length);
+		if (!endpoint->address) return ENOMEM;
+		memcpy(endpoint->address, *bytes, endpoint->address_length);
+		*bytes += endpoint->address_length;
+		*remaining -= endpoint->address_length;
+	}
+	return 0;
+}
+
+int mapple_pslist_decode_network_record(const void *record, size_t size, struct mapple_pslist_fd_table *table)
+{
+	const struct mapple_pslist_network_record *wire = record;
+	struct mapple_pslist_socket *socket;
+	struct mapple_pslist_fd *fd;
+	const unsigned char *bytes;
+	__u32 local_length, peer_length, number;
+	size_t remaining;
+	int ret;
+	if (size < sizeof(*wire)) return EPROTO;
+	number = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_network_record, fd));
+	fd = mapple_pslist_find_fd(table, number);
+	if (!fd || fd->network_available || fd->kind != MAPPLE_PSLIST_FD_SOCKET) return EPROTO;
+	local_length = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_network_record, local_address_length));
+	peer_length = mapple_pslist_fd_read_u32(wire, offsetof(struct mapple_pslist_network_record, peer_address_length));
+	if (wire->reserved || sizeof(*wire) + (__u64)local_length + peer_length > size) return EPROTO;
+	socket = &fd->socket;
+#define SOCKET_U16(field) socket->field = mapple_pslist_fd_read_u16(&wire->socket, offsetof(struct mapple_pslist_socket_data, field))
+#define SOCKET_U32(field) socket->field = mapple_pslist_fd_read_u32(&wire->socket, offsetof(struct mapple_pslist_socket_data, field))
+	SOCKET_U16(family); SOCKET_U16(type); SOCKET_U16(protocol); SOCKET_U16(socket_state); SOCKET_U16(protocol_state); SOCKET_U16(shutdown);
+	socket->error = (__s32)mapple_pslist_fd_read_u32(&wire->socket, offsetof(struct mapple_pslist_socket_data, error));
+	socket->soft_error = (__s32)mapple_pslist_fd_read_u32(&wire->socket, offsetof(struct mapple_pslist_socket_data, soft_error));
+	SOCKET_U32(bound_device); SOCKET_U32(mark); SOCKET_U32(priority); SOCKET_U32(uid); SOCKET_U32(network_namespace);
+	SOCKET_U32(receive_buffer); SOCKET_U32(send_buffer); SOCKET_U32(receive_queued); SOCKET_U32(send_queued); SOCKET_U32(drops);
+#undef SOCKET_U32
+#undef SOCKET_U16
+	bytes = (const unsigned char *)record + sizeof(*wire);
+	remaining = local_length + peer_length;
+	ret = mapple_pslist_decode_endpoint(&wire->socket.local, &socket->local, &bytes, &remaining);
+	if (!ret) ret = mapple_pslist_decode_endpoint(&wire->socket.peer, &socket->peer, &bytes, &remaining);
+	if (ret || remaining || socket->local.address_length != local_length || socket->peer.address_length != peer_length) {
+		free(socket->local.address); free(socket->peer.address); socket->local.address = NULL; socket->peer.address = NULL;
+		return ret ? ret : EPROTO;
+	}
+	fd->network_available = 1;
+	return 0;
 }
 
 static const char *mapple_pslist_data_status_name(__u16 status)
@@ -478,6 +271,24 @@ static const char *mapple_pslist_data_status_name(__u16 status)
 		return "raced";
 	case MAPPLE_PSLIST_DATA_UNSUPPORTED:
 		return "unsupported";
+	default:
+		return NULL;
+	}
+}
+
+static const char *mapple_pslist_object_status_name(__u16 status)
+{
+	switch (status) {
+	case MAPPLE_PSLIST_OBJECT_COMPLETE:
+		return "complete";
+	case MAPPLE_PSLIST_OBJECT_PARTIAL:
+		return "partial";
+	case MAPPLE_PSLIST_OBJECT_UNAVAILABLE:
+		return "unavailable";
+	case MAPPLE_PSLIST_OBJECT_RACED:
+		return "raced";
+	case MAPPLE_PSLIST_OBJECT_TOO_LARGE:
+		return "too_large";
 	default:
 		return NULL;
 	}
@@ -1259,105 +1070,105 @@ static int mapple_pslist_print_open_flags(__u32 flags)
 }
 
 static int mapple_pslist_print_fd(const struct mapple_pslist_fd *fd,
-				   int indent)
+				   const struct mapple_pslist_fd_table *table, int indent)
 {
 	enum mapple_pslist_fdinfo_type fdinfo_type = MAPPLE_PSLIST_FDINFO_UNKNOWN;
-	const char *fdinfo_parse_status;
 	const char *kind = mapple_pslist_fd_kind_name(fd->kind);
 	const char *path_status = mapple_pslist_data_status_name(fd->path_status);
-	const char *fdinfo_status = mapple_pslist_data_status_name(fd->fdinfo_status);
+	const char *identity_status = mapple_pslist_data_status_name(fd->identity_status);
+	const char *fdinfo_status = NULL;
+	const char *fdinfo_parse_status = NULL;
 	int ret;
 
-	if (!kind || !path_status || !fdinfo_status)
+	if (!kind || !path_status || !identity_status)
 		return EPROTO;
-	if (fd->fdinfo_status != MAPPLE_PSLIST_DATA_AVAILABLE)
-		fdinfo_parse_status = "not_available";
-	else {
-		fdinfo_type = mapple_pslist_fdinfo_type(fd);
-		fdinfo_parse_status = fdinfo_type == MAPPLE_PSLIST_FDINFO_UNKNOWN ?
-				      "unrecognized" : "complete";
+	if (table->has_details) {
+		fdinfo_status = mapple_pslist_data_status_name(fd->fdinfo_status);
+		if (!fdinfo_status)
+			return EPROTO;
+		if (fd->fdinfo_status != MAPPLE_PSLIST_DATA_AVAILABLE)
+			fdinfo_parse_status = "not_available";
+		else {
+			fdinfo_type = mapple_pslist_fdinfo_type(fd);
+			fdinfo_parse_status = fdinfo_type == MAPPLE_PSLIST_FDINFO_UNKNOWN ?
+				"unrecognized" : "complete";
+		}
 	}
 	ret = mapple_pslist_print_json_indent(indent);
 	if (ret)
 		return ret;
 	if (printf("{\n%*s\"fd\": %u,\n%*s\"kind\": \"%s\","
-		   "\n%*s\"descriptor_flags\": {"
-		   "\n%*s\"value\": %u,"
-		   "\n%*s\"close_on_exec\": %s"
-		   "\n%*s},\n%*s\"open_flags\": ",
+		   "\n%*s\"descriptor_flags\": %u,\n%*s\"open_flags\": ",
 		   indent + 2, "", fd->fd, indent + 2, "", kind,
-		   indent + 2, "", indent + 4, "", fd->descriptor_flags,
-		   indent + 4, "",
-		   fd->descriptor_flags & MAPPLE_PSLIST_FD_DESCRIPTOR_CLOEXEC ? "true" : "false",
-		   indent + 2, "", indent + 2, "") < 0)
+		   indent + 2, "", fd->descriptor_flags, indent + 2, "") < 0)
 		return EIO;
 	ret = mapple_pslist_print_open_flags(fd->open_flags);
-	if (ret)
-		return ret;
-	if (printf(",\n%*s\"file_mode\": %" PRIu64 ","
-		   "\n%*s\"position\": %" PRId64 ","
-		   "\n%*s\"version\": %" PRIu64 ","
-		   "\n%*s\"credentials\": {"
-		   "\n%*s\"uid\": %u,\n%*s\"gid\": %u,"
-		   "\n%*s\"effective_uid\": %u,\n%*s\"effective_gid\": %u,"
-		   "\n%*s\"saved_uid\": %u,\n%*s\"saved_gid\": %u,"
-		   "\n%*s\"filesystem_uid\": %u,\n%*s\"filesystem_gid\": %u"
-		   "\n%*s},\n%*s\"async_owner\": {"
-		   "\n%*s\"pid\": %d,\n%*s\"type\": %u,"
-		   "\n%*s\"signal\": %u,\n%*s\"uid\": %u,"
-		   "\n%*s\"effective_uid\": %u\n%*s},"
-		   "\n%*s\"path_status\": \"%s\","
-		   "\n%*s\"path_error\": %d,\n%*s\"path\": ",
-		   indent + 2, "", (uint64_t)fd->file_mode,
-		   indent + 2, "", (int64_t)fd->position,
-		   indent + 2, "", (uint64_t)fd->version,
-		   indent + 2, "", indent + 4, "", fd->credential_uid,
-		   indent + 4, "", fd->credential_gid, indent + 4, "",
-		   fd->credential_effective_uid, indent + 4, "",
-		   fd->credential_effective_gid, indent + 4, "", fd->credential_saved_uid,
-		   indent + 4, "", fd->credential_saved_gid, indent + 4, "",
-		   fd->credential_filesystem_uid, indent + 4, "",
-		   fd->credential_filesystem_gid, indent + 2, "", indent + 2, "",
-		   indent + 4, "", fd->async_owner_pid, indent + 4, "",
-		   fd->async_owner_type, indent + 4, "", fd->async_signal,
-		   indent + 4, "", fd->async_owner_uid, indent + 4, "",
-		   fd->async_owner_effective_uid, indent + 2, "", indent + 2, "",
-		   path_status, indent + 2, "", fd->path_error, indent + 2, "") < 0)
-		return EIO;
-	if (fd->path)
+	if (!ret && printf(",\n%*s\"path_status\": \"%s\",\n%*s\"path_error\": %d,"
+			   "\n%*s\"path\": ", indent + 2, "", path_status,
+			   indent + 2, "", fd->path_error, indent + 2, "") < 0)
+		ret = EIO;
+	if (!ret && fd->path)
 		ret = mapple_pslist_print_json_bytes(fd->path, fd->path_length);
-	else
-		ret = fputs("null", stdout) == EOF ? EIO : 0;
-	if (!ret && printf(",\n%*s\"stat\": ", indent + 2, "") < 0)
+	else if (!ret && fputs("null", stdout) == EOF)
 		ret = EIO;
-	if (!ret)
-		ret = mapple_pslist_print_stat(fd, indent + 2);
-	if (!ret && printf(",\n%*s\"socket\": ", indent + 2, "") < 0)
+	if (!ret && printf(",\n%*s\"identity\": {\"status\": \"%s\", "
+			   "\"error\": %d, \"device_major\": %u, "
+			   "\"device_minor\": %u, \"inode\": %" PRIu64
+			   ", \"mount_id\": %" PRIu64 "}", indent + 2, "",
+			   identity_status, fd->identity_error, fd->stat.device_major,
+			   fd->stat.device_minor, (uint64_t)fd->stat.inode,
+			   (uint64_t)fd->stat.mount_id) < 0)
 		ret = EIO;
-	if (!ret && fd->detail_type == MAPPLE_PSLIST_FD_DETAIL_SOCKET)
+	if (!ret && printf(",\n%*s\"details\": ", indent + 2, "") < 0)
+		ret = EIO;
+	if (!ret && !table->has_details) {
+		if (fputs("null", stdout) == EOF)
+			ret = EIO;
+	} else if (!ret) {
+		if (printf("{\n%*s\"file_mode\": %" PRIu64 ",\n%*s\"position\": %" PRId64
+			   ",\n%*s\"version\": %" PRIu64 ",\n%*s\"credentials\": {"
+			   "\"uid\": %u, \"gid\": %u, \"effective_uid\": %u, "
+			   "\"effective_gid\": %u, \"saved_uid\": %u, \"saved_gid\": %u, "
+			   "\"filesystem_uid\": %u, \"filesystem_gid\": %u},"
+			   "\n%*s\"async_owner\": {\"pid\": %d, \"type\": %u, "
+			   "\"signal\": %u, \"uid\": %u, \"effective_uid\": %u},"
+			   "\n%*s\"stat\": ", indent + 4, "", (uint64_t)fd->file_mode,
+			   indent + 4, "", (int64_t)fd->position, indent + 4, "",
+			   (uint64_t)fd->version, indent + 4, "", fd->credential_uid,
+			   fd->credential_gid, fd->credential_effective_uid,
+			   fd->credential_effective_gid, fd->credential_saved_uid,
+			   fd->credential_saved_gid, fd->credential_filesystem_uid,
+			   fd->credential_filesystem_gid, indent + 4, "", fd->async_owner_pid,
+			   fd->async_owner_type, fd->async_signal, fd->async_owner_uid,
+			   fd->async_owner_effective_uid, indent + 4, "") < 0)
+			ret = EIO;
+		if (!ret)
+			ret = mapple_pslist_print_stat(fd, indent + 4);
+		if (!ret && printf(",\n%*s\"fdinfo\": {\"status\": \"%s\", "
+				   "\"error\": %d, \"parse_status\": \"%s\", "
+				   "\"parsed\": ", indent + 4, "", fdinfo_status,
+				   fd->fdinfo_error, fdinfo_parse_status) < 0)
+			ret = EIO;
+		if (!ret && fdinfo_type != MAPPLE_PSLIST_FDINFO_UNKNOWN)
+			ret = mapple_pslist_print_fdinfo_parsed(fd, fdinfo_type);
+		else if (!ret && fputs("null", stdout) == EOF)
+			ret = EIO;
+		if (!ret && fputs(", \"raw\": ", stdout) == EOF)
+			ret = EIO;
+		if (!ret && fd->fdinfo)
+			ret = mapple_pslist_print_json_bytes(fd->fdinfo, fd->fdinfo_length);
+		else if (!ret && fputs("null", stdout) == EOF)
+			ret = EIO;
+		if (!ret && printf("}\n%*s}", indent + 2, "") < 0)
+			ret = EIO;
+	}
+	if (!ret && printf(",\n%*s\"network\": ", indent + 2, "") < 0)
+		ret = EIO;
+	if (!ret && fd->network_available)
 		ret = mapple_pslist_print_socket(&fd->socket, indent + 2);
 	else if (!ret && fputs("null", stdout) == EOF)
 		ret = EIO;
-	if (!ret && printf(",\n%*s\"fdinfo\": {"
-			   "\n%*s\"status\": \"%s\","
-			   "\n%*s\"error\": %d,"
-			   "\n%*s\"parse_status\": \"%s\","
-			   "\n%*s\"parsed\": ",
-			   indent + 2, "", indent + 4, "", fdinfo_status,
-			   indent + 4, "", fd->fdinfo_error, indent + 4, "",
-			   fdinfo_parse_status, indent + 4, "") < 0)
-		ret = EIO;
-	if (!ret && fdinfo_type != MAPPLE_PSLIST_FDINFO_UNKNOWN)
-		ret = mapple_pslist_print_fdinfo_parsed(fd, fdinfo_type);
-	else if (!ret && fputs("null", stdout) == EOF)
-		ret = EIO;
-	if (!ret && printf(",\n%*s\"raw\": ", indent + 4, "") < 0)
-		ret = EIO;
-	if (!ret && fd->fdinfo)
-		ret = mapple_pslist_print_json_bytes(fd->fdinfo, fd->fdinfo_length);
-	else if (!ret && fputs("null", stdout) == EOF)
-		ret = EIO;
-	if (!ret && printf("\n%*s}\n", indent + 2, "") < 0)
+	if (!ret && putchar('\n') == EOF)
 		ret = EIO;
 	if (!ret)
 		ret = mapple_pslist_print_json_indent(indent);
@@ -1369,42 +1180,52 @@ static int mapple_pslist_print_fd(const struct mapple_pslist_fd *fd,
 int mapple_pslist_print_json_fd_table(const struct mapple_pslist_fd_table *table,
 				       int indent)
 {
-	const char *status;
+	const char *fds_status;
+	const char *details_status = NULL;
+	const char *network_status = NULL;
 	size_t index;
 	int ret;
 
-	switch (table->status) {
-	case MAPPLE_PSLIST_FD_TABLE_COMPLETE:
-		status = "complete";
-		break;
-	case MAPPLE_PSLIST_FD_TABLE_PARTIAL:
-		status = "partial";
-		break;
-	case MAPPLE_PSLIST_FD_TABLE_UNAVAILABLE:
-		status = "unavailable";
-		break;
-	default:
+	fds_status = mapple_pslist_object_status_name(table->fds_status);
+	if (table->has_details)
+		details_status = mapple_pslist_object_status_name(table->details_status);
+	if (table->has_network)
+		network_status = mapple_pslist_object_status_name(table->network_status);
+	if (!table->has_fds || !fds_status || (table->has_details && !details_status) ||
+	    (table->has_network && !network_status))
 		return EPROTO;
-	}
-	if (printf("{\n%*s\"status\": \"%s\",\n%*s\"fds\": [",
-		   indent + 2, "", status, indent + 2, "") < 0)
+	if (printf("{\n%*s\"fds_status\": \"%s\",\n%*s\"fd_details_status\": ",
+		   indent + 2, "", fds_status, indent + 2, "") < 0)
+		return EIO;
+	if (details_status) {
+		if (printf("\"%s\"", details_status) < 0)
+			return EIO;
+	} else if (fputs("null", stdout) == EOF)
+		return EIO;
+	if (printf(",\n%*s\"network_status\": ", indent + 2, "") < 0)
+		return EIO;
+	if (network_status) {
+		if (printf("\"%s\"", network_status) < 0)
+			return EIO;
+	} else if (fputs("null", stdout) == EOF)
+		return EIO;
+	if (printf(",\n%*s\"fds\": [", indent + 2, "") < 0)
 		return EIO;
 	for (index = 0; index < table->count; ++index) {
 		if (fputs(index ? ",\n" : "\n", stdout) == EOF)
 			return EIO;
-		ret = mapple_pslist_print_fd(&table->entries[index], indent + 4);
+		ret = mapple_pslist_print_fd(&table->entries[index], table, indent + 4);
 		if (ret)
 			return ret;
 	}
 	if (table->count && putchar('\n') == EOF)
 		return EIO;
 	ret = mapple_pslist_print_json_indent(indent + 2);
-	if (ret)
-		return ret;
-	if (fputs("]\n", stdout) == EOF)
-		return EIO;
-	ret = mapple_pslist_print_json_indent(indent);
-	if (ret)
-		return ret;
-	return putchar('}') == EOF ? EIO : 0;
+	if (!ret && fputs("]\n", stdout) == EOF)
+		ret = EIO;
+	if (!ret)
+		ret = mapple_pslist_print_json_indent(indent);
+	if (!ret && putchar('}') == EOF)
+		ret = EIO;
+	return ret;
 }
