@@ -59,6 +59,7 @@ struct mapple_wire_header {
 #define MAPPLE_PSLIST_SUPPORTED_GROUPS                                               \
 	(MAPPLE_PSLIST_GROUP_IDENTITY | MAPPLE_PSLIST_GROUP_SECURITY |                 \
 	 MAPPLE_PSLIST_GROUP_CONTEXT |                                                 \
+	 MAPPLE_PSLIST_GROUP_RESOURCES |                                               \
 	 MAPPLE_PSLIST_GROUP_FDS |                                                    \
 	 MAPPLE_PSLIST_GROUP_FDS_DETAILS | MAPPLE_PSLIST_GROUP_NETWORK)
 
@@ -86,7 +87,8 @@ enum mapple_pslist_stream_record_type {
 	MAPPLE_PSLIST_STREAM_OBJECT_END = 9,
 	MAPPLE_PSLIST_STREAM_SNAPSHOT_END = 10,
 	MAPPLE_PSLIST_STREAM_SECURITY = 11,
-	MAPPLE_PSLIST_STREAM_CONTEXT = 12
+	MAPPLE_PSLIST_STREAM_CONTEXT = 12,
+	MAPPLE_PSLIST_STREAM_RESOURCES = 13
 };
 
 struct mapple_pslist_stream_record {
@@ -321,6 +323,54 @@ struct mapple_pslist_context_record {
 	__u64 cgroup_inode;
 } PACKED_STRUCT;
 /* Followed by cwd, root, host cgroup path, then namespaced cgroup path bytes. */
+
+enum mapple_pslist_resources_memory_reason {
+	MAPPLE_PSLIST_RESOURCES_MEMORY_REASON_NONE = 0,
+	MAPPLE_PSLIST_RESOURCES_MEMORY_REASON_NO_MM = 1
+};
+
+struct mapple_pslist_resources_record {
+	struct mapple_pslist_stream_record record;
+	__u64 object_id;
+	__u16 memory_status;
+	__u16 io_status;
+	__u16 network_status;
+	__u16 memory_reason;
+	__u32 memory_error;
+	__u32 io_error;
+	__u32 network_error;
+	__u32 current_cpu;
+	__u32 scheduling_policy;
+	__s32 priority;
+	__s32 nice;
+	__u32 realtime_priority;
+	__u32 page_size_bytes;
+	__u64 cpu_user_time_ns;
+	__u64 cpu_system_time_ns;
+	__u64 minor_faults;
+	__u64 major_faults;
+	__u64 voluntary_context_switches;
+	__u64 involuntary_context_switches;
+	__u64 io_read_characters;
+	__u64 io_write_characters;
+	__u64 io_read_syscalls;
+	__u64 io_write_syscalls;
+	__u64 io_storage_read_bytes;
+	__u64 io_storage_write_bytes;
+	__u64 io_cancelled_write_bytes;
+	__u64 memory_virtual_pages;
+	__u64 memory_peak_virtual_pages;
+	__u64 memory_locked_pages;
+	__u64 memory_data_pages;
+	__u64 memory_stack_pages;
+	__u64 memory_executable_pages;
+	__u64 memory_resident_pages;
+	__u64 memory_peak_resident_pages;
+	__u64 memory_anonymous_pages;
+	__u64 memory_file_pages;
+	__u64 memory_shared_pages;
+	__u64 memory_swap_entries;
+} PACKED_STRUCT;
 
 enum mapple_pslist_data_status {
 	MAPPLE_PSLIST_DATA_AVAILABLE = 1,

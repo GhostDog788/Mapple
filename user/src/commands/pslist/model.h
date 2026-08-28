@@ -9,6 +9,7 @@ enum mapple_pslist_output_group {
 	MAPPLE_PSLIST_OUTPUT_IDENTITY,
 	MAPPLE_PSLIST_OUTPUT_SECURITY,
 	MAPPLE_PSLIST_OUTPUT_CONTEXT,
+	MAPPLE_PSLIST_OUTPUT_RESOURCES,
 	MAPPLE_PSLIST_OUTPUT_FDS,
 	MAPPLE_PSLIST_OUTPUT_NETWORK,
 	MAPPLE_PSLIST_OUTPUT_GROUP_COUNT,
@@ -252,6 +253,50 @@ struct mapple_pslist_context {
 	__u64 cgroup_inode;
 };
 
+struct mapple_pslist_resources {
+	__u64 object_id;
+	__u16 status;
+	int has_record;
+	__u16 memory_status;
+	__u16 io_status;
+	__u16 network_status;
+	__u16 memory_reason;
+	__s32 memory_error;
+	__s32 io_error;
+	__s32 network_error;
+	__u32 current_cpu;
+	__u32 scheduling_policy;
+	__s32 priority;
+	__s32 nice;
+	__u32 realtime_priority;
+	__u32 page_size_bytes;
+	__u64 cpu_user_time_ns;
+	__u64 cpu_system_time_ns;
+	__u64 minor_faults;
+	__u64 major_faults;
+	__u64 voluntary_context_switches;
+	__u64 involuntary_context_switches;
+	__u64 io_read_characters;
+	__u64 io_write_characters;
+	__u64 io_read_syscalls;
+	__u64 io_write_syscalls;
+	__u64 io_storage_read_bytes;
+	__u64 io_storage_write_bytes;
+	__u64 io_cancelled_write_bytes;
+	__u64 memory_virtual_pages;
+	__u64 memory_peak_virtual_pages;
+	__u64 memory_locked_pages;
+	__u64 memory_data_pages;
+	__u64 memory_stack_pages;
+	__u64 memory_executable_pages;
+	__u64 memory_resident_pages;
+	__u64 memory_peak_resident_pages;
+	__u64 memory_anonymous_pages;
+	__u64 memory_file_pages;
+	__u64 memory_shared_pages;
+	__u64 memory_swap_entries;
+};
+
 struct mapple_pslist_snapshot {
 	struct mapple_pslist_task *tasks;
 	size_t task_count;
@@ -265,6 +310,9 @@ struct mapple_pslist_snapshot {
 	struct mapple_pslist_context *contexts;
 	size_t context_count;
 	size_t context_capacity;
+	struct mapple_pslist_resources *resources;
+	size_t resources_count;
+	size_t resources_capacity;
 	struct mapple_pslist_fd_table *fd_tables;
 	size_t fd_table_count;
 	size_t fd_table_capacity;
