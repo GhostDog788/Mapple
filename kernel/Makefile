@@ -53,8 +53,7 @@ modules: prepare-build
 			-o "$(LINUX_COMPILE_COMMANDS)" "$(KERNEL_SOURCE)"; \
 	fi
 	@python3 "$(COMPILE_DB_TOOL)" merge --clangd-compatible "$(COMPILE_COMMANDS)" \
-		"$(MODULE_COMPILE_COMMANDS)" "$(PROJECT_ROOT)/user/compile_commands.json" \
-		"$(LINUX_COMPILE_COMMANDS)"
+		"$(MODULE_COMPILE_COMMANDS)" "$(LINUX_COMPILE_COMMANDS)"
 	@python3 "$(COMPILE_DB_TOOL)" merge --clangd-compatible "$(ROOT_COMPILE_COMMANDS)" \
 		"$(COMPILE_COMMANDS)"
 	@echo "generated $(COMPILE_COMMANDS)"
