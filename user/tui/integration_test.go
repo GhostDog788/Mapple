@@ -36,7 +36,7 @@ func mustModel(t *testing.T) Model {
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
-	return New(client, "dev", testProfile(t))
+	return New(client, "dev", testProfile(t), nil, "")
 }
 
 func TestIntegration_FullFlow(t *testing.T) {

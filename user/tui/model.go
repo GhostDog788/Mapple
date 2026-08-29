@@ -103,9 +103,11 @@ type wizard struct {
 }
 
 type Model struct {
-	client      api.ClientWithResponsesInterface
-	profileName string
-	profile     Profile
+	client         api.ClientWithResponsesInterface
+	profileName    string
+	profile        Profile
+	moduleProfiles map[string]ModuleProfile
+	configPath     string
 
 	input    textinput.Model
 	viewport viewport.Model
@@ -133,19 +135,21 @@ type Model struct {
 
 const replPlaceholder = "session list | session create | command pslist | help"
 
-func New(client api.ClientWithResponsesInterface, profileName string, profile Profile) Model {
+func New(client api.ClientWithResponsesInterface, profileName string, profile Profile, moduleProfiles map[string]ModuleProfile, configPath string) Model {
 	input := textinput.New()
 	input.Placeholder = replPlaceholder
 	input.Focus()
 	vp := viewport.New()
 
 	m := Model{
-		client:      client,
-		profileName: profileName,
-		profile:     profile,
-		input:       input,
-		viewport:    vp,
-		created:     make(map[string]bool),
+		client:         client,
+		profileName:    profileName,
+		profile:        profile,
+		moduleProfiles: moduleProfiles,
+		configPath:     configPath,
+		input:          input,
+		viewport:       vp,
+		created:        make(map[string]bool),
 	}
 	m.printLine("not connected -- try `session list` or `session create`. Type `help` for the full command list.")
 	return m

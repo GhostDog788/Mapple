@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -168,7 +169,7 @@ func (m Model) handleReplKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 var replGrammar = map[int]map[string][]string{
 	0: {"": {"session", "command", "help", "quit", "exit"}},
 	1: {
-		"session": {"list", "connect", "create", "delete", "help"},
+		"session": {"list", "connect", "create", "delete", "profiles", "save-profile", "help"},
 		"command": {"info", "echo", "pslist", "help"},
 	},
 }
@@ -277,7 +278,14 @@ func (m *Model) printSessionHelp() {
 		"session connect <id-prefix>     -- connect without opening the browser;",
 		"                                   <id-prefix> just needs to be unambiguous",
 		"session create                  -- wizard: pick tcp or chardev, then its",
-		"                                   destination (host:port, or a device path)",
+		"                                   destination (host:port, or a device path) --",
+		"                                   or type a saved module profile's name instead",
+		"session create <profile>        -- skip the wizard, connect using a saved module",
+		"                                   profile directly (see `session profiles`)",
+		"session profiles                -- list module profiles saved in the config file's",
+		"                                   \"module_profiles\" section (name -> transport + destination)",
+		"session save-profile <name>     -- save the current session's own destination as a module",
+		"                                   profile under <name>, for later `session create <name>`",
 		"session delete <id-prefix>      -- delete a session by id prefix",
 	}, "\n"))
 }
@@ -327,7 +335,7 @@ func (m *Model) printCommandPslistHelp() {
 
 func (m Model) dispatchSession(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
-		m.printLine("usage: session list|connect <id>|create|delete <id>")
+		m.printLine("usage: session list|connect <id>|create [profile]|delete <id>|profiles|save-profile <name>")
 		return m, nil
 	}
 	if args[0] == "help" {
@@ -363,12 +371,35 @@ func (m Model) dispatchSession(args []string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "create":
 		if len(args) > 1 {
+			if len(args) > 2 {
+				m.printError("unexpected argument %q", args[2])
+				return m, nil
+			}
+			return m.createFromProfile(args[1])
+		}
+		m.pending = &wizard{step: 0}
+		if len(m.moduleProfiles) > 0 {
+			m.printLine("transport (tcp/chardev), or a saved profile name (see `session profiles`):")
+		} else {
+			m.printLine("transport (tcp/chardev):")
+		}
+		return m, nil
+	case "profiles":
+		if len(args) > 1 {
 			m.printError("unexpected argument %q", args[1])
 			return m, nil
 		}
-		m.pending = &wizard{step: 0}
-		m.printLine("transport (tcp/chardev):")
-		return m, nil
+		return m.printModuleProfiles()
+	case "save-profile":
+		if len(args) < 2 {
+			m.printLine("usage: session save-profile <name>")
+			return m, nil
+		}
+		if len(args) > 2 {
+			m.printError("unexpected argument %q", args[2])
+			return m, nil
+		}
+		return m.saveCurrentAsProfile(args[1])
 	case "delete":
 		if len(args) < 2 {
 			m.printLine("usage: session delete <id-prefix>")
@@ -388,6 +419,67 @@ func (m Model) dispatchSession(args []string) (tea.Model, tea.Cmd) {
 		m.printError("unknown session subcommand %q", args[0])
 		return m, nil
 	}
+}
+
+// createFromProfile looks up a saved module profile by name and creates a
+// session against it directly, skipping the interactive transport/
+// destination wizard entirely.
+func (m Model) createFromProfile(name string) (tea.Model, tea.Cmd) {
+	profile, ok := m.moduleProfiles[name]
+	if !ok {
+		m.printError("no such module profile %q (see `session profiles`)", name)
+		return m, nil
+	}
+	dest, err := profile.Destination()
+	if err != nil {
+		m.printError("%v", err)
+		return m, nil
+	}
+	return m, m.createSession(dest)
+}
+
+// saveCurrentAsProfile writes the currently-connected session's own
+// destination into the config file's "module_profiles" section under name,
+// so a later `session create <name>` (or typing name at the wizard's
+// transport prompt) reconnects to the same place without retyping it.
+func (m Model) saveCurrentAsProfile(name string) (tea.Model, tea.Cmd) {
+	if m.current == nil {
+		m.printLine("not connected -- `session connect` or `session create` first")
+		return m, nil
+	}
+	if m.configPath == "" {
+		m.printError("no config file path known for this session -- can't save a profile")
+		return m, nil
+	}
+	profile := ModuleProfileFromDestination(m.current.Destination)
+	if err := SaveModuleProfile(m.configPath, name, profile); err != nil {
+		m.printError("%v", err)
+		return m, nil
+	}
+	if m.moduleProfiles == nil {
+		m.moduleProfiles = map[string]ModuleProfile{}
+	}
+	m.moduleProfiles[name] = profile
+	m.printSuccess("saved module profile %q (%s) to %s", name, profile, m.configPath)
+	return m, nil
+}
+
+func (m Model) printModuleProfiles() (tea.Model, tea.Cmd) {
+	if len(m.moduleProfiles) == 0 {
+		m.printLine("no module profiles configured -- add a \"module_profiles\" section to your config file")
+		return m, nil
+	}
+	names := make([]string, 0, len(m.moduleProfiles))
+	for name := range m.moduleProfiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	lines := make([]string, 0, len(names))
+	for _, name := range names {
+		lines = append(lines, fmt.Sprintf("%-16s %s", name, m.moduleProfiles[name]))
+	}
+	m.printLine(strings.Join(lines, "\n"))
+	return m, nil
 }
 
 func (m Model) resolveSession(prefix string) (api.Session, error) {
@@ -495,6 +587,15 @@ func (m Model) advanceWizard(line string) (tea.Model, tea.Cmd) {
 	w := m.pending
 	switch w.step {
 	case 0:
+		if profile, ok := m.moduleProfiles[line]; ok {
+			m.pending = nil
+			dest, err := profile.Destination()
+			if err != nil {
+				m.printError("%v", err)
+				return m, nil
+			}
+			return m, m.createSession(dest)
+		}
 		switch strings.ToLower(line) {
 		case "tcp":
 			w.transport = api.Tcp
@@ -503,7 +604,7 @@ func (m Model) advanceWizard(line string) (tea.Model, tea.Cmd) {
 			w.transport = api.Chardev
 			m.printLine("path:")
 		default:
-			m.printLine("transport must be tcp or chardev; try again:")
+			m.printLine("transport must be tcp, chardev, or a saved profile name; try again:")
 			return m, nil
 		}
 		w.step = 1

@@ -53,7 +53,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	model := tui.New(client, name, profile)
+	model := tui.New(client, name, profile, cfg.ModuleProfiles, path)
 	if _, err := tea.NewProgram(model).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "mapple:", err)
 		os.Exit(1)
