@@ -252,6 +252,81 @@ void mapple_pslist_free_elf(struct mapple_pslist_elf *elf)
 	memset(elf, 0, sizeof(*elf));
 }
 
+static int mapple_pslist_elf_compare_symbol_name(const struct mapple_pslist_elf_symbol *first,
+						  const struct mapple_pslist_elf_symbol *second)
+{
+	size_t common_length = first->name_length < second->name_length ? first->name_length : second->name_length;
+	int ret;
+
+	ret = memcmp(first->name, second->name, common_length);
+	if (ret)
+		return ret;
+	if (first->name_length == second->name_length)
+		return 0;
+	return first->name_length < second->name_length ? -1 : 1;
+}
+
+static int mapple_pslist_elf_compare_symbol_name_pointers(const void *left, const void *right)
+{
+	const struct mapple_pslist_elf_symbol *first = *(const struct mapple_pslist_elf_symbol *const *)left;
+	const struct mapple_pslist_elf_symbol *second = *(const struct mapple_pslist_elf_symbol *const *)right;
+
+	return mapple_pslist_elf_compare_symbol_name(first, second);
+}
+
+int mapple_pslist_build_elf_symbol_names(struct mapple_pslist_snapshot *snapshot)
+{
+	struct mapple_pslist_elf_symbol_name *names;
+	struct mapple_pslist_elf_symbol **symbols;
+	size_t unique_count = 0;
+	size_t symbol_count = 0;
+	size_t elf_index;
+	size_t index;
+
+	for (elf_index = 0; elf_index < snapshot->elf_count; ++elf_index) {
+		if (snapshot->elfs[elf_index].symbol_count > SIZE_MAX - symbol_count)
+			return EOVERFLOW;
+		symbol_count += snapshot->elfs[elf_index].symbol_count;
+	}
+	if (!symbol_count)
+		return 0;
+	if (symbol_count > SIZE_MAX / sizeof(*symbols))
+		return EOVERFLOW;
+	symbols = malloc(symbol_count * sizeof(*symbols));
+	if (!symbols)
+		return ENOMEM;
+	symbol_count = 0;
+	for (elf_index = 0; elf_index < snapshot->elf_count; ++elf_index)
+		for (index = 0; index < snapshot->elfs[elf_index].symbol_count; ++index)
+			symbols[symbol_count++] = &snapshot->elfs[elf_index].symbols[index];
+	qsort(symbols, symbol_count, sizeof(*symbols), mapple_pslist_elf_compare_symbol_name_pointers);
+	for (index = 0; index < symbol_count; ++index)
+		if (!index || mapple_pslist_elf_compare_symbol_name(symbols[index - 1], symbols[index]))
+			++unique_count;
+	if (unique_count > SIZE_MAX / sizeof(*names)) {
+		free(symbols);
+		return EOVERFLOW;
+	}
+	names = malloc(unique_count * sizeof(*names));
+	if (!names) {
+		free(symbols);
+		return ENOMEM;
+	}
+	unique_count = 0;
+	for (index = 0; index < symbol_count; ++index) {
+		if (!index || mapple_pslist_elf_compare_symbol_name(symbols[index - 1], symbols[index])) {
+			names[unique_count].bytes = symbols[index]->name;
+			names[unique_count].length = symbols[index]->name_length;
+			++unique_count;
+		}
+		symbols[index]->name_index = unique_count - 1;
+	}
+	free(symbols);
+	snapshot->elf_symbol_names = names;
+	snapshot->elf_symbol_name_count = unique_count;
+	return 0;
+}
+
 static const char *mapple_pslist_elf_status_name(__u16 status)
 {
 	switch (status) {
@@ -407,6 +482,26 @@ static int mapple_pslist_elf_print_hex(const unsigned char *bytes, size_t length
 	return putchar('"') == EOF ? EIO : 0;
 }
 
+int mapple_pslist_print_json_elf_symbol_names(const struct mapple_pslist_snapshot *snapshot)
+{
+	size_t index;
+	int ret;
+
+	if (putchar('[') == EOF)
+		return EIO;
+	for (index = 0; index < snapshot->elf_symbol_name_count; ++index) {
+		if (fputs(index ? ",\n\t\t" : "\n\t\t", stdout) == EOF)
+			return EIO;
+		ret = mapple_pslist_print_json_bytes(snapshot->elf_symbol_names[index].bytes,
+						     snapshot->elf_symbol_names[index].length);
+		if (ret)
+			return ret;
+	}
+	if (snapshot->elf_symbol_name_count && putchar('\n') == EOF)
+		return EIO;
+	return putchar(']') == EOF ? EIO : 0;
+}
+
 static int mapple_pslist_elf_print_strings(const struct mapple_pslist_elf *elf, __u16 kind, int hex)
 {
 	size_t index;
@@ -454,22 +549,17 @@ static int mapple_pslist_elf_symbols_same_group(const struct mapple_pslist_elf_s
 		   left->visibility == right->visibility && left->section_index == right->section_index;
 }
 
-static int mapple_pslist_elf_print_symbol(const struct mapple_pslist_elf_symbol *symbol, __u16 kind,
-										  int indent)
+static int mapple_pslist_elf_print_symbol(const struct mapple_pslist_elf_symbol *symbol, __u16 kind)
 {
-	int ret;
-
-	ret = mapple_pslist_print_json_indent(indent);
-	if (ret || fputs("{\"name\": ", stdout) == EOF)
-		return ret ? ret : EIO;
-	ret = mapple_pslist_print_json_bytes(symbol->name, symbol->name_length);
-	if (ret)
-		return ret;
+	if (fputs("\t\t", stdout) == EOF)
+		return EIO;
+	if (printf("{\"name\": %zu", symbol->name_index) < 0)
+		return EIO;
 	if (kind == MAPPLE_PSLIST_ELF_SYMBOL_EXPORT || symbol->value)
 		if (printf(", \"value\": \"0x%" PRIx64 "\"", (uint64_t)symbol->value) < 0)
 			return EIO;
 	if (kind == MAPPLE_PSLIST_ELF_SYMBOL_EXPORT || symbol->size)
-		if (printf(", \"size_bytes\": %" PRIu64, (uint64_t)symbol->size) < 0)
+		if (printf(", \"size_bytes\": \"%" PRIu64 "\"", (uint64_t)symbol->size) < 0)
 			return EIO;
 	return putchar('}') == EOF ? EIO : 0;
 }
@@ -499,7 +589,7 @@ static int mapple_pslist_elf_print_symbol_group(const struct mapple_pslist_elf_s
 	if (fputs(", \"symbols\": [\n", stdout) == EOF)
 		return EIO;
 	for (index = 0; index < count; ++index) {
-		ret = mapple_pslist_elf_print_symbol(symbols[index], kind, indent + 2);
+		ret = mapple_pslist_elf_print_symbol(symbols[index], kind);
 		if (ret || fputs(index + 1 == count ? "\n" : ",\n", stdout) == EOF)
 			return ret ? ret : EIO;
 	}
@@ -586,8 +676,8 @@ int mapple_pslist_print_json_elf(const struct mapple_pslist_elf *elf, int indent
 			   "\"object_type_value\": %u, \"machine\": \"%s\", "
 			   "\"machine_value\": %u, \"version\": %u, "
 			   "\"flags\": \"0x%08x\", \"entry_address\": \"0x%016" PRIx64
-			   "\", \"program_headers\": {\"offset\": %" PRIu64 ", \"entry_size\": %u, \"count\": %u}, "
-			   "\"section_headers\": {\"offset\": %" PRIu64 ", \"entry_size\": %u, \"count\": %u, "
+			   "\", \"program_headers\": {\"offset\": \"%" PRIu64 "\", \"entry_size\": %u, \"count\": %u}, "
+			   "\"section_headers\": {\"offset\": \"%" PRIu64 "\", \"entry_size\": %u, \"count\": %u, "
 			   "\"name_index\": %u}},\n",
 			   indent + 2, "", mapple_pslist_elf_class_name(elf->elf_class),
 			   mapple_pslist_elf_data_name(elf->data_encoding), elf->os_abi, elf->abi_version,
@@ -599,8 +689,8 @@ int mapple_pslist_print_json_elf(const struct mapple_pslist_elf *elf, int indent
 			   elf->section_header_count, elf->section_name_index) < 0)
 		return ret ? ret : EIO;
 	if (printf("%*s\"file_identity\": {\"device\": {\"major\": %u, "
-			   "\"minor\": %u}, \"inode\": %" PRIu64 ", \"mode\": %u, "
-			   "\"size\": %" PRIu64 ", \"mtime_ns\": %" PRId64 ", \"ctime_ns\": %" PRId64
+			   "\"minor\": %u}, \"inode\": \"%" PRIu64 "\", \"mode\": %u, "
+			   "\"size\": \"%" PRIu64 "\", \"mtime_ns\": \"%" PRId64 "\", \"ctime_ns\": \"%" PRId64 "\""
 			   ", \"filesystem_magic\": "
 			   "\"0x%016" PRIx64 "\"},\n%*s\"mapped_files\": ",
 			   indent + 2, "", elf->file_device_major, elf->file_device_minor, (uint64_t)elf->file_inode,

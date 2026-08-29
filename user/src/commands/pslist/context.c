@@ -344,7 +344,7 @@ int mapple_pslist_print_json_context(const struct mapple_pslist_context *context
 			  cgroup_status) < 0)
 		return ret ? ret : EIO;
 	if (context->cgroup_status == MAPPLE_PSLIST_DATA_AVAILABLE) {
-		if (printf("%" PRIu64 ", \"inode\": %" PRIu64
+		if (printf("\"%" PRIu64 "\", \"inode\": \"%" PRIu64 "\""
 			   ", \"hierarchy_id\": %u", (uint64_t)context->cgroup_id,
 			   (uint64_t)context->cgroup_inode,
 			   context->cgroup_hierarchy_id) < 0)

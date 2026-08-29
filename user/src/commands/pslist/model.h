@@ -370,8 +370,14 @@ struct mapple_pslist_elf_symbol {
 	__u16 section_index;
 	unsigned char *name;
 	__u32 name_length;
+	size_t name_index;
 	__u64 value;
 	__u64 size;
+};
+
+struct mapple_pslist_elf_symbol_name {
+	const unsigned char *bytes;
+	__u32 length;
 };
 
 struct mapple_pslist_elf {
@@ -454,6 +460,8 @@ struct mapple_pslist_snapshot {
 	struct mapple_pslist_elf *elfs;
 	size_t elf_count;
 	size_t elf_capacity;
+	struct mapple_pslist_elf_symbol_name *elf_symbol_names;
+	size_t elf_symbol_name_count;
 	struct mapple_pslist_mapped_file *mapped_files;
 	size_t mapped_file_count;
 	size_t mapped_file_capacity;

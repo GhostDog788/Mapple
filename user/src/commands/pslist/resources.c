@@ -240,12 +240,12 @@ int mapple_pslist_print_json_resources(const struct mapple_pslist_resources *res
 	if (printf("{\"collection_status\": \"%s\",\n", status) < 0)
 		return EIO;
 	ret = mapple_pslist_print_json_indent(indent + 2);
-	if (ret || printf("\"cpu\": {\"user_time_ns\": %" PRIu64
-			  ", \"system_time_ns\": %" PRIu64
-			  ", \"faults\": {\"minor\": %" PRIu64
-			  ", \"major\": %" PRIu64
-			  "}, \"context_switches\": {\"voluntary\": %" PRIu64
-			  ", \"involuntary\": %" PRIu64
+	if (ret || printf("\"cpu\": {\"user_time_ns\": \"%" PRIu64 "\""
+			  ", \"system_time_ns\": \"%" PRIu64 "\""
+			  ", \"faults\": {\"minor\": \"%" PRIu64 "\""
+			  ", \"major\": \"%" PRIu64 "\""
+			  "}, \"context_switches\": {\"voluntary\": \"%" PRIu64 "\""
+			  ", \"involuntary\": \"%" PRIu64 "\""
 			  "}, \"scheduler\": {\"current_cpu\": %u, "
 			  "\"policy\": \"%s\", \"priority\": %d, \"nice\": %d, "
 			  "\"realtime_priority\": %u}},\n",
@@ -264,12 +264,12 @@ int mapple_pslist_print_json_resources(const struct mapple_pslist_resources *res
 		return ret ? ret : EIO;
 	ret = mapple_pslist_resources_print_error(resources->memory_error);
 	if (ret || printf(", \"reason\": %s%s%s, \"page_size_bytes\": %u, \"pages\": {"
-			  "\"virtual\": %" PRIu64 ", \"peak_virtual\": %" PRIu64
-			  ", \"locked\": %" PRIu64 ", \"data\": %" PRIu64
-			  ", \"stack\": %" PRIu64 ", \"executable\": %" PRIu64
-			  ", \"resident\": %" PRIu64 ", \"peak_resident\": %" PRIu64
-			  ", \"anonymous\": %" PRIu64 ", \"file\": %" PRIu64
-			  ", \"shared\": %" PRIu64 ", \"swap_entries\": %" PRIu64
+			  "\"virtual\": \"%" PRIu64 "\", \"peak_virtual\": \"%" PRIu64 "\""
+			  ", \"locked\": \"%" PRIu64 "\", \"data\": \"%" PRIu64 "\""
+			  ", \"stack\": \"%" PRIu64 "\", \"executable\": \"%" PRIu64 "\""
+			  ", \"resident\": \"%" PRIu64 "\", \"peak_resident\": \"%" PRIu64 "\""
+			  ", \"anonymous\": \"%" PRIu64 "\", \"file\": \"%" PRIu64 "\""
+			  ", \"shared\": \"%" PRIu64 "\", \"swap_entries\": \"%" PRIu64 "\""
 			  "}},\n", memory_reason ? "\"" : "",
 			  memory_reason ? memory_reason : "null",
 			  memory_reason ? "\"" : "", resources->page_size_bytes,
@@ -291,13 +291,13 @@ int mapple_pslist_print_json_resources(const struct mapple_pslist_resources *res
 			  io_status) < 0)
 		return ret ? ret : EIO;
 	ret = mapple_pslist_resources_print_error(resources->io_error);
-	if (ret || printf(", \"characters\": {\"read\": %" PRIu64
-			  ", \"written\": %" PRIu64
-			  "}, \"syscalls\": {\"read\": %" PRIu64
-			  ", \"write\": %" PRIu64
-			  "}, \"storage_bytes\": {\"read\": %" PRIu64
-			  ", \"written\": %" PRIu64
-			  ", \"cancelled_write\": %" PRIu64 "}},\n",
+	if (ret || printf(", \"characters\": {\"read\": \"%" PRIu64 "\""
+			  ", \"written\": \"%" PRIu64 "\""
+			  "}, \"syscalls\": {\"read\": \"%" PRIu64 "\""
+			  ", \"write\": \"%" PRIu64 "\""
+			  "}, \"storage_bytes\": {\"read\": \"%" PRIu64 "\""
+			  ", \"written\": \"%" PRIu64 "\""
+			  ", \"cancelled_write\": \"%" PRIu64 "\"}},\n",
 			  (uint64_t)resources->io_read_characters,
 			  (uint64_t)resources->io_write_characters,
 			  (uint64_t)resources->io_read_syscalls,

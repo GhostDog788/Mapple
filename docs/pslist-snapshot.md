@@ -5,6 +5,9 @@ empty collection context, walks the kernel task list once, writes the response,
 and releases every reference and allocation. The module does not install hooks,
 keep accounting data, or retain object IDs between requests.
 
+The userspace JSON compatibility contract is documented in
+[`pslist-json-v1.md`](pslist-json-v1.md).
+
 ## Collection groups
 
 Core task data is always returned. The request's 64-bit group mask selects
@@ -45,6 +48,14 @@ references conditionally produces the generic FD, `fds-details`, and network rec
 Socket-specific fields belong only to the network group. If a task replaces its
 FD table between discovery and capture, that object is marked raced rather than
 capturing the replacement under the original object ID.
+
+Linux 6.6 does not export the `files_struct` reference-acquisition and release
+helpers to loadable modules. The collector therefore validates the task's table
+pointer under `task_lock()` immediately before capture instead of owning an
+independent table reference. A detected replacement is reported as `raced`.
+Undetected replacement during capture remains a documented limitation of this
+best-effort snapshot model; request-local sharing IDs must not be interpreted as
+stable kernel object identities.
 
 Userspace renders `identity`, `environment`, `security`, `context`, `resources`,
 `fds`, `network`, and `memory_maps` as sibling object sections.

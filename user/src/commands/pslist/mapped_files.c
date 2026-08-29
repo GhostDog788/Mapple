@@ -180,8 +180,8 @@ static int mapple_pslist_print_mapped_file(const struct mapple_pslist_mapped_fil
 		return ret;
 	if (mapping->file_metadata_status == MAPPLE_PSLIST_DATA_AVAILABLE &&
 		printf(", \"device\": {\"major\": %u, \"minor\": %u}, "
-			   "\"inode\": %" PRIu64 ", \"mode\": %u, \"size\": %" PRIu64 ", \"mtime_ns\": %" PRId64
-			   ", \"ctime_ns\": %" PRId64 ", \"filesystem_magic\": \"0x%016" PRIx64 "\"",
+			   "\"inode\": \"%" PRIu64 "\", \"mode\": %u, \"size\": \"%" PRIu64 "\", \"mtime_ns\": \"%" PRId64 "\""
+			   ", \"ctime_ns\": \"%" PRId64 "\", \"filesystem_magic\": \"0x%016" PRIx64 "\"",
 			   mapping->file_device_major, mapping->file_device_minor, (uint64_t)mapping->file_inode,
 			   mapping->file_mode, (uint64_t)mapping->file_size, (int64_t)mapping->file_mtime_ns,
 			   (int64_t)mapping->file_ctime_ns, (uint64_t)mapping->file_filesystem_magic) < 0)

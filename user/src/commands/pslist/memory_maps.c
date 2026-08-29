@@ -443,12 +443,13 @@ static int mapple_pslist_print_memory_mapping(const struct mapple_pslist_memory_
 	if (unknown_flags && printf(", \"unknown_vm_flags\": \"0x%" PRIx64 "\"", (uint64_t)unknown_flags) < 0)
 		return EIO;
 	if (offset_overflow &&
-		printf(", \"page_offset\": %" PRIu64 ", \"offset_bytes\": null", (uint64_t)mapping->page_offset) < 0)
+		printf(", \"page_offset\": \"%" PRIu64 "\", \"offset_bytes\": null",
+		       (uint64_t)mapping->page_offset) < 0)
 		return EIO;
-	if (!offset_overflow && printf(", \"offset_bytes\": %" PRIu64, (uint64_t)byte_offset) < 0)
+	if (!offset_overflow && printf(", \"offset_bytes\": \"%" PRIu64 "\"", (uint64_t)byte_offset) < 0)
 		return EIO;
 	if (mapping->mapping_page_size != page_size &&
-		printf(", \"page_size_bytes\": %" PRIu64, (uint64_t)mapping->mapping_page_size) < 0)
+		printf(", \"page_size_bytes\": \"%" PRIu64 "\"", (uint64_t)mapping->mapping_page_size) < 0)
 		return EIO;
 	if (mapping->protection_key && printf(", \"protection_key\": %u", mapping->protection_key) < 0)
 		return EIO;

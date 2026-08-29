@@ -25,6 +25,7 @@
 #include <communication/stream.h>
 
 #define MAPPLE_PSLIST_INITIAL_CAPACITY 64U
+#define MAPPLE_PSLIST_JSON_SCHEMA_VERSION 1U
 #define MAPPLE_PSLIST_RECORD_MAX_SIZE (MAPPLE_PSLIST_COMMAND_LINE_MAX_SIZE + MAPPLE_PSLIST_FDINFO_MAX_SIZE)
 
 struct mapple_pslist_group_name {
@@ -1093,6 +1094,7 @@ static void mapple_pslist_free_snapshot(struct mapple_pslist_snapshot *snapshot)
 		mapple_pslist_free_network_table(&snapshot->network_tables[index]);
 	for (index = 0; index < snapshot->memory_maps_count; ++index)
 		mapple_pslist_free_memory_maps(&snapshot->memory_maps[index]);
+	free(snapshot->elf_symbol_names);
 	for (index = 0; index < snapshot->elf_count; ++index)
 		mapple_pslist_free_elf(&snapshot->elfs[index]);
 	free(snapshot->mapped_files);
@@ -1159,7 +1161,7 @@ static int mapple_pslist_print_task(const struct mapple_pslist_task *task, __u64
 	if (ret)
 		return ret;
 	if (printf("{\"pid\": %u, \"tgid\": %u, \"ppid\": %u, "
-			   "\"start_boottime_ns\": %" PRIu64 ", \"state\": \"%s\", \"comm\": ",
+			   "\"start_boottime_ns\": \"%" PRIu64 "\", \"state\": \"%s\", \"comm\": ",
 			   task->pid, task->tgid, task->ppid, (uint64_t)task->start_boottime_ns, state) < 0)
 		return EIO;
 	ret = mapple_pslist_print_json_bytes((const unsigned char *)task->comm,
@@ -1171,8 +1173,12 @@ static int mapple_pslist_print_task(const struct mapple_pslist_task *task, __u64
 #define PRINT_TASK_GROUP(mask, name, index)                                                                  \
 	do {                                                                                                     \
 		if ((groups) & (mask)) {                                                                             \
-			if (printf("%s\"%s\": %" PRIu64, first_group ? "" : ", ", (name),                                \
-					   (uint64_t)task->group_object_ids[(index)]) < 0)                                       \
+			if (printf("%s\"%s\": ", first_group ? "" : ", ", (name)) < 0)                              \
+				return EIO;                                                                                  \
+			if (task->group_object_ids[(index)] &&                                                          \
+				printf("%" PRIu64, (uint64_t)task->group_object_ids[(index)]) < 0)                           \
+				return EIO;                                                                                  \
+			if (!task->group_object_ids[(index)] && fputs("null", stdout) == EOF)                            \
 				return EIO;                                                                                  \
 			first_group = 0;                                                                                 \
 		}                                                                                                    \
@@ -1261,9 +1267,9 @@ static int mapple_pslist_print_identity(const struct mapple_pslist_identity *ide
 		ret = EIO;
 	if (!ret && identity->executable_status == MAPPLE_PSLIST_EXECUTABLE_AVAILABLE &&
 		!(identity->executable_flags & MAPPLE_PSLIST_EXECUTABLE_FLAG_METADATA_UNAVAILABLE)) {
-		if (printf("%u,\n%*s\"device_minor\": %u,\n%*s\"inode\": %" PRIu64
-				   ",\n%*s\"mode\": %u,\n%*s\"size\": %" PRIu64 ",\n%*s\"mtime_ns\": %" PRId64
-				   ",\n%*s\"ctime_ns\": %" PRId64 ",\n%*s\"filesystem_magic\": %" PRIu64,
+		if (printf("%u,\n%*s\"device_minor\": %u,\n%*s\"inode\": \"%" PRIu64 "\""
+				   ",\n%*s\"mode\": %u,\n%*s\"size\": \"%" PRIu64 "\",\n%*s\"mtime_ns\": \"%" PRId64 "\""
+				   ",\n%*s\"ctime_ns\": \"%" PRId64 "\",\n%*s\"filesystem_magic\": \"0x%016" PRIx64 "\"",
 				   identity->executable_device_major, indent + 4, "", identity->executable_device_minor,
 				   indent + 4, "", (uint64_t)identity->executable_inode, indent + 4, "",
 				   identity->executable_mode, indent + 4, "", (uint64_t)identity->executable_size, indent + 4,
@@ -1521,19 +1527,24 @@ static int mapple_pslist_print_objects(const struct mapple_pslist_snapshot *snap
 		first = 0;
 	}
 	if (snapshot->effective_groups & MAPPLE_PSLIST_GROUP_ELF) {
-		if (fputs(first ? "\n    \"elf\": {" : ",\n    \"elf\": {", stdout) == EOF)
+		if (fputs(first ? "\n    \"elf\": {\n      \"symbol_names\": "
+					: ",\n    \"elf\": {\n      \"symbol_names\": ",
+			  stdout) == EOF)
 			return EIO;
+		ret = mapple_pslist_print_json_elf_symbol_names(snapshot);
+		if (ret || fputs(",\n      \"files\": {", stdout) == EOF)
+			return ret ? ret : EIO;
 		for (index = 0; index < snapshot->elf_count; ++index) {
-			if (printf("%s\n      \"%" PRIu64 "\": ", index ? "," : "",
+			if (printf("%s\n        \"%" PRIu64 "\": ", index ? "," : "",
 					   (uint64_t)snapshot->elfs[index].object_id) < 0)
 				return EIO;
-			ret = mapple_pslist_print_json_elf(&snapshot->elfs[index], 6);
+			ret = mapple_pslist_print_json_elf(&snapshot->elfs[index], 8);
 			if (ret)
 				return ret;
 		}
-		if (snapshot->elf_count && fputs("\n    ", stdout) == EOF)
+		if (snapshot->elf_count && fputs("\n      ", stdout) == EOF)
 			return EIO;
-		if (putchar('}') == EOF)
+		if (fputs("}\n    }", stdout) == EOF)
 			return EIO;
 		first = 0;
 	}
@@ -1550,9 +1561,10 @@ static int mapple_pslist_print_snapshot(struct mapple_pslist_snapshot *snapshot)
 	if (!status)
 		return EPROTO;
 	qsort(snapshot->tasks, snapshot->task_count, sizeof(*snapshot->tasks), mapple_pslist_compare_tasks);
-	if (printf("{\n  \"snapshot\": {\"status\": \"%s\", \"start_boottime_ns\": %" PRIu64
-			   ", \"end_boottime_ns\": %" PRIu64 ", \"requested_groups\": ",
-			   status, (uint64_t)snapshot->start_boottime_ns, (uint64_t)snapshot->end_boottime_ns) < 0)
+	if (printf("{\n  \"schema_version\": %u,\n  \"snapshot\": {\"status\": \"%s\", "
+			   "\"start_boottime_ns\": \"%" PRIu64 "\", \"end_boottime_ns\": \"%" PRIu64 "\", "
+			   "\"requested_groups\": ", MAPPLE_PSLIST_JSON_SCHEMA_VERSION, status,
+			   (uint64_t)snapshot->start_boottime_ns, (uint64_t)snapshot->end_boottime_ns) < 0)
 		return EIO;
 	ret = mapple_pslist_print_group_names(snapshot->requested_groups);
 	if (!ret && fputs(", \"effective_groups\": ", stdout) == EOF)
@@ -1613,6 +1625,8 @@ int run_pslist_groups(int session_fd, const char *const *group_names, size_t gro
 		ret = EPROTO;
 	if (!ret)
 		ret = mapple_pslist_build_mapped_files(&snapshot);
+	if (!ret)
+		ret = mapple_pslist_build_elf_symbol_names(&snapshot);
 	if (!ret)
 		ret = mapple_pslist_print_snapshot(&snapshot);
 	mapple_pslist_free_snapshot(&snapshot);

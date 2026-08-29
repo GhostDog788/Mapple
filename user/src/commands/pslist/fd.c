@@ -363,7 +363,7 @@ static const char *mapple_pslist_fd_kind_name(__u16 kind)
 
 static int mapple_pslist_print_time(const struct mapple_pslist_time *time)
 {
-	return printf("{\"seconds\": %" PRId64 ", \"nanoseconds\": %u}",
+	return printf("{\"seconds\": \"%" PRId64 "\", \"nanoseconds\": %u}",
 		      (int64_t)time->seconds, time->nanoseconds) < 0 ? EIO : 0;
 }
 
@@ -402,12 +402,12 @@ static int mapple_pslist_print_stat(const struct mapple_pslist_fd *fd,
 		   "\n%*s\"special_device_minor\": %u,"
 		   "\n%*s\"direct_io_memory_alignment\": %u,"
 		   "\n%*s\"direct_io_offset_alignment\": %u,"
-		   "\n%*s\"inode\": %" PRIu64 ",\n%*s\"size\": %" PRId64 ","
-		   "\n%*s\"blocks\": %" PRIu64 ",\n%*s\"attributes\": %" PRIu64 ","
-		   "\n%*s\"attributes_mask\": %" PRIu64 ","
-		   "\n%*s\"mount_id\": %" PRIu64 ","
-		   "\n%*s\"change_cookie\": %" PRIu64 ","
-		   "\n%*s\"filesystem_magic\": %" PRIu64 ",\n%*s\"access_time\": ",
+		   "\n%*s\"inode\": \"%" PRIu64 "\",\n%*s\"size\": \"%" PRId64 "\","
+		   "\n%*s\"blocks\": \"%" PRIu64 "\",\n%*s\"attributes\": \"0x%016" PRIx64 "\","
+		   "\n%*s\"attributes_mask\": \"0x%016" PRIx64 "\","
+		   "\n%*s\"mount_id\": \"%" PRIu64 "\","
+		   "\n%*s\"change_cookie\": \"%" PRIu64 "\","
+		   "\n%*s\"filesystem_magic\": \"0x%016" PRIx64 "\",\n%*s\"access_time\": ",
 		   indent + 2, "", stat->result_mask, indent + 2, "", stat->mode,
 		   indent + 2, "", stat->link_count, indent + 2, "", stat->block_size,
 		   indent + 2, "", stat->uid, indent + 2, "", stat->gid,
@@ -673,7 +673,7 @@ static int mapple_pslist_print_fdinfo_scalar(const struct mapple_pslist_fd *fd,
 	if (!mapple_pslist_fdinfo_value(fd, key, &value, &length) ||
 	    !mapple_pslist_parse_unsigned(value, length, base, &decoded))
 		return 0;
-	if (printf("%s\"%.*s\": %llu", *first ? "" : ", ",
+	if (printf("%s\"%.*s\": \"%llu\"", *first ? "" : ", ",
 		   (int)(strlen(key) - 1), key, decoded) < 0)
 		return EIO;
 	*first = 0;
@@ -725,7 +725,7 @@ static int mapple_pslist_print_fdinfo_time_pair(const struct mapple_pslist_fd *f
 	    sscanf(buffer, "(%llu, %llu)%n", &seconds, &nanoseconds, &consumed) != 2 ||
 	    (size_t)consumed != length)
 		return 0;
-	if (printf("%s\"%.*s\": {\"seconds\": %llu, \"nanoseconds\": %llu}",
+	if (printf("%s\"%.*s\": {\"seconds\": \"%llu\", \"nanoseconds\": %llu}",
 		   *first ? "" : ", ", (int)(strlen(key) - 1), key, seconds,
 		   nanoseconds) < 0)
 		return EIO;
@@ -750,8 +750,8 @@ static int mapple_pslist_print_fdinfo_userfault_api(const struct mapple_pslist_f
 	    sscanf(buffer, "%llx:%x:%llx%n", &api, &features, &ioctls, &consumed) != 3 ||
 	    (size_t)consumed != length)
 		return 0;
-	if (printf("%s\"API\": {\"api\": %llu, \"features\": %u, "
-		   "\"ioctls\": %llu}", *first ? "" : ", ", api, features,
+	if (printf("%s\"API\": {\"api\": \"0x%016llx\", \"features\": %u, "
+		   "\"ioctls\": \"0x%016llx\"}", *first ? "" : ", ", api, features,
 		   ioctls) < 0)
 		return EIO;
 	*first = 0;
@@ -820,7 +820,7 @@ static int mapple_pslist_print_fdinfo_unsigned_list(const struct mapple_pslist_f
 			continue;
 		mapple_pslist_parse_unsigned(value + token_start, offset - token_start, 10,
 						     &decoded);
-		if (printf("%s%llu", first_value ? "" : ", ", decoded) < 0)
+		if (printf("%s\"%llu\"", first_value ? "" : ", ", decoded) < 0)
 			return EIO;
 		first_value = 0;
 	}
@@ -854,8 +854,8 @@ static int mapple_pslist_print_fdinfo_record(const unsigned char *line, size_t l
 			   &special_device, &consumed) != 6)
 			return 0;
 		*recognized = 1;
-		return printf("{\"target_fd\": %d, \"events\": %u, \"data\": %llu, "
-			      "\"position\": %lld, \"inode\": %lu, "
+		return printf("{\"target_fd\": %d, \"events\": %u, \"data\": \"0x%016llx\", "
+			      "\"position\": \"%lld\", \"inode\": \"%lu\", "
 			      "\"special_device\": %u}", target_fd, events, data, position,
 			      inode, special_device) < 0 ? EIO : 0;
 	}
@@ -872,7 +872,7 @@ static int mapple_pslist_print_fdinfo_record(const unsigned char *line, size_t l
 			   &ignored_mask, &consumed) != 5)
 			return 0;
 		*recognized = 1;
-		return printf("{\"watch_descriptor\": %u, \"inode\": %lu, "
+		return printf("{\"watch_descriptor\": %u, \"inode\": \"%lu\", "
 			      "\"special_device\": %u, \"mask\": %u, "
 			      "\"ignored_mask\": %u}", watch_descriptor, inode,
 			      special_device, mask, ignored_mask) < 0 ? EIO : 0;
@@ -890,7 +890,7 @@ static int mapple_pslist_print_fdinfo_record(const unsigned char *line, size_t l
 			   &inode, &special_device, &mark_flags, &mask, &ignored_mask,
 			   &consumed) == 5) {
 			*recognized = 1;
-			return printf("{\"kind\": \"inode\", \"inode\": %lu, "
+			return printf("{\"kind\": \"inode\", \"inode\": \"%lu\", "
 				      "\"special_device\": %u, \"mark_flags\": %u, "
 				      "\"mask\": %u, \"ignored_mask\": %u}", inode,
 				      special_device, mark_flags, mask, ignored_mask) < 0 ?
@@ -1163,8 +1163,8 @@ static int mapple_pslist_print_fd(const struct mapple_pslist_fd *fd,
 		ret = EIO;
 	if (!ret && printf(",\n%*s\"identity\": {\"status\": \"%s\", "
 			   "\"error\": %d, \"device_major\": %u, "
-			   "\"device_minor\": %u, \"inode\": %" PRIu64
-			   ", \"mount_id\": %" PRIu64 "}", indent + 2, "",
+			   "\"device_minor\": %u, \"inode\": \"%" PRIu64 "\""
+			   ", \"mount_id\": \"%" PRIu64 "\"}", indent + 2, "",
 			   identity_status, fd->identity_error, fd->stat.device_major,
 			   fd->stat.device_minor, (uint64_t)fd->stat.inode,
 			   (uint64_t)fd->stat.mount_id) < 0)
@@ -1173,8 +1173,8 @@ static int mapple_pslist_print_fd(const struct mapple_pslist_fd *fd,
 	    printf(",\n%*s\"details\": ", indent + 2, "") < 0)
 		ret = EIO;
 	if (!ret && table->has_details) {
-		if (printf("{\n%*s\"file_mode\": %" PRIu64 ",\n%*s\"position\": %" PRId64
-			   ",\n%*s\"version\": %" PRIu64 ",\n%*s\"credentials\": {"
+		if (printf("{\n%*s\"file_mode\": \"0x%016" PRIx64 "\",\n%*s\"position\": \"%" PRId64 "\""
+			   ",\n%*s\"version\": \"%" PRIu64 "\",\n%*s\"credentials\": {"
 			   "\"uid\": %u, \"gid\": %u, \"effective_uid\": %u, "
 			   "\"effective_gid\": %u, \"saved_uid\": %u, \"saved_gid\": %u, "
 			   "\"filesystem_uid\": %u, \"filesystem_gid\": %u},"
