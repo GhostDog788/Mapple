@@ -169,7 +169,7 @@ func (m Model) handleReplKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 var replGrammar = map[int]map[string][]string{
 	0: {"": {"session", "command", "help", "quit", "exit"}},
 	1: {
-		"session": {"list", "connect", "create", "delete", "profiles", "save-profile", "help"},
+		"session": {"list", "connect", "create", "delete", "current", "profiles", "save-profile", "help"},
 		"command": {"info", "echo", "pslist", "help"},
 	},
 }
@@ -286,6 +286,8 @@ func (m *Model) printSessionHelp() {
 		"                                   \"module_profiles\" section (name -> transport + destination)",
 		"session save-profile <name>     -- save the current session's own destination as a module",
 		"                                   profile under <name>, for later `session create <name>`",
+		"session current                 -- show the connected session's full details (untruncated id,",
+		"                                   destination, state, created/expires times, info)",
 		"session delete <id-prefix>      -- delete a session by id prefix",
 	}, "\n"))
 }
@@ -335,7 +337,7 @@ func (m *Model) printCommandPslistHelp() {
 
 func (m Model) dispatchSession(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
-		m.printLine("usage: session list|connect <id>|create [profile]|delete <id>|profiles|save-profile <name>")
+		m.printLine("usage: session list|connect <id>|create [profile]|delete <id>|current|profiles|save-profile <name>")
 		return m, nil
 	}
 	if args[0] == "help" {
@@ -390,6 +392,12 @@ func (m Model) dispatchSession(args []string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.printModuleProfiles()
+	case "current":
+		if len(args) > 1 {
+			m.printError("unexpected argument %q", args[1])
+			return m, nil
+		}
+		return m.printCurrentSession()
 	case "save-profile":
 		if len(args) < 2 {
 			m.printLine("usage: session save-profile <name>")
@@ -461,6 +469,34 @@ func (m Model) saveCurrentAsProfile(name string) (tea.Model, tea.Cmd) {
 	}
 	m.moduleProfiles[name] = profile
 	m.printSuccess("saved module profile %q (%s) to %s", name, profile, m.configPath)
+	return m, nil
+}
+
+// printCurrentSession shows the connected session's full, untruncated
+// details -- the status bar only ever shows the shortened 8-char id
+// (shortID), so this is the way to see the real one (e.g. to pass to
+// another tool, or to double check which session you're actually on).
+func (m Model) printCurrentSession() (tea.Model, tea.Cmd) {
+	if m.current == nil {
+		m.printLine("not connected -- `session connect` or `session create` first")
+		return m, nil
+	}
+	s := m.current
+	lines := []string{
+		fmt.Sprintf("id:          %s", s.Id),
+		fmt.Sprintf("state:       %s", s.State),
+		fmt.Sprintf("destination: %s", destSummary(s.Destination)),
+		fmt.Sprintf("created_at:  %s", s.CreatedAt.Format("2006-01-02 15:04:05 MST")),
+		fmt.Sprintf("expires_at:  %s", s.ExpiresAt.Format("2006-01-02 15:04:05 MST")),
+	}
+	if s.Info != nil {
+		lines = append(lines,
+			fmt.Sprintf("session_id:  %d", s.Info.SessionId),
+			fmt.Sprintf("max_sessions: %d", s.Info.MaxSessions),
+			fmt.Sprintf("supported_commands: %s", commandNames(s.Info.SupportedCommands)),
+		)
+	}
+	m.printLine(strings.Join(lines, "\n"))
 	return m, nil
 }
 
