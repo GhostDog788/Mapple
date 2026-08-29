@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 
@@ -256,37 +257,37 @@ func taskDetailFrame(task map[string]interface{}, objs pslistObjects) browseFram
 
 	if id, ok := groupRef(task, "IdentityID"); ok {
 		if obj, ok := lookupObject(objs.identities, id); ok {
-			rows = append(rows, browseRow{label: "Identity", push: func() browseFrame { return fieldListFrame("identity", obj) }})
+			rows = append(rows, browseRow{label: "Identity", color: sectionRowColor, push: func() browseFrame { return fieldListFrame("identity", obj) }})
 		}
 	}
 	if id, ok := groupRef(task, "SecurityID"); ok {
 		if obj, ok := lookupObject(objs.securities, id); ok {
-			rows = append(rows, browseRow{label: "Security", push: func() browseFrame { return fieldListFrame("security", obj) }})
+			rows = append(rows, browseRow{label: "Security", color: sectionRowColor, push: func() browseFrame { return fieldListFrame("security", obj) }})
 		}
 	}
 	if id, ok := groupRef(task, "ContextID"); ok {
 		if obj, ok := lookupObject(objs.contexts, id); ok {
-			rows = append(rows, browseRow{label: "Context", push: func() browseFrame { return fieldListFrame("context", obj) }})
+			rows = append(rows, browseRow{label: "Context", color: sectionRowColor, push: func() browseFrame { return fieldListFrame("context", obj) }})
 		}
 	}
 	if id, ok := groupRef(task, "ResourcesID"); ok {
 		if obj, ok := lookupObject(objs.resources, id); ok {
-			rows = append(rows, browseRow{label: "Resources", push: func() browseFrame { return fieldListFrame("resources", obj) }})
+			rows = append(rows, browseRow{label: "Resources", color: sectionRowColor, push: func() browseFrame { return fieldListFrame("resources", obj) }})
 		}
 	}
 	if id, ok := groupRef(task, "EnvironmentID"); ok {
 		if obj, ok := lookupObject(objs.environments, id); ok {
-			rows = append(rows, browseRow{label: "Environment", push: func() browseFrame { return environmentFrame(obj) }})
+			rows = append(rows, browseRow{label: "Environment", color: sectionRowColor, push: func() browseFrame { return environmentFrame(obj) }})
 		}
 	}
 	if id, ok := groupRef(task, "MemoryMapsID"); ok {
 		if obj, ok := lookupObject(objs.memoryMaps, id); ok {
-			rows = append(rows, browseRow{label: "Memory Maps", push: func() browseFrame { return memoryMapsFrame(obj, objs.elfs) }})
+			rows = append(rows, browseRow{label: "Memory Maps", color: sectionRowColor, push: func() browseFrame { return memoryMapsFrame(obj, objs.elfs) }})
 		}
 	}
 	if id, ok := groupRef(task, "FilesID"); ok {
 		if obj, ok := lookupObject(objs.files, id); ok {
-			rows = append(rows, browseRow{label: "Files", push: func() browseFrame { return fdListFrame(obj) }})
+			rows = append(rows, browseRow{label: "Files", color: sectionRowColor, push: func() browseFrame { return fdListFrame(obj) }})
 		}
 	}
 
@@ -322,6 +323,7 @@ func fdListFrame(filesObj map[string]interface{}) browseFrame {
 		label := fmt.Sprintf("fd %-4d %-10s %s", intField(e, "FD"), fdKindName(intField(e, "Kind")), stringField(e, "Path"))
 		rows = append(rows, browseRow{
 			label: label,
+			color: sectionRowColor,
 			push:  func() browseFrame { return fieldListFrame(fmt.Sprintf("fd %d", intField(e, "FD")), e) },
 		})
 	}
@@ -372,6 +374,7 @@ func memoryMapsFrame(obj map[string]interface{}, elfs map[string]interface{}) br
 		mapping := m
 		start := uint64Field(mapping, "StartAddress")
 		end := uint64Field(mapping, "EndAddress")
+		perms := mappingPermissions(uint64Field(mapping, "VMFlags"))
 		name := stringField(mapping, "Path")
 		if name == "" {
 			name = stringField(mapping, "Name")
@@ -379,9 +382,10 @@ func memoryMapsFrame(obj map[string]interface{}, elfs map[string]interface{}) br
 		if name == "" {
 			name = "[" + mappingNameKindName(intField(mapping, "NameKind")) + "]"
 		}
-		label := fmt.Sprintf("%012x-%012x %s", start, end, name)
+		label := fmt.Sprintf("%012x-%012x %s %s", start, end, perms, name)
 		rows = append(rows, browseRow{
 			label: label,
+			color: sectionRowColor,
 			push:  func() browseFrame { return memoryMapDetailFrame(mapping, elfs) },
 		})
 	}
@@ -389,15 +393,36 @@ func memoryMapsFrame(obj map[string]interface{}, elfs map[string]interface{}) br
 }
 
 func memoryMapDetailFrame(mapping, elfs map[string]interface{}) browseFrame {
-	rows := flattenedRows(mapping)
+	rows := []browseRow{
+		{label: fmt.Sprintf("Permissions: %s", mappingPermissions(uint64Field(mapping, "VMFlags")))},
+	}
+	rows = append(rows, flattenedRows(mapping)...)
 	if id, ok := groupRef(mapping, "ELFObjectID"); ok && id != 0 {
 		if obj, ok := lookupObject(elfs, id); ok {
-			rows = append(rows, browseRow{label: "ELF", push: func() browseFrame { return elfFrame(obj) }})
+			rows = append(rows, browseRow{label: "ELF", color: sectionRowColor, push: func() browseFrame { return elfFrame(obj) }})
 		}
 	}
 	start := uint64Field(mapping, "StartAddress")
 	end := uint64Field(mapping, "EndAddress")
 	return browseFrame{title: fmt.Sprintf("mapping %012x-%012x -- esc/q back", start, end), rows: rows}
+}
+
+// mappingPermissions renders a mapping's VM_READ/WRITE/EXEC/SHARED bits as
+// the familiar 4-character /proc/pid/maps-style summary (e.g. "r-xp"): 'r',
+// 'w', 'x' or '-' for each permission, then 's' (shared) or 'p' (private).
+func mappingPermissions(vmFlags uint64) string {
+	perm := func(bit uint64, set, unset byte) byte {
+		if vmFlags&bit != 0 {
+			return set
+		}
+		return unset
+	}
+	return string([]byte{
+		perm(1<<0, 'r', '-'),
+		perm(1<<1, 'w', '-'),
+		perm(1<<2, 'x', '-'),
+		perm(1<<3, 's', 'p'),
+	})
 }
 
 // elfFrame shows one ELF file's header metadata plus its string and symbol
@@ -412,8 +437,8 @@ func elfFrame(obj map[string]interface{}) browseFrame {
 	stringsRaw, _ := obj["Strings"].([]interface{})
 	symbolsRaw, _ := obj["Symbols"].([]interface{})
 	rows = append(rows,
-		browseRow{label: fmt.Sprintf("Strings (%d)", len(stringsRaw)), push: func() browseFrame { return elfStringListFrame(stringsRaw) }},
-		browseRow{label: fmt.Sprintf("Symbols (%d)", len(symbolsRaw)), push: func() browseFrame { return elfSymbolListFrame(symbolsRaw) }},
+		browseRow{label: fmt.Sprintf("Strings (%d)", len(stringsRaw)), color: sectionRowColor, push: func() browseFrame { return elfStringListFrame(stringsRaw) }},
+		browseRow{label: fmt.Sprintf("Symbols (%d)", len(symbolsRaw)), color: sectionRowColor, push: func() browseFrame { return elfSymbolListFrame(symbolsRaw) }},
 	)
 	return browseFrame{title: "elf -- esc/q back", rows: rows}
 }
@@ -431,6 +456,7 @@ func elfStringListFrame(items []interface{}) browseFrame {
 		label := fmt.Sprintf("%-12s %s", kind, decodeELFStringBytes("Bytes", bytesRaw, entry))
 		rows = append(rows, browseRow{
 			label: label,
+			color: sectionRowColor,
 			push: func() browseFrame {
 				return fieldListFrame(fmt.Sprintf("elf string %d", intField(entry, "StringIndex")), entry)
 			},
@@ -451,6 +477,7 @@ func elfSymbolListFrame(items []interface{}) browseFrame {
 		label := fmt.Sprintf("%-8s %s", kind, stringField(entry, "Name"))
 		rows = append(rows, browseRow{
 			label: label,
+			color: sectionRowColor,
 			push: func() browseFrame {
 				return fieldListFrame(fmt.Sprintf("elf symbol %d", intField(entry, "SymbolIndex")), entry)
 			},
@@ -507,7 +534,8 @@ func flattenedRows(fields map[string]interface{}) []browseRow {
 	sort.Strings(keys)
 	rows := make([]browseRow, len(keys))
 	for i, k := range keys {
-		rows[i] = browseRow{label: fmt.Sprintf("%s: %s", k, displayFieldValue(k, flat[k], flat))}
+		displayed := displayFieldValue(k, flat[k], flat)
+		rows[i] = browseRow{label: fmt.Sprintf("%s: %s", k, displayed), color: fieldValueColor(displayed)}
 	}
 	return rows
 }
@@ -527,6 +555,15 @@ func displayFieldValue(key string, v interface{}, siblings map[string]interface{
 		if isHexAddressField(key) {
 			return fmt.Sprintf("%#x", uint64(n))
 		}
+		if isUnixModeField(key) {
+			return unixModeString(uint32(n))
+		}
+		if isEpochNanoField(key) {
+			return formatEpochNanos(n)
+		}
+		if isEpochSecondsField(key) {
+			return formatEpochSeconds(key, n, siblings)
+		}
 	}
 	if s, ok := v.(string); ok {
 		if strings.HasSuffix(key, "Address") {
@@ -542,19 +579,23 @@ func displayFieldValue(key string, v interface{}, siblings map[string]interface{
 	return formatFieldValue(v)
 }
 
-// decodeELFStringBytes decodes an elf_string record's base64'd Bytes using
-// its sibling StringKind: a build id is binary (hex), everything else
-// (interpreter path, needed/soname, rpath/runpath) is text.
+// lastSegment returns the part of a flattened dotted key after its final
+// ".", which is what names the field regardless of which object it's
+// nested under (e.g. "Network.Local.Type" and "Network.Peer.Type" both end
+// in "Type").
+func lastSegment(key string) string {
+	if i := strings.LastIndex(key, "."); i >= 0 {
+		return key[i+1:]
+	}
+	return key
+}
+
 // isHexAddressField picks out the memory/file-offset fields that read like
 // addresses (a memory_map's StartAddress/EndAddress, an ELF header's
 // EntryAddress/*HeaderOffset), which are conventionally shown in hex
 // (matching /proc/pid/maps) rather than as a huge, unreadable decimal.
 func isHexAddressField(key string) bool {
-	last := key
-	if i := strings.LastIndex(key, "."); i >= 0 {
-		last = key[i+1:]
-	}
-	switch last {
+	switch lastSegment(key) {
 	case "StartAddress", "EndAddress", "EntryAddress", "ProgramHeaderOffset", "SectionHeaderOffset", "PageOffset":
 		return true
 	default:
@@ -562,6 +603,131 @@ func isHexAddressField(key string) bool {
 	}
 }
 
+// unixModeString renders a POSIX stat mode as its "ls -l" form: a leading
+// file-type character (regular files get '-') followed by the familiar
+// rwxrwxrwx permission triplet, with the raw octal mode alongside since
+// that's still the form most people search for.
+func unixModeString(mode uint32) string {
+	const (
+		sIFMT   = 0o170000
+		sIFSOCK = 0o140000
+		sIFLNK  = 0o120000
+		sIFREG  = 0o100000
+		sIFBLK  = 0o060000
+		sIFDIR  = 0o040000
+		sIFCHR  = 0o020000
+		sIFIFO  = 0o010000
+	)
+	typeChar := byte('?')
+	switch mode & sIFMT {
+	case sIFSOCK:
+		typeChar = 's'
+	case sIFLNK:
+		typeChar = 'l'
+	case sIFREG:
+		typeChar = '-'
+	case sIFBLK:
+		typeChar = 'b'
+	case sIFDIR:
+		typeChar = 'd'
+	case sIFCHR:
+		typeChar = 'c'
+	case sIFIFO:
+		typeChar = 'p'
+	}
+	perm := func(bit uint32, c byte) byte {
+		if mode&bit != 0 {
+			return c
+		}
+		return '-'
+	}
+	bits := []byte{
+		typeChar,
+		perm(0o400, 'r'), perm(0o200, 'w'), perm(0o100, 'x'),
+		perm(0o040, 'r'), perm(0o020, 'w'), perm(0o010, 'x'),
+		perm(0o004, 'r'), perm(0o002, 'w'), perm(0o001, 'x'),
+	}
+	if mode&0o4000 != 0 { // setuid
+		if bits[3] == 'x' {
+			bits[3] = 's'
+		} else {
+			bits[3] = 'S'
+		}
+	}
+	if mode&0o2000 != 0 { // setgid
+		if bits[6] == 'x' {
+			bits[6] = 's'
+		} else {
+			bits[6] = 'S'
+		}
+	}
+	if mode&0o1000 != 0 { // sticky
+		if bits[9] == 'x' {
+			bits[9] = 't'
+		} else {
+			bits[9] = 'T'
+		}
+	}
+	return fmt.Sprintf("%s (%#o)", string(bits), mode)
+}
+
+// isUnixModeField picks out the fields that carry a real POSIX stat mode
+// (type bits + rwxrwxrwx), verified against the actual kernel encoders
+// (memory_maps.c/elf.c/pslist.c all fill these from vfs_getattr's
+// stat.mode). FDDetails' own "FileMode" is deliberately excluded: despite
+// the name, that one is the kernel's internal file->f_mode flags (see
+// fd.c), a completely different bitmask that would render nonsense if run
+// through this.
+func isUnixModeField(key string) bool {
+	switch key {
+	case "FileMode", "ExecutableMode":
+		return true
+	}
+	return strings.HasSuffix(key, "Stat.Mode")
+}
+
+// isEpochNanoField and isEpochSecondsField pick out the fields that are a
+// real wall-clock timestamp (verified against the kernel encoders: these
+// are always a captured struct timespec/kstat time, never a duration) --
+// Resources' CPUUserTimeNS/CPUSystemTimeNS look similar but are cumulative
+// CPU time *durations* since process start, not a point in time, so they're
+// deliberately not matched here and stay a plain number.
+func isEpochNanoField(key string) bool {
+	switch lastSegment(key) {
+	case "ExecutableMtimeNS", "ExecutableCtimeNS", "FileMtimeNS", "FileCtimeNS":
+		return true
+	default:
+		return false
+	}
+}
+
+func isEpochSecondsField(key string) bool {
+	switch lastSegment(key) {
+	case "AccessTimeSec", "BirthTimeSec", "ChangeTimeSec", "ModificationTimeSec":
+		return true
+	default:
+		return false
+	}
+}
+
+const timestampLayout = "2006-01-02 15:04:05 MST"
+
+func formatEpochNanos(ns float64) string {
+	return time.Unix(0, int64(ns)).UTC().Format(timestampLayout)
+}
+
+// formatEpochSeconds combines a *Sec field with its sibling *Nsec field
+// (the wire protocol always encodes kernel timestamps as a seconds+
+// nanoseconds pair, per struct mapple_pslist_timespec) into one timestamp.
+func formatEpochSeconds(key string, seconds float64, siblings map[string]interface{}) string {
+	nsecKey := strings.TrimSuffix(key, "Sec") + "Nsec"
+	nsec, _ := siblings[nsecKey].(float64)
+	return time.Unix(int64(seconds), int64(nsec)).UTC().Format(timestampLayout)
+}
+
+// decodeELFStringBytes decodes an elf_string record's base64'd Bytes using
+// its sibling StringKind: a build id is binary (hex), everything else
+// (interpreter path, needed/soname, rpath/runpath) is text.
 func decodeELFStringBytes(key, encoded string, siblings map[string]interface{}) string {
 	raw, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
@@ -593,10 +759,7 @@ func decodeELFStringBytes(key, encoded string, siblings map[string]interface{}) 
 // family instead of guessing.
 func namedEnumField(key string, v float64, siblings map[string]interface{}) (string, bool) {
 	code := int(v)
-	last := key
-	if i := strings.LastIndex(key, "."); i >= 0 {
-		last = key[i+1:]
-	}
+	last := lastSegment(key)
 	switch last {
 	case "Kind":
 		return namedCode(fdKindName(code), v), true
@@ -877,10 +1040,7 @@ func namedFlags(value uint64, bits []flagBit) string {
 // shared/commands.h. OpenFlags is handled separately (openFlagsName) since
 // its access-mode bits (O_RDONLY/O_WRONLY/O_RDWR) aren't independent flags.
 func flagTableFor(key string) ([]flagBit, bool) {
-	last := key
-	if i := strings.LastIndex(key, "."); i >= 0 {
-		last = key[i+1:]
-	}
+	last := lastSegment(key)
 	switch last {
 	case "ExecutableFlags":
 		return executableFlagBits, true

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"image/color"
+	"strings"
 
 	"charm.land/lipgloss/v2"
 
@@ -16,6 +17,30 @@ var (
 	successStyle = lipgloss.NewStyle().Foreground(lipgloss.Green)
 	hintStyle    = lipgloss.NewStyle().Foreground(lipgloss.BrightBlack)
 )
+
+// sectionRowColor marks a row that drills into another frame (a browseRow
+// with push set) -- giving every such row the same color, distinct from the
+// plain leaf data rows around it, is what actually breaks up a detail
+// view's wall of same-colored text into "here's where you can go" vs
+// "here's a value".
+var sectionRowColor color.Color = lipgloss.Cyan
+
+// fieldValueColor flags a leaf field row's displayed value when it reads as
+// a problem worth noticing (data the kernel couldn't get, or a code this
+// build doesn't recognize) -- the same "don't just look uniform" reasoning
+// as sectionRowColor, applied to data instead of navigation.
+func fieldValueColor(displayed string) color.Color {
+	switch {
+	case strings.Contains(displayed, "unavailable"),
+		strings.Contains(displayed, "unsupported"),
+		strings.Contains(displayed, "too_large"),
+		strings.Contains(displayed, "raced"),
+		strings.Contains(displayed, "unknown"):
+		return lipgloss.Yellow
+	default:
+		return nil
+	}
+}
 
 // sessionStateColor and taskStateColor return nil (no color override, so a
 // row renders in the terminal's default foreground) for states that don't
