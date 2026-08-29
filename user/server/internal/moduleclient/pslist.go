@@ -10,12 +10,17 @@ import (
 )
 
 const (
-	GroupIdentity   = wire.GroupIdentity
-	GroupSecurity   = wire.GroupSecurity
-	GroupFDs        = wire.GroupFDs
-	GroupFDsDetails = wire.GroupFDsDetails
-	GroupNetwork    = wire.GroupNetwork
-	DefaultGroups   = wire.DefaultGroups
+	GroupIdentity    = wire.GroupIdentity
+	GroupEnvironment = wire.GroupEnvironment
+	GroupSecurity    = wire.GroupSecurity
+	GroupContext     = wire.GroupContext
+	GroupResources   = wire.GroupResources
+	GroupFDs         = wire.GroupFDs
+	GroupFDsDetails  = wire.GroupFDsDetails
+	GroupNetwork     = wire.GroupNetwork
+	GroupMemoryMaps  = wire.GroupMemoryMaps
+	GroupELF         = wire.GroupELF
+	DefaultGroups    = wire.DefaultGroups
 )
 
 // ErrPslistGroupsUnsupported is returned when the requested groups bitmap
@@ -38,6 +43,10 @@ type ProcessTask struct {
 	SecurityID      *uint64
 	FilesID         *uint64
 	NetworkID       *uint64
+	EnvironmentID   *uint64
+	ContextID       *uint64
+	ResourcesID     *uint64
+	MemoryMapsID    *uint64
 }
 
 type IdentityObject struct {
@@ -48,6 +57,41 @@ type IdentityObject struct {
 type SecurityObject struct {
 	Status wire.ObjectStatus
 	wire.Security
+}
+
+type ContextObject struct {
+	Status wire.ObjectStatus
+	wire.Context
+}
+
+type ResourcesObject struct {
+	Status wire.ObjectStatus
+	wire.Resources
+}
+
+type EnvironmentObject struct {
+	Status wire.ObjectStatus
+	wire.Environment
+}
+
+// MemoryMapsObject is one task's (or shared-mm group's) mapping table: a
+// metadata header plus one entry per mapping, streamed as separate records
+// but all sharing this object's id.
+type MemoryMapsObject struct {
+	Status   wire.ObjectStatus
+	Metadata wire.MemoryMapsMetadata
+	Mappings []*wire.MemoryMap
+}
+
+// ELFObject is a distinct ELF file's metadata plus its imported/exported
+// symbol and string tables. Unlike the other groups it's never linked
+// directly to a task -- MemoryMap.ELFObjectID is the only reference to it,
+// shared by every task whose mapping points at the same underlying file.
+type ELFObject struct {
+	Status   wire.ObjectStatus
+	Metadata wire.ELFMetadata
+	Strings  []*wire.ELFString
+	Symbols  []*wire.ELFSymbol
 }
 
 type FDEntry struct {
@@ -71,6 +115,11 @@ type ProcessSnapshot struct {
 	Tasks           []*ProcessTask
 	Identities      map[uint64]*IdentityObject
 	Securities      map[uint64]*SecurityObject
+	Contexts        map[uint64]*ContextObject
+	Resources       map[uint64]*ResourcesObject
+	Environments    map[uint64]*EnvironmentObject
+	MemoryMaps      map[uint64]*MemoryMapsObject
+	ELFs            map[uint64]*ELFObject
 	FilesObjects    map[uint64]*FilesObject
 }
 
@@ -151,6 +200,11 @@ func (c *ModuleClient) readSnapshotStream() (*ProcessSnapshot, error) {
 	result := &ProcessSnapshot{
 		Identities:   make(map[uint64]*IdentityObject),
 		Securities:   make(map[uint64]*SecurityObject),
+		Contexts:     make(map[uint64]*ContextObject),
+		Resources:    make(map[uint64]*ResourcesObject),
+		Environments: make(map[uint64]*EnvironmentObject),
+		MemoryMaps:   make(map[uint64]*MemoryMapsObject),
+		ELFs:         make(map[uint64]*ELFObject),
 		FilesObjects: make(map[uint64]*FilesObject),
 	}
 	tasksByPID := make(map[uint32]*ProcessTask)
@@ -161,6 +215,22 @@ func (c *ModuleClient) readSnapshotStream() (*ProcessSnapshot, error) {
 		if !ok {
 			obj = &FilesObject{}
 			result.FilesObjects[id] = obj
+		}
+		return obj
+	}
+	memoryMapsObject := func(id uint64) *MemoryMapsObject {
+		obj, ok := result.MemoryMaps[id]
+		if !ok {
+			obj = &MemoryMapsObject{}
+			result.MemoryMaps[id] = obj
+		}
+		return obj
+	}
+	elfObject := func(id uint64) *ELFObject {
+		obj, ok := result.ELFs[id]
+		if !ok {
+			obj = &ELFObject{}
+			result.ELFs[id] = obj
 		}
 		return obj
 	}
@@ -235,6 +305,14 @@ func (c *ModuleClient) readSnapshotStream() (*ProcessSnapshot, error) {
 				task.FilesID = &id
 			case wire.GroupNetwork:
 				task.NetworkID = &id
+			case wire.GroupEnvironment:
+				task.EnvironmentID = &id
+			case wire.GroupContext:
+				task.ContextID = &id
+			case wire.GroupResources:
+				task.ResourcesID = &id
+			case wire.GroupMemoryMaps:
+				task.MemoryMapsID = &id
 			}
 
 		case wire.StreamIdentity:
@@ -250,6 +328,65 @@ func (c *ModuleClient) readSnapshotStream() (*ProcessSnapshot, error) {
 				return nil, err
 			}
 			result.Securities[s.ObjectID] = &SecurityObject{Status: wire.ObjectComplete, Security: s}
+
+		case wire.StreamContext:
+			ctx, err := wire.DecodeContext(rest)
+			if err != nil {
+				return nil, err
+			}
+			result.Contexts[ctx.ObjectID] = &ContextObject{Status: wire.ObjectComplete, Context: ctx}
+
+		case wire.StreamResources:
+			r, err := wire.DecodeResources(rest)
+			if err != nil {
+				return nil, err
+			}
+			result.Resources[r.ObjectID] = &ResourcesObject{Status: wire.ObjectComplete, Resources: r}
+
+		case wire.StreamEnvironment:
+			e, err := wire.DecodeEnvironment(rest)
+			if err != nil {
+				return nil, err
+			}
+			result.Environments[e.ObjectID] = &EnvironmentObject{Status: wire.ObjectComplete, Environment: e}
+
+		case wire.StreamMemoryMapsMeta:
+			md, err := wire.DecodeMemoryMapsMetadata(rest)
+			if err != nil {
+				return nil, err
+			}
+			memoryMapsObject(md.ObjectID).Metadata = md
+
+		case wire.StreamMemoryMap:
+			mm, err := wire.DecodeMemoryMap(rest)
+			if err != nil {
+				return nil, err
+			}
+			obj := memoryMapsObject(mm.ObjectID)
+			obj.Mappings = append(obj.Mappings, &mm)
+
+		case wire.StreamELFMetadata:
+			md, err := wire.DecodeELFMetadata(rest)
+			if err != nil {
+				return nil, err
+			}
+			elfObject(md.ObjectID).Metadata = md
+
+		case wire.StreamELFString:
+			s, err := wire.DecodeELFString(rest)
+			if err != nil {
+				return nil, err
+			}
+			obj := elfObject(s.ObjectID)
+			obj.Strings = append(obj.Strings, &s)
+
+		case wire.StreamELFSymbol:
+			s, err := wire.DecodeELFSymbol(rest)
+			if err != nil {
+				return nil, err
+			}
+			obj := elfObject(s.ObjectID)
+			obj.Symbols = append(obj.Symbols, &s)
 
 		case wire.StreamFD:
 			fd, err := wire.DecodeFD(rest)
@@ -295,6 +432,26 @@ func (c *ModuleClient) readSnapshotStream() (*ProcessSnapshot, error) {
 				}
 			case wire.GroupFDs, wire.GroupNetwork:
 				if obj, ok := result.FilesObjects[end.ObjectID]; ok {
+					obj.Status = end.Status
+				}
+			case wire.GroupContext:
+				if obj, ok := result.Contexts[end.ObjectID]; ok {
+					obj.Status = end.Status
+				}
+			case wire.GroupResources:
+				if obj, ok := result.Resources[end.ObjectID]; ok {
+					obj.Status = end.Status
+				}
+			case wire.GroupEnvironment:
+				if obj, ok := result.Environments[end.ObjectID]; ok {
+					obj.Status = end.Status
+				}
+			case wire.GroupMemoryMaps:
+				if obj, ok := result.MemoryMaps[end.ObjectID]; ok {
+					obj.Status = end.Status
+				}
+			case wire.GroupELF:
+				if obj, ok := result.ELFs[end.ObjectID]; ok {
 					obj.Status = end.Status
 				}
 			}

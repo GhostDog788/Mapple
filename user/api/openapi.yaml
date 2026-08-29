@@ -330,7 +330,19 @@ components:
           format: byte
     PslistGroup:
       type: string
-      enum: [identity, security, fds, fds_details, network]
+      enum:
+        [
+          identity,
+          environment,
+          security,
+          context,
+          resources,
+          fds,
+          fds_details,
+          network,
+          memory_maps,
+          elf,
+        ]
     ProcessSnapshot:
       type: object
       required: [status, task_count, object_count, tasks]
@@ -362,6 +374,21 @@ components:
           type: object
           additionalProperties: true
         securities:
+          type: object
+          additionalProperties: true
+        contexts:
+          type: object
+          additionalProperties: true
+        resources:
+          type: object
+          additionalProperties: true
+        environments:
+          type: object
+          additionalProperties: true
+        memory_maps:
+          type: object
+          additionalProperties: true
+        elfs:
           type: object
           additionalProperties: true
         files:

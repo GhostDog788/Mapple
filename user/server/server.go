@@ -241,14 +241,24 @@ func groupsFromAPI(list []api.PslistGroup) uint64 {
 		switch g {
 		case api.Identity:
 			bits |= moduleclient.GroupIdentity
+		case api.Environment:
+			bits |= moduleclient.GroupEnvironment
 		case api.Security:
 			bits |= moduleclient.GroupSecurity
+		case api.Context:
+			bits |= moduleclient.GroupContext
+		case api.Resources:
+			bits |= moduleclient.GroupResources
 		case api.Fds:
 			bits |= moduleclient.GroupFDs
 		case api.FdsDetails:
 			bits |= moduleclient.GroupFDsDetails
 		case api.Network:
 			bits |= moduleclient.GroupNetwork
+		case api.MemoryMaps:
+			bits |= moduleclient.GroupMemoryMaps
+		case api.Elf:
+			bits |= moduleclient.GroupELF
 		}
 	}
 	return bits
@@ -259,8 +269,17 @@ func groupsToAPI(bits uint64) []api.PslistGroup {
 	if bits&moduleclient.GroupIdentity != 0 {
 		out = append(out, api.Identity)
 	}
+	if bits&moduleclient.GroupEnvironment != 0 {
+		out = append(out, api.Environment)
+	}
 	if bits&moduleclient.GroupSecurity != 0 {
 		out = append(out, api.Security)
+	}
+	if bits&moduleclient.GroupContext != 0 {
+		out = append(out, api.Context)
+	}
+	if bits&moduleclient.GroupResources != 0 {
+		out = append(out, api.Resources)
 	}
 	if bits&moduleclient.GroupFDs != 0 {
 		out = append(out, api.Fds)
@@ -270,6 +289,12 @@ func groupsToAPI(bits uint64) []api.PslistGroup {
 	}
 	if bits&moduleclient.GroupNetwork != 0 {
 		out = append(out, api.Network)
+	}
+	if bits&moduleclient.GroupMemoryMaps != 0 {
+		out = append(out, api.MemoryMaps)
+	}
+	if bits&moduleclient.GroupELF != 0 {
+		out = append(out, api.Elf)
 	}
 	return out
 }
@@ -289,6 +314,26 @@ func apiProcessSnapshot(snap *moduleclient.ProcessSnapshot) (api.ProcessSnapshot
 	}
 	var securities map[string]interface{}
 	if err := roundtripJSON(snap.Securities, &securities); err != nil {
+		return api.ProcessSnapshot{}, err
+	}
+	var contexts map[string]interface{}
+	if err := roundtripJSON(snap.Contexts, &contexts); err != nil {
+		return api.ProcessSnapshot{}, err
+	}
+	var resources map[string]interface{}
+	if err := roundtripJSON(snap.Resources, &resources); err != nil {
+		return api.ProcessSnapshot{}, err
+	}
+	var environments map[string]interface{}
+	if err := roundtripJSON(snap.Environments, &environments); err != nil {
+		return api.ProcessSnapshot{}, err
+	}
+	var memoryMaps map[string]interface{}
+	if err := roundtripJSON(snap.MemoryMaps, &memoryMaps); err != nil {
+		return api.ProcessSnapshot{}, err
+	}
+	var elfs map[string]interface{}
+	if err := roundtripJSON(snap.ELFs, &elfs); err != nil {
 		return api.ProcessSnapshot{}, err
 	}
 	var files map[string]interface{}
@@ -312,6 +357,11 @@ func apiProcessSnapshot(snap *moduleclient.ProcessSnapshot) (api.ProcessSnapshot
 		Tasks:           tasks,
 		Identities:      &identities,
 		Securities:      &securities,
+		Contexts:        &contexts,
+		Resources:       &resources,
+		Environments:    &environments,
+		MemoryMaps:      &memoryMaps,
+		Elfs:            &elfs,
 		Files:           &files,
 	}, nil
 }

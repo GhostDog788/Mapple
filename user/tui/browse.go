@@ -136,16 +136,37 @@ func shortID(id string) string {
 
 // --- pslist: task list -> task detail -> section (identity/security/files) ---
 
+// pslistObjects bundles every per-object group map a task can link to, so
+// taskDetailFrame and its children take one value instead of a growing list
+// of positional map parameters.
+type pslistObjects struct {
+	identities   map[string]interface{}
+	securities   map[string]interface{}
+	contexts     map[string]interface{}
+	resources    map[string]interface{}
+	environments map[string]interface{}
+	memoryMaps   map[string]interface{}
+	elfs         map[string]interface{}
+	files        map[string]interface{}
+}
+
+func mapOrNil(m *map[string]interface{}) map[string]interface{} {
+	if m == nil {
+		return nil
+	}
+	return *m
+}
+
 func pslistFrame(snap api.ProcessSnapshot, sortMode int, filterText string) browseFrame {
-	var identities, securities, files map[string]interface{}
-	if snap.Identities != nil {
-		identities = *snap.Identities
-	}
-	if snap.Securities != nil {
-		securities = *snap.Securities
-	}
-	if snap.Files != nil {
-		files = *snap.Files
+	objs := pslistObjects{
+		identities:   mapOrNil(snap.Identities),
+		securities:   mapOrNil(snap.Securities),
+		contexts:     mapOrNil(snap.Contexts),
+		resources:    mapOrNil(snap.Resources),
+		environments: mapOrNil(snap.Environments),
+		memoryMaps:   mapOrNil(snap.MemoryMaps),
+		elfs:         mapOrNil(snap.Elfs),
+		files:        mapOrNil(snap.Files),
 	}
 
 	tasks := snap.Tasks
@@ -180,7 +201,7 @@ func pslistFrame(snap api.ProcessSnapshot, sortMode int, filterText string) brow
 		rows[i] = browseRow{
 			label: label,
 			color: taskStateColor(state),
-			push:  func() browseFrame { return taskDetailFrame(t, identities, securities, files) },
+			push:  func() browseFrame { return taskDetailFrame(t, objs) },
 		}
 	}
 	title := fmt.Sprintf("pslist: %d tasks (sort=%s%s) -- enter to view, esc/q back", len(tasks), pslistSortName(sortMode), filterSuffix(filterText))
@@ -220,7 +241,7 @@ func taskTypeName(t int) string {
 	}
 }
 
-func taskDetailFrame(task, identities, securities, files map[string]interface{}) browseFrame {
+func taskDetailFrame(task map[string]interface{}, objs pslistObjects) browseFrame {
 	pid := intField(task, "PID")
 	comm := stringField(task, "Comm")
 
@@ -234,17 +255,37 @@ func taskDetailFrame(task, identities, securities, files map[string]interface{})
 	}
 
 	if id, ok := groupRef(task, "IdentityID"); ok {
-		if obj, ok := lookupObject(identities, id); ok {
+		if obj, ok := lookupObject(objs.identities, id); ok {
 			rows = append(rows, browseRow{label: "Identity", push: func() browseFrame { return fieldListFrame("identity", obj) }})
 		}
 	}
 	if id, ok := groupRef(task, "SecurityID"); ok {
-		if obj, ok := lookupObject(securities, id); ok {
+		if obj, ok := lookupObject(objs.securities, id); ok {
 			rows = append(rows, browseRow{label: "Security", push: func() browseFrame { return fieldListFrame("security", obj) }})
 		}
 	}
+	if id, ok := groupRef(task, "ContextID"); ok {
+		if obj, ok := lookupObject(objs.contexts, id); ok {
+			rows = append(rows, browseRow{label: "Context", push: func() browseFrame { return fieldListFrame("context", obj) }})
+		}
+	}
+	if id, ok := groupRef(task, "ResourcesID"); ok {
+		if obj, ok := lookupObject(objs.resources, id); ok {
+			rows = append(rows, browseRow{label: "Resources", push: func() browseFrame { return fieldListFrame("resources", obj) }})
+		}
+	}
+	if id, ok := groupRef(task, "EnvironmentID"); ok {
+		if obj, ok := lookupObject(objs.environments, id); ok {
+			rows = append(rows, browseRow{label: "Environment", push: func() browseFrame { return environmentFrame(obj) }})
+		}
+	}
+	if id, ok := groupRef(task, "MemoryMapsID"); ok {
+		if obj, ok := lookupObject(objs.memoryMaps, id); ok {
+			rows = append(rows, browseRow{label: "Memory Maps", push: func() browseFrame { return memoryMapsFrame(obj, objs.elfs) }})
+		}
+	}
 	if id, ok := groupRef(task, "FilesID"); ok {
-		if obj, ok := lookupObject(files, id); ok {
+		if obj, ok := lookupObject(objs.files, id); ok {
 			rows = append(rows, browseRow{label: "Files", push: func() browseFrame { return fdListFrame(obj) }})
 		}
 	}
@@ -287,6 +328,137 @@ func fdListFrame(filesObj map[string]interface{}) browseFrame {
 	return browseFrame{title: fmt.Sprintf("files: %d fds -- enter for detail, esc/q back", len(rows)), rows: rows}
 }
 
+func uint64Field(m map[string]interface{}, key string) uint64 {
+	if v, ok := m[key].(float64); ok {
+		return uint64(v)
+	}
+	return 0
+}
+
+// environmentFrame shows a task's captured environment as individual
+// KEY=VALUE leaf rows, decoded from the raw NUL-delimited bytes the wire
+// layer hands back as a base64 JSON string.
+func environmentFrame(obj map[string]interface{}) browseFrame {
+	rows := []browseRow{
+		{label: fmt.Sprintf("AvailabilityStatus: %s", displayFieldValue("AvailabilityStatus", obj["AvailabilityStatus"], obj))},
+		{label: fmt.Sprintf("EntryCount: %s", formatFieldValue(obj["EntryCount"]))},
+	}
+	entryRows := 0
+	if raw, ok := obj["Raw"].(string); ok && raw != "" {
+		if decoded, err := base64.StdEncoding.DecodeString(raw); err == nil {
+			for _, entry := range strings.Split(string(decoded), "\x00") {
+				if entry == "" {
+					continue
+				}
+				rows = append(rows, browseRow{label: entry})
+				entryRows++
+			}
+		}
+	}
+	return browseFrame{title: fmt.Sprintf("environment: %d entries -- esc/q back", entryRows), rows: rows}
+}
+
+// memoryMapsFrame lists a task's memory mappings; enter drills into one
+// mapping's fields, which itself gains an "ELF" row when the mapping is
+// backed by a file mapple has captured ELF metadata for.
+func memoryMapsFrame(obj map[string]interface{}, elfs map[string]interface{}) browseFrame {
+	mappingsRaw, _ := obj["Mappings"].([]interface{})
+	rows := make([]browseRow, 0, len(mappingsRaw))
+	for _, raw := range mappingsRaw {
+		m, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		mapping := m
+		start := uint64Field(mapping, "StartAddress")
+		end := uint64Field(mapping, "EndAddress")
+		name := stringField(mapping, "Path")
+		if name == "" {
+			name = stringField(mapping, "Name")
+		}
+		if name == "" {
+			name = "[" + mappingNameKindName(intField(mapping, "NameKind")) + "]"
+		}
+		label := fmt.Sprintf("%012x-%012x %s", start, end, name)
+		rows = append(rows, browseRow{
+			label: label,
+			push:  func() browseFrame { return memoryMapDetailFrame(mapping, elfs) },
+		})
+	}
+	return browseFrame{title: fmt.Sprintf("memory maps: %d mappings -- enter for detail, esc/q back", len(rows)), rows: rows}
+}
+
+func memoryMapDetailFrame(mapping, elfs map[string]interface{}) browseFrame {
+	rows := flattenedRows(mapping)
+	if id, ok := groupRef(mapping, "ELFObjectID"); ok && id != 0 {
+		if obj, ok := lookupObject(elfs, id); ok {
+			rows = append(rows, browseRow{label: "ELF", push: func() browseFrame { return elfFrame(obj) }})
+		}
+	}
+	start := uint64Field(mapping, "StartAddress")
+	end := uint64Field(mapping, "EndAddress")
+	return browseFrame{title: fmt.Sprintf("mapping %012x-%012x -- esc/q back", start, end), rows: rows}
+}
+
+// elfFrame shows one ELF file's header metadata plus its string and symbol
+// tables as two sub-lists -- kept as separate pushes rather than flattened
+// inline since a heavily-linked binary can have thousands of symbols.
+func elfFrame(obj map[string]interface{}) browseFrame {
+	rows := []browseRow{
+		{label: fmt.Sprintf("Status: %s", displayFieldValue("Status", obj["Status"], obj))},
+	}
+	metadata, _ := obj["Metadata"].(map[string]interface{})
+	rows = append(rows, flattenedRows(metadata)...)
+	stringsRaw, _ := obj["Strings"].([]interface{})
+	symbolsRaw, _ := obj["Symbols"].([]interface{})
+	rows = append(rows,
+		browseRow{label: fmt.Sprintf("Strings (%d)", len(stringsRaw)), push: func() browseFrame { return elfStringListFrame(stringsRaw) }},
+		browseRow{label: fmt.Sprintf("Symbols (%d)", len(symbolsRaw)), push: func() browseFrame { return elfSymbolListFrame(symbolsRaw) }},
+	)
+	return browseFrame{title: "elf -- esc/q back", rows: rows}
+}
+
+func elfStringListFrame(items []interface{}) browseFrame {
+	rows := make([]browseRow, 0, len(items))
+	for _, raw := range items {
+		s, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		entry := s
+		kind := elfStringKindName(intField(entry, "StringKind"))
+		bytesRaw, _ := entry["Bytes"].(string)
+		label := fmt.Sprintf("%-12s %s", kind, decodeELFStringBytes("Bytes", bytesRaw, entry))
+		rows = append(rows, browseRow{
+			label: label,
+			push: func() browseFrame {
+				return fieldListFrame(fmt.Sprintf("elf string %d", intField(entry, "StringIndex")), entry)
+			},
+		})
+	}
+	return browseFrame{title: fmt.Sprintf("elf strings: %d -- enter for detail, esc/q back", len(rows)), rows: rows}
+}
+
+func elfSymbolListFrame(items []interface{}) browseFrame {
+	rows := make([]browseRow, 0, len(items))
+	for _, raw := range items {
+		s, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		entry := s
+		kind := elfSymbolKindName(intField(entry, "SymbolKind"))
+		label := fmt.Sprintf("%-8s %s", kind, stringField(entry, "Name"))
+		rows = append(rows, browseRow{
+			label: label,
+			push: func() browseFrame {
+				return fieldListFrame(fmt.Sprintf("elf symbol %d", intField(entry, "SymbolIndex")), entry)
+			},
+		})
+	}
+	return browseFrame{title: fmt.Sprintf("elf symbols: %d -- enter for detail, esc/q back", len(rows)), rows: rows}
+}
+
 func fdKindName(k int) string {
 	switch k {
 	case 1:
@@ -313,15 +485,21 @@ func fdKindName(k int) string {
 // fieldListFrame is a leaf: flat key/value rows, nested objects flattened
 // with dotted keys (e.g. an fd's "Details.Stat.Mode").
 func fieldListFrame(title string, fields map[string]interface{}) browseFrame {
+	rows := flattenedRows(fields)
+	return browseFrame{title: title + " -- esc/q back", rows: rows}
+}
+
+// flattenedRows renders every field as a leaf row, flattening nested
+// objects with dotted keys. ObjectID/ELFObjectID are dropped: they're wire
+// protocol handles, not process data, and where ELFObjectID matters
+// (memory_map) the caller adds its own dedicated "ELF" row instead of
+// showing the raw id.
+func flattenedRows(fields map[string]interface{}) []browseRow {
 	flat := map[string]interface{}{}
 	flattenFields("", fields, flat)
 	keys := make([]string, 0, len(flat))
 	for k := range flat {
-		// ObjectID is the wire protocol's internal object handle, not
-		// data about the process -- it's meaningless to a user browsing
-		// this section (they already navigated here by task/fd, not by
-		// this number) and looks like a stray raw pointer if shown.
-		if k == "ObjectID" || strings.HasSuffix(k, ".ObjectID") {
+		if k == "ObjectID" || strings.HasSuffix(k, ".ObjectID") || k == "ELFObjectID" {
 			continue
 		}
 		keys = append(keys, k)
@@ -331,7 +509,7 @@ func fieldListFrame(title string, fields map[string]interface{}) browseFrame {
 	for i, k := range keys {
 		rows[i] = browseRow{label: fmt.Sprintf("%s: %s", k, displayFieldValue(k, flat[k], flat))}
 	}
-	return browseFrame{title: title + " -- esc/q back", rows: rows}
+	return rows
 }
 
 // displayFieldValue is formatFieldValue plus overrides for the fields the
@@ -346,16 +524,55 @@ func displayFieldValue(key string, v interface{}, siblings map[string]interface{
 		if name, ok := namedEnumField(key, n, siblings); ok {
 			return name
 		}
+		if isHexAddressField(key) {
+			return fmt.Sprintf("%#x", uint64(n))
+		}
 	}
 	if s, ok := v.(string); ok {
 		if strings.HasSuffix(key, "Address") {
 			return decodeSocketAddress(key, s, siblings)
+		}
+		if strings.HasSuffix(key, "Bytes") {
+			return decodeELFStringBytes(key, s, siblings)
 		}
 		if decoded, ok := decodeRawBytesField(key, s); ok {
 			return decoded
 		}
 	}
 	return formatFieldValue(v)
+}
+
+// decodeELFStringBytes decodes an elf_string record's base64'd Bytes using
+// its sibling StringKind: a build id is binary (hex), everything else
+// (interpreter path, needed/soname, rpath/runpath) is text.
+// isHexAddressField picks out the memory/file-offset fields that read like
+// addresses (a memory_map's StartAddress/EndAddress, an ELF header's
+// EntryAddress/*HeaderOffset), which are conventionally shown in hex
+// (matching /proc/pid/maps) rather than as a huge, unreadable decimal.
+func isHexAddressField(key string) bool {
+	last := key
+	if i := strings.LastIndex(key, "."); i >= 0 {
+		last = key[i+1:]
+	}
+	switch last {
+	case "StartAddress", "EndAddress", "EntryAddress", "ProgramHeaderOffset", "SectionHeaderOffset", "PageOffset":
+		return true
+	default:
+		return false
+	}
+}
+
+func decodeELFStringBytes(key, encoded string, siblings map[string]interface{}) string {
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return encoded
+	}
+	prefix := strings.TrimSuffix(key, "Bytes")
+	kind, _ := siblings[prefix+"StringKind"].(float64)
+	if int(kind) == 6 { // build_id
+		return fmt.Sprintf("% x", raw)
+	}
+	return string(raw)
 }
 
 // namedEnumField translates the small closed-set numeric fields the wire
@@ -392,8 +609,32 @@ func namedEnumField(key string, v float64, siblings map[string]interface{}) (str
 		return namedCode(commandLineStatusName(code), v), true
 	case "ExecutableStatus":
 		return namedCode(executableStatusName(code), v), true
-	case "DumpableStatus", "LSMStatus", "LSMProviderStatus", "PathStatus", "IdentityStatus", "StatStatus", "FDInfoStatus":
+	case "DumpableStatus", "LSMStatus", "LSMProviderStatus", "PathStatus", "IdentityStatus", "StatStatus", "FDInfoStatus",
+		"CWDStatus", "RootStatus", "CgroupStatus", "CgroupHostPathStatus", "CgroupNamespacePathStatus",
+		"MemoryStatus", "IOStatus", "NetworkStatus", "NameStatus", "FileMetadataStatus":
 		return namedCode(dataStatusName(code), v), true
+	case "AvailabilityStatus":
+		return namedCode(environmentStatusName(code), v), true
+	case "MemoryReason":
+		return namedCode(memoryReasonName(code), v), true
+	case "MappingType":
+		return namedCode(mappingTypeName(code), v), true
+	case "NameKind":
+		return namedCode(mappingNameKindName(code), v), true
+	case "StringKind":
+		return namedCode(elfStringKindName(code), v), true
+	case "SymbolKind":
+		return namedCode(elfSymbolKindName(code), v), true
+	case "ELFClass":
+		return namedCode(elfClassName(code), v), true
+	case "DataEncoding":
+		return namedCode(elfDataEncodingName(code), v), true
+	case "OSABI":
+		return namedCode(elfOSABIName(code), v), true
+	case "ObjectType":
+		return namedCode(elfObjectTypeName(code), v), true
+	case "Machine":
+		return namedCode(elfMachineName(code), v), true
 	case "Type":
 		return namedCode(socketEndpointTypeName(code), v), true
 	case "Family":
@@ -413,7 +654,353 @@ func namedEnumField(key string, v float64, siblings map[string]interface{}) (str
 		}
 		return namedCode(protocolStateName(code), v), true
 	}
+	if names, ok := flagTableFor(key); ok {
+		return namedFlags(uint64(v), names), true
+	}
+	if last == "OpenFlags" {
+		return openFlagsName(uint64(v)), true
+	}
 	return "", false
+}
+
+func environmentStatusName(c int) string {
+	switch c {
+	case 1:
+		return "available"
+	case 2:
+		return "empty"
+	case 3:
+		return "unavailable"
+	case 4:
+		return "too_large"
+	case 5:
+		return "raced"
+	default:
+		return "unknown"
+	}
+}
+
+func memoryReasonName(c int) string {
+	switch c {
+	case 0:
+		return "none"
+	case 1:
+		return "no_mm"
+	default:
+		return "unknown"
+	}
+}
+
+func mappingTypeName(c int) string {
+	switch c {
+	case 1:
+		return "anonymous"
+	case 2:
+		return "file"
+	case 3:
+		return "special"
+	default:
+		return "unknown"
+	}
+}
+
+func mappingNameKindName(c int) string {
+	switch c {
+	case 0:
+		return "none"
+	case 1:
+		return "heap"
+	case 2:
+		return "stack"
+	case 3:
+		return "anonymous"
+	case 4:
+		return "shared_anonymous"
+	case 5:
+		return "special"
+	default:
+		return "unknown"
+	}
+}
+
+func elfStringKindName(c int) string {
+	switch c {
+	case 1:
+		return "interpreter"
+	case 2:
+		return "needed"
+	case 3:
+		return "soname"
+	case 4:
+		return "rpath"
+	case 5:
+		return "runpath"
+	case 6:
+		return "build_id"
+	default:
+		return "unknown"
+	}
+}
+
+func elfSymbolKindName(c int) string {
+	switch c {
+	case 1:
+		return "import"
+	case 2:
+		return "export"
+	default:
+		return "unknown"
+	}
+}
+
+// elfClassName, elfDataEncodingName, elfOSABIName, elfObjectTypeName and
+// elfMachineName are standard ELF header constants (elf.h), not part of our
+// wire protocol -- the kernel reports the raw e_ident/e_type/e_machine
+// values directly.
+func elfClassName(c int) string {
+	switch c {
+	case 1:
+		return "ELFCLASS32"
+	case 2:
+		return "ELFCLASS64"
+	default:
+		return fmt.Sprintf("ELFCLASS_%d", c)
+	}
+}
+
+func elfDataEncodingName(c int) string {
+	switch c {
+	case 1:
+		return "ELFDATA2LSB"
+	case 2:
+		return "ELFDATA2MSB"
+	default:
+		return fmt.Sprintf("ELFDATA_%d", c)
+	}
+}
+
+func elfOSABIName(c int) string {
+	switch c {
+	case 0:
+		return "ELFOSABI_NONE"
+	case 1:
+		return "ELFOSABI_HPUX"
+	case 2:
+		return "ELFOSABI_NETBSD"
+	case 3:
+		return "ELFOSABI_LINUX"
+	case 6:
+		return "ELFOSABI_SOLARIS"
+	case 9:
+		return "ELFOSABI_FREEBSD"
+	case 97:
+		return "ELFOSABI_ARM"
+	case 255:
+		return "ELFOSABI_STANDALONE"
+	default:
+		return fmt.Sprintf("ELFOSABI_%d", c)
+	}
+}
+
+func elfObjectTypeName(c int) string {
+	switch c {
+	case 0:
+		return "ET_NONE"
+	case 1:
+		return "ET_REL"
+	case 2:
+		return "ET_EXEC"
+	case 3:
+		return "ET_DYN"
+	case 4:
+		return "ET_CORE"
+	default:
+		return fmt.Sprintf("ET_%d", c)
+	}
+}
+
+func elfMachineName(c int) string {
+	switch c {
+	case 3:
+		return "EM_386"
+	case 8:
+		return "EM_MIPS"
+	case 40:
+		return "EM_ARM"
+	case 62:
+		return "EM_X86_64"
+	case 183:
+		return "EM_AARCH64"
+	case 243:
+		return "EM_RISCV"
+	default:
+		return fmt.Sprintf("EM_%d", c)
+	}
+}
+
+// flagBit is one named bit in a bitmask field.
+type flagBit struct {
+	mask uint64
+	name string
+}
+
+// namedFlags renders a bitmask as its set flag names joined with "|",
+// followed by the raw hex value in parens, e.g. "READ|WRITE (0x3)" -- never
+// just the flags, so a value with bits this table doesn't know about still
+// shows its full number instead of silently dropping them. A zero value
+// renders as "none (0x0)".
+func namedFlags(value uint64, bits []flagBit) string {
+	var names []string
+	remaining := value
+	for _, b := range bits {
+		if value&b.mask == b.mask && b.mask != 0 {
+			names = append(names, b.name)
+			remaining &^= b.mask
+		}
+	}
+	label := "none"
+	if len(names) > 0 {
+		label = strings.Join(names, "|")
+	}
+	if remaining != 0 {
+		if len(names) > 0 {
+			label += fmt.Sprintf("|unknown(%#x)", remaining)
+		} else {
+			label = fmt.Sprintf("unknown(%#x)", remaining)
+		}
+	}
+	return fmt.Sprintf("%s (%#x)", label, value)
+}
+
+// flagTableFor maps a flattened field's last dotted segment to its bitmask
+// table, mirroring the MAPPLE_PSLIST_*_FLAG* / VM_* definitions in
+// shared/commands.h. OpenFlags is handled separately (openFlagsName) since
+// its access-mode bits (O_RDONLY/O_WRONLY/O_RDWR) aren't independent flags.
+func flagTableFor(key string) ([]flagBit, bool) {
+	last := key
+	if i := strings.LastIndex(key, "."); i >= 0 {
+		last = key[i+1:]
+	}
+	switch last {
+	case "ExecutableFlags":
+		return executableFlagBits, true
+	case "DescriptorFlags":
+		return fdDescriptorFlagBits, true
+	case "NamespaceAvailableMask", "NamespaceUnsupportedMask":
+		return namespaceFlagBits, true
+	case "VMFlags":
+		return vmFlagBits, true
+	case "FileFlags":
+		return memoryMapFileFlagBits, true
+	}
+	return nil, false
+}
+
+var executableFlagBits = []flagBit{
+	{1 << 0, "DELETED"},
+	{1 << 1, "PATH_UNAVAILABLE"},
+	{1 << 2, "METADATA_UNAVAILABLE"},
+}
+
+var fdDescriptorFlagBits = []flagBit{
+	{1 << 0, "CLOEXEC"},
+}
+
+var namespaceFlagBits = []flagBit{
+	{1 << 0, "USER"},
+	{1 << 1, "UTS"},
+	{1 << 2, "IPC"},
+	{1 << 3, "MOUNT"},
+	{1 << 4, "PID_ACTIVE"},
+	{1 << 5, "PID_CHILDREN"},
+	{1 << 6, "NETWORK"},
+	{1 << 7, "CGROUP"},
+	{1 << 8, "TIME"},
+	{1 << 9, "TIME_CHILDREN"},
+}
+
+var memoryMapFileFlagBits = []flagBit{
+	{1 << 0, "DELETED"},
+}
+
+// vmFlagBits mirrors Linux's VM_* mapping flags (shared/commands.h's
+// MAPPLE_PSLIST_VM_*), the same set /proc/pid/smaps prints under "VmFlags:".
+var vmFlagBits = []flagBit{
+	{1 << 0, "READ"},
+	{1 << 1, "WRITE"},
+	{1 << 2, "EXEC"},
+	{1 << 3, "SHARED"},
+	{1 << 4, "MAYREAD"},
+	{1 << 5, "MAYWRITE"},
+	{1 << 6, "MAYEXEC"},
+	{1 << 7, "MAYSHARE"},
+	{1 << 8, "GROWSDOWN"},
+	{1 << 9, "UFFD_MISSING"},
+	{1 << 10, "PFNMAP"},
+	{1 << 12, "UFFD_WP"},
+	{1 << 13, "LOCKED"},
+	{1 << 14, "IO"},
+	{1 << 15, "SEQ_READ"},
+	{1 << 16, "RAND_READ"},
+	{1 << 17, "DONTCOPY"},
+	{1 << 18, "DONTEXPAND"},
+	{1 << 19, "LOCKONFAULT"},
+	{1 << 20, "ACCOUNT"},
+	{1 << 21, "NORESERVE"},
+	{1 << 22, "HUGETLB"},
+	{1 << 23, "SYNC"},
+	{1 << 25, "WIPEONFORK"},
+	{1 << 26, "DONTDUMP"},
+	{1 << 27, "SOFTDIRTY"},
+	{1 << 28, "MIXEDMAP"},
+	{1 << 29, "HUGEPAGE"},
+	{1 << 30, "NOHUGEPAGE"},
+	{1 << 31, "MERGEABLE"},
+}
+
+// openFlagsName decodes an fd's open(2) flags: the low bits are an access
+// mode (not independent flags -- O_RDONLY is literally 0, so it can't be a
+// bit in a normal flag table), the rest are real bits.
+func openFlagsName(value uint64) string {
+	mode := "O_RDONLY"
+	switch value & 0x3 {
+	case 1:
+		mode = "O_WRONLY"
+	case 2:
+		mode = "O_RDWR"
+	}
+	names := []string{mode}
+	remaining := value &^ 0x3
+	for _, b := range openFlagBits {
+		if remaining&b.mask == b.mask {
+			names = append(names, b.name)
+			remaining &^= b.mask
+		}
+	}
+	label := strings.Join(names, "|")
+	if remaining != 0 {
+		label += fmt.Sprintf("|unknown(%#x)", remaining)
+	}
+	return fmt.Sprintf("%s (%#x)", label, value)
+}
+
+var openFlagBits = []flagBit{
+	{0o100, "O_CREAT"},
+	{0o200, "O_EXCL"},
+	{0o400, "O_NOCTTY"},
+	{0o1000, "O_TRUNC"},
+	{0o2000, "O_APPEND"},
+	{0o4000, "O_NONBLOCK"},
+	{0o10000, "O_DSYNC"},
+	{0o20000, "O_ASYNC"},
+	{0o40000, "O_DIRECT"},
+	{0o100000, "O_LARGEFILE"},
+	{0o200000, "O_DIRECTORY"},
+	{0o400000, "O_NOFOLLOW"},
+	{0o1000000, "O_NOATIME"},
+	{0o2000000, "O_CLOEXEC"},
+	{0o10000000, "O_PATH"},
+	{0o20000000, "O_TMPFILE"},
 }
 
 func namedCode(name string, raw float64) string {
