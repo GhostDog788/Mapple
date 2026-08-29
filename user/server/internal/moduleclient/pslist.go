@@ -110,6 +110,8 @@ type ProcessSnapshot struct {
 	RequestedGroups uint64
 	EffectiveGroups uint64
 	SupportedGroups uint64
+	StartBoottimeNS uint64
+	EndBoottimeNS   uint64
 	TaskCount       uint32
 	ObjectCount     uint32
 	Tasks           []*ProcessTask
@@ -263,6 +265,7 @@ func (c *ModuleClient) readSnapshotStream() (*ProcessSnapshot, error) {
 			result.RequestedGroups = b.RequestedGroups
 			result.EffectiveGroups = b.EffectiveGroups
 			result.SupportedGroups = b.SupportedGroups
+			result.StartBoottimeNS = b.StartBoottimeNS
 
 		case wire.StreamSnapshotEnd:
 			e, err := wire.DecodeSnapshotEnd(rest)
@@ -272,6 +275,7 @@ func (c *ModuleClient) readSnapshotStream() (*ProcessSnapshot, error) {
 			result.Status = e.Status
 			result.TaskCount = e.TaskCount
 			result.ObjectCount = e.ObjectCount
+			result.EndBoottimeNS = e.EndBoottimeNS
 			return result, nil
 
 		case wire.StreamTask:

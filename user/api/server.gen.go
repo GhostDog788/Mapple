@@ -42,24 +42,6 @@ func (e DestinationType) Valid() bool {
 	}
 }
 
-// Defines values for ProcessSnapshotStatus.
-const (
-	Complete ProcessSnapshotStatus = "complete"
-	Partial  ProcessSnapshotStatus = "partial"
-)
-
-// Valid indicates whether the value is a known member of the ProcessSnapshotStatus enum.
-func (e ProcessSnapshotStatus) Valid() bool {
-	switch e {
-	case Complete:
-		return true
-	case Partial:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for PslistGroup.
 const (
 	Context     PslistGroup = "context"
@@ -191,30 +173,13 @@ type InfoResult struct {
 	SupportedCommands int64 `json:"supported_commands"`
 }
 
-// ProcessSnapshot defines model for ProcessSnapshot.
+// ProcessSnapshot Mirrors the shape of pslist-v8.json (the reference C client's output): schema_version + snapshot (envelope) + tasks (processes/kthreads/unmatched_threads) + objects (the 10 per-group id-keyed detail maps, plus elf's own symbol_names catalog). Deliberately not specified field-by-field here -- server/pslistview.go is the single source of truth for the exact shape of each section.
 type ProcessSnapshot struct {
-	Contexts        *map[string]interface{} `json:"contexts,omitempty"`
-	EffectiveGroups *[]PslistGroup          `json:"effective_groups,omitempty"`
-
-	// ElfSymbolNames Snapshot-wide interned ELF symbol name table: every elfs[]. imports[].groups[].symbols[].name / exports[]...name is an index into this array, not a repeated string. Symbol names repeat enormously across shared libraries (every consumer of libc imports "malloc", "printf", ...), so this is the dominant size lever for a system with many mapped shared objects.
-	ElfSymbolNames  *[]string                `json:"elf_symbol_names,omitempty"`
-	Elfs            *map[string]interface{}  `json:"elfs,omitempty"`
-	Environments    *map[string]interface{}  `json:"environments,omitempty"`
-	Files           *map[string]interface{}  `json:"files,omitempty"`
-	Identities      *map[string]interface{}  `json:"identities,omitempty"`
-	MemoryMaps      *map[string]interface{}  `json:"memory_maps,omitempty"`
-	ObjectCount     int                      `json:"object_count"`
-	RequestedGroups *[]PslistGroup           `json:"requested_groups,omitempty"`
-	Resources       *map[string]interface{}  `json:"resources,omitempty"`
-	Securities      *map[string]interface{}  `json:"securities,omitempty"`
-	Status          ProcessSnapshotStatus    `json:"status"`
-	SupportedGroups *[]PslistGroup           `json:"supported_groups,omitempty"`
-	TaskCount       int                      `json:"task_count"`
-	Tasks           []map[string]interface{} `json:"tasks"`
+	Objects       map[string]interface{} `json:"objects"`
+	SchemaVersion int                    `json:"schema_version"`
+	Snapshot      map[string]interface{} `json:"snapshot"`
+	Tasks         map[string]interface{} `json:"tasks"`
 }
-
-// ProcessSnapshotStatus defines model for ProcessSnapshot.Status.
-type ProcessSnapshotStatus string
 
 // PslistGroup defines model for PslistGroup.
 type PslistGroup string
@@ -3598,46 +3563,44 @@ func (sh *strictHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
+	"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",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

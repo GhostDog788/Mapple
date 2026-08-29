@@ -199,8 +199,9 @@ paths:
             enum, bitmask, timestamp and permission field is already a
             real value (a string, a name array, an ISO-8601 timestamp, an
             ls -l-style permission string, ...), never a raw wire code.
-            tasks/status/counts are the stable envelope; identities/
-            securities/files/etc. carry the full nested per-object detail.
+            Shaped like pslist-v8.json: schema_version + snapshot
+            (envelope) + tasks (processes/kthreads/unmatched_threads) +
+            objects (the per-group id-keyed detail maps).
           content:
             application/json:
               schema:
@@ -353,64 +354,25 @@ components:
           elf,
         ]
     ProcessSnapshot:
+      description: >
+        Mirrors the shape of pslist-v8.json (the reference C client's
+        output): schema_version + snapshot (envelope) + tasks
+        (processes/kthreads/unmatched_threads) + objects (the 10
+        per-group id-keyed detail maps, plus elf's own symbol_names
+        catalog). Deliberately not specified field-by-field here --
+        server/pslistview.go is the single source of truth for the exact
+        shape of each section.
       type: object
-      required: [status, task_count, object_count, tasks]
+      required: [schema_version, snapshot, tasks, objects]
       properties:
-        status:
-          type: string
-          enum: [complete, partial]
-        requested_groups:
-          type: array
-          items:
-            $ref: "#/components/schemas/PslistGroup"
-        effective_groups:
-          type: array
-          items:
-            $ref: "#/components/schemas/PslistGroup"
-        supported_groups:
-          type: array
-          items:
-            $ref: "#/components/schemas/PslistGroup"
-        task_count:
+        schema_version:
           type: integer
-        object_count:
-          type: integer
+        snapshot:
+          type: object
+          additionalProperties: true
         tasks:
-          type: array
-          items:
-            type: object
-        identities:
           type: object
           additionalProperties: true
-        securities:
-          type: object
-          additionalProperties: true
-        contexts:
-          type: object
-          additionalProperties: true
-        resources:
-          type: object
-          additionalProperties: true
-        environments:
-          type: object
-          additionalProperties: true
-        memory_maps:
-          type: object
-          additionalProperties: true
-        elfs:
-          type: object
-          additionalProperties: true
-        elf_symbol_names:
-          description: >
-            Snapshot-wide interned ELF symbol name table: every elfs[].
-            imports[].groups[].symbols[].name / exports[]...name is an index
-            into this array, not a repeated string. Symbol names repeat
-            enormously across shared libraries (every consumer of libc
-            imports "malloc", "printf", ...), so this is the dominant size
-            lever for a system with many mapped shared objects.
-          type: array
-          items:
-            type: string
-        files:
+        objects:
           type: object
           additionalProperties: true

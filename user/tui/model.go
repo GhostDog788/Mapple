@@ -45,12 +45,11 @@ type taskItem struct {
 }
 
 func tasksFromSnapshot(snap api.ProcessSnapshot) []taskItem {
-	var identities map[string]interface{}
-	if snap.Identities != nil {
-		identities = *snap.Identities
-	}
-	items := make([]taskItem, 0, len(snap.Tasks))
-	for _, raw := range snap.Tasks {
+	identities, _ := snap.Objects["identity"].(map[string]interface{})
+	flat := flattenTasks(snap.Tasks)
+	items := make([]taskItem, 0, len(flat))
+	for _, ft := range flat {
+		raw := ft.fields
 		t := taskItem{
 			pid:   intField(raw, "pid"),
 			tgid:  intField(raw, "tgid"),
@@ -58,10 +57,13 @@ func tasksFromSnapshot(snap api.ProcessSnapshot) []taskItem {
 			comm:  stringField(raw, "comm"),
 			state: stringField(raw, "state"),
 		}
-		if id, ok := groupRef(raw, "identity_id"); ok {
-			if identity, ok := lookupObject(identities, id); ok {
+		groups, _ := raw["groups"].(map[string]interface{})
+		if id, ok := groupRef(groups, "identity"); ok {
+			if identity, ok := lookupByID(identities, id); ok {
 				t.hasIdentity = true
-				t.exePath = stringField(identity, "executable_path")
+				if exe, ok := identity["executable"].(map[string]interface{}); ok {
+					t.exePath = stringField(exe, "path")
+				}
 			}
 		}
 		items = append(items, t)
@@ -350,7 +352,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pslistHistory = m.pslistHistory[len(m.pslistHistory)-pslistHistoryLimit:]
 		}
 		m.printSuccess("pslist: %d tasks, %d objects, status=%s (history %d/%d)",
-			snap.TaskCount, snap.ObjectCount, snap.Status, len(m.pslistHistory), pslistHistoryLimit)
+			intField(snap.Snapshot, "task_count"), intField(snap.Snapshot, "object_count"), stringField(snap.Snapshot, "status"),
+			len(m.pslistHistory), pslistHistoryLimit)
 		m.pushFrame(pslistFrame(snap, m.pslistSortMode, m.pslistFilter))
 		return m, nil
 	}
