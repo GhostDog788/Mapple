@@ -197,36 +197,10 @@ func commandErr(op string, status int, busy, broken, notFound *api.Error) error 
 	}
 }
 
-// commandBits maps each wire protocol command to its bit position in
-// InfoResult.SupportedCommands (shared/commands.h's MAPPLE_COMMAND_* enum
-// values, one bit per command), in the same order the "command" REPL verb
-// accepts them (see keys.go's replGrammar).
-var commandBits = []struct {
-	bit  uint
-	name string
-}{
-	{1, "echo"},
-	{2, "pslist"},
-	{3, "info"},
-}
-
-// commandNames renders a supported_commands bitmask as the actual command
-// names it advertises rather than the raw bits -- any bit this build doesn't
-// recognize (a newer server) is kept, not silently dropped, as "bit<N>".
-func commandNames(mask int64) string {
-	var names []string
-	remaining := uint64(mask)
-	for _, c := range commandBits {
-		if remaining&(1<<c.bit) != 0 {
-			names = append(names, c.name)
-			remaining &^= 1 << c.bit
-		}
-	}
-	for bit := uint(0); bit < 64; bit++ {
-		if remaining&(1<<bit) != 0 {
-			names = append(names, fmt.Sprintf("bit%d", bit))
-		}
-	}
+// commandNames joins the server's already-decoded supported-command names
+// for display -- the server (see server/server.go's own commandNames)
+// parses the wire bitmask, the TUI only presents the result.
+func commandNames(names []string) string {
 	if len(names) == 0 {
 		return "(none)"
 	}
