@@ -313,6 +313,7 @@ struct mapple_pslist_resources {
 
 struct mapple_pslist_memory_map {
 	__u64 elf_object_id;
+	__u64 mapped_file_object_id;
 	__u32 mapping_index;
 	__u16 mapping_type;
 	__u16 name_kind;
@@ -412,6 +413,14 @@ struct mapple_pslist_elf {
 	struct mapple_pslist_elf_symbol *symbols;
 	size_t symbol_count;
 	size_t symbol_capacity;
+	__u64 *mapped_file_ids;
+	size_t mapped_file_count;
+	size_t mapped_file_capacity;
+};
+
+struct mapple_pslist_mapped_file {
+	__u64 object_id;
+	const struct mapple_pslist_memory_map *mapping;
 };
 
 struct mapple_pslist_snapshot {
@@ -445,6 +454,9 @@ struct mapple_pslist_snapshot {
 	struct mapple_pslist_elf *elfs;
 	size_t elf_count;
 	size_t elf_capacity;
+	struct mapple_pslist_mapped_file *mapped_files;
+	size_t mapped_file_count;
+	size_t mapped_file_capacity;
 	__u64 requested_groups;
 	__u64 effective_groups;
 	__u64 supported_groups;
