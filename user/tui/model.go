@@ -52,16 +52,16 @@ func tasksFromSnapshot(snap api.ProcessSnapshot) []taskItem {
 	items := make([]taskItem, 0, len(snap.Tasks))
 	for _, raw := range snap.Tasks {
 		t := taskItem{
-			pid:   intField(raw, "PID"),
-			tgid:  intField(raw, "TGID"),
-			ppid:  intField(raw, "PPID"),
-			comm:  stringField(raw, "Comm"),
-			state: string(rune(intField(raw, "State"))),
+			pid:   intField(raw, "pid"),
+			tgid:  intField(raw, "tgid"),
+			ppid:  intField(raw, "ppid"),
+			comm:  stringField(raw, "comm"),
+			state: stringField(raw, "state"),
 		}
-		if id, ok := groupRef(raw, "IdentityID"); ok {
+		if id, ok := groupRef(raw, "identity_id"); ok {
 			if identity, ok := lookupObject(identities, id); ok {
 				t.hasIdentity = true
-				t.exePath = stringField(identity, "ExecutablePath")
+				t.exePath = stringField(identity, "executable_path")
 			}
 		}
 		items = append(items, t)

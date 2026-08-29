@@ -2,13 +2,11 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 
 	"github.com/GhostDog788/Mapple/user/api"
 	"github.com/GhostDog788/Mapple/user/server/internal/moduleclient"
-	"github.com/GhostDog788/Mapple/user/server/internal/moduleclient/wire"
 )
 
 type Server struct {
@@ -299,77 +297,6 @@ func groupsToAPI(bits uint64) []api.PslistGroup {
 	return out
 }
 
-// apiProcessSnapshot fills the strongly-typed envelope directly and
-// round-trips the deeply-nested per-object detail through JSON into the
-// free-form map/slice fields the OpenAPI schema declares for them (see
-// api/openapi.yaml's ProcessSnapshot schema comment).
-func apiProcessSnapshot(snap *moduleclient.ProcessSnapshot) (api.ProcessSnapshot, error) {
-	var tasks []map[string]interface{}
-	if err := roundtripJSON(snap.Tasks, &tasks); err != nil {
-		return api.ProcessSnapshot{}, err
-	}
-	var identities map[string]interface{}
-	if err := roundtripJSON(snap.Identities, &identities); err != nil {
-		return api.ProcessSnapshot{}, err
-	}
-	var securities map[string]interface{}
-	if err := roundtripJSON(snap.Securities, &securities); err != nil {
-		return api.ProcessSnapshot{}, err
-	}
-	var contexts map[string]interface{}
-	if err := roundtripJSON(snap.Contexts, &contexts); err != nil {
-		return api.ProcessSnapshot{}, err
-	}
-	var resources map[string]interface{}
-	if err := roundtripJSON(snap.Resources, &resources); err != nil {
-		return api.ProcessSnapshot{}, err
-	}
-	var environments map[string]interface{}
-	if err := roundtripJSON(snap.Environments, &environments); err != nil {
-		return api.ProcessSnapshot{}, err
-	}
-	var memoryMaps map[string]interface{}
-	if err := roundtripJSON(snap.MemoryMaps, &memoryMaps); err != nil {
-		return api.ProcessSnapshot{}, err
-	}
-	var elfs map[string]interface{}
-	if err := roundtripJSON(snap.ELFs, &elfs); err != nil {
-		return api.ProcessSnapshot{}, err
-	}
-	var files map[string]interface{}
-	if err := roundtripJSON(snap.FilesObjects, &files); err != nil {
-		return api.ProcessSnapshot{}, err
-	}
-	status := api.Complete
-	if snap.Status == wire.SnapshotPartial {
-		status = api.Partial
-	}
-	requested := groupsToAPI(snap.RequestedGroups)
-	effective := groupsToAPI(snap.EffectiveGroups)
-	supported := groupsToAPI(snap.SupportedGroups)
-	return api.ProcessSnapshot{
-		Status:          status,
-		RequestedGroups: &requested,
-		EffectiveGroups: &effective,
-		SupportedGroups: &supported,
-		TaskCount:       int(snap.TaskCount),
-		ObjectCount:     int(snap.ObjectCount),
-		Tasks:           tasks,
-		Identities:      &identities,
-		Securities:      &securities,
-		Contexts:        &contexts,
-		Resources:       &resources,
-		Environments:    &environments,
-		MemoryMaps:      &memoryMaps,
-		Elfs:            &elfs,
-		Files:           &files,
-	}, nil
-}
-
-func roundtripJSON(in, out any) error {
-	data, err := json.Marshal(in)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(data, out)
-}
+// apiProcessSnapshot (pslistview.go) builds the response from the
+// already-decoded view functions -- this file only wires it into the
+// pslist command handler above.

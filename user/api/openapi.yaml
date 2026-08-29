@@ -184,14 +184,23 @@ paths:
                   type: array
                   items:
                     $ref: "#/components/schemas/PslistGroup"
+                format:
+                  description: >
+                    JSON whitespace only -- no effect on content. compact
+                    (the default) has no extra spaces/tabs/newlines; pretty
+                    adds them for human reading.
+                  type: string
+                  enum: [compact, pretty]
+                  default: compact
       responses:
         "200":
           description: >
-            Process/thread snapshot. tasks/status/counts are the stable
-            envelope; identities/securities/files carry the full nested
-            per-object detail and mirror the internal wire protocol
-            fairly directly rather than being independently specified
-            field-by-field here.
+            Process/thread snapshot, fully decoded server-side: every
+            enum, bitmask, timestamp and permission field is already a
+            real value (a string, a name array, an ISO-8601 timestamp, an
+            ls -l-style permission string, ...), never a raw wire code.
+            tasks/status/counts are the stable envelope; identities/
+            securities/files/etc. carry the full nested per-object detail.
           content:
             application/json:
               schema:

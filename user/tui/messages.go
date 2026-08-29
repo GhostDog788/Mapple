@@ -161,7 +161,10 @@ func (m Model) fetchPslist(id string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		resp, err := m.client.PostSessionsIdCommandsPslistWithResponse(ctx, id, api.PostSessionsIdCommandsPslistJSONRequestBody{})
+		compact := api.Compact
+		resp, err := m.client.PostSessionsIdCommandsPslistWithResponse(ctx, id, api.PostSessionsIdCommandsPslistJSONRequestBody{
+			Format: &compact,
+		})
 		if err != nil {
 			return pslistResultMsg{err: err}
 		}

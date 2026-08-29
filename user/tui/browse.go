@@ -1,14 +1,11 @@
 package tui
 
 import (
-	"encoding/base64"
 	"fmt"
 	"image/color"
-	"net"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"charm.land/lipgloss/v2"
 
@@ -136,6 +133,12 @@ func shortID(id string) string {
 }
 
 // --- pslist: task list -> task detail -> section (identity/security/files) ---
+//
+// Every value read here already arrived from the server fully decoded (see
+// server/pslistview.go): enum fields are strings, bitmasks are name arrays,
+// timestamps are ISO-8601, permissions are ls -l-style strings. This file
+// only arranges that data into frames/rows -- it never re-parses a raw wire
+// code, matching the project's server/frontend responsibility boundary.
 
 // pslistObjects bundles every per-object group map a task can link to, so
 // taskDetailFrame and its children take one value instead of a growing list
@@ -175,7 +178,7 @@ func pslistFrame(snap api.ProcessSnapshot, sortMode int, filterText string) brow
 		needle := strings.ToLower(filterText)
 		filtered := make([]map[string]interface{}, 0, len(tasks))
 		for _, t := range tasks {
-			if strings.Contains(strings.ToLower(stringField(t, "Comm")), needle) {
+			if strings.Contains(strings.ToLower(stringField(t, "comm")), needle) {
 				filtered = append(filtered, t)
 			}
 		}
@@ -185,20 +188,20 @@ func pslistFrame(snap api.ProcessSnapshot, sortMode int, filterText string) brow
 	sort.SliceStable(tasks, func(i, j int) bool {
 		switch sortMode {
 		case sortByComm:
-			return stringField(tasks[i], "Comm") < stringField(tasks[j], "Comm")
+			return stringField(tasks[i], "comm") < stringField(tasks[j], "comm")
 		case sortByState:
-			return intField(tasks[i], "State") < intField(tasks[j], "State")
+			return stringField(tasks[i], "state") < stringField(tasks[j], "state")
 		default:
-			return intField(tasks[i], "PID") < intField(tasks[j], "PID")
+			return intField(tasks[i], "pid") < intField(tasks[j], "pid")
 		}
 	})
 
 	rows := make([]browseRow, len(tasks))
 	for i, raw := range tasks {
 		t := raw
-		state := string(rune(intField(t, "State")))
-		label := fmt.Sprintf("%-7d %-20s %-4s %s",
-			intField(t, "PID"), stringField(t, "Comm"), state, taskTypeName(intField(t, "Type")))
+		state := stringField(t, "state")
+		label := fmt.Sprintf("%-7d %-20s %-13s %s",
+			intField(t, "pid"), stringField(t, "comm"), state, stringField(t, "type"))
 		rows[i] = browseRow{
 			label: label,
 			color: taskStateColor(state),
@@ -231,61 +234,50 @@ func filterSuffix(filterText string) string {
 	return fmt.Sprintf(" filter=%q", filterText)
 }
 
-func taskTypeName(t int) string {
-	switch t {
-	case 2:
-		return "process"
-	case 3:
-		return "kthread"
-	default:
-		return "thread"
-	}
-}
-
 func taskDetailFrame(task map[string]interface{}, objs pslistObjects) browseFrame {
-	pid := intField(task, "PID")
-	comm := stringField(task, "Comm")
+	pid := intField(task, "pid")
+	comm := stringField(task, "comm")
 
 	rows := []browseRow{
 		{label: fmt.Sprintf("pid: %d", pid)},
-		{label: fmt.Sprintf("tgid: %d", intField(task, "TGID"))},
-		{label: fmt.Sprintf("ppid: %d", intField(task, "PPID"))},
+		{label: fmt.Sprintf("tgid: %d", intField(task, "tgid"))},
+		{label: fmt.Sprintf("ppid: %d", intField(task, "ppid"))},
 		{label: fmt.Sprintf("comm: %s", comm)},
-		{label: fmt.Sprintf("state: %s", string(rune(intField(task, "State"))))},
-		{label: fmt.Sprintf("type: %s", taskTypeName(intField(task, "Type")))},
+		{label: fmt.Sprintf("state: %s", stringField(task, "state"))},
+		{label: fmt.Sprintf("type: %s", stringField(task, "type"))},
 	}
 
-	if id, ok := groupRef(task, "IdentityID"); ok {
+	if id, ok := groupRef(task, "identity_id"); ok {
 		if obj, ok := lookupObject(objs.identities, id); ok {
 			rows = append(rows, browseRow{label: "Identity", color: sectionRowColor, push: func() browseFrame { return fieldListFrame("identity", obj) }})
 		}
 	}
-	if id, ok := groupRef(task, "SecurityID"); ok {
+	if id, ok := groupRef(task, "security_id"); ok {
 		if obj, ok := lookupObject(objs.securities, id); ok {
 			rows = append(rows, browseRow{label: "Security", color: sectionRowColor, push: func() browseFrame { return fieldListFrame("security", obj) }})
 		}
 	}
-	if id, ok := groupRef(task, "ContextID"); ok {
+	if id, ok := groupRef(task, "context_id"); ok {
 		if obj, ok := lookupObject(objs.contexts, id); ok {
 			rows = append(rows, browseRow{label: "Context", color: sectionRowColor, push: func() browseFrame { return fieldListFrame("context", obj) }})
 		}
 	}
-	if id, ok := groupRef(task, "ResourcesID"); ok {
+	if id, ok := groupRef(task, "resources_id"); ok {
 		if obj, ok := lookupObject(objs.resources, id); ok {
 			rows = append(rows, browseRow{label: "Resources", color: sectionRowColor, push: func() browseFrame { return fieldListFrame("resources", obj) }})
 		}
 	}
-	if id, ok := groupRef(task, "EnvironmentID"); ok {
+	if id, ok := groupRef(task, "environment_id"); ok {
 		if obj, ok := lookupObject(objs.environments, id); ok {
 			rows = append(rows, browseRow{label: "Environment", color: sectionRowColor, push: func() browseFrame { return environmentFrame(obj) }})
 		}
 	}
-	if id, ok := groupRef(task, "MemoryMapsID"); ok {
+	if id, ok := groupRef(task, "memory_maps_id"); ok {
 		if obj, ok := lookupObject(objs.memoryMaps, id); ok {
 			rows = append(rows, browseRow{label: "Memory Maps", color: sectionRowColor, push: func() browseFrame { return memoryMapsFrame(obj, objs.elfs) }})
 		}
 	}
-	if id, ok := groupRef(task, "FilesID"); ok {
+	if id, ok := groupRef(task, "files_id"); ok {
 		if obj, ok := lookupObject(objs.files, id); ok {
 			rows = append(rows, browseRow{label: "Files", color: sectionRowColor, push: func() browseFrame { return fdListFrame(obj) }})
 		}
@@ -312,7 +304,7 @@ func lookupObject(objects map[string]interface{}, id float64) (map[string]interf
 }
 
 func fdListFrame(filesObj map[string]interface{}) browseFrame {
-	fdsRaw, _ := filesObj["FDs"].([]interface{})
+	fdsRaw, _ := filesObj["fds"].([]interface{})
 	rows := make([]browseRow, 0, len(fdsRaw))
 	for _, raw := range fdsRaw {
 		entry, ok := raw.(map[string]interface{})
@@ -320,51 +312,40 @@ func fdListFrame(filesObj map[string]interface{}) browseFrame {
 			continue
 		}
 		e := entry
-		label := fmt.Sprintf("fd %-4d %-10s %s", intField(e, "FD"), fdKindName(intField(e, "Kind")), stringField(e, "Path"))
+		label := fmt.Sprintf("fd %-4d %-10s %s", intField(e, "fd"), stringField(e, "kind"), stringField(e, "path"))
 		rows = append(rows, browseRow{
 			label: label,
 			color: sectionRowColor,
-			push:  func() browseFrame { return fieldListFrame(fmt.Sprintf("fd %d", intField(e, "FD")), e) },
+			push:  func() browseFrame { return fieldListFrame(fmt.Sprintf("fd %d", intField(e, "fd")), e) },
 		})
 	}
 	return browseFrame{title: fmt.Sprintf("files: %d fds -- enter for detail, esc/q back", len(rows)), rows: rows}
 }
 
-func uint64Field(m map[string]interface{}, key string) uint64 {
-	if v, ok := m[key].(float64); ok {
-		return uint64(v)
-	}
-	return 0
-}
-
 // environmentFrame shows a task's captured environment as individual
-// KEY=VALUE leaf rows, decoded from the raw NUL-delimited bytes the wire
-// layer hands back as a base64 JSON string.
+// KEY=VALUE leaf rows -- the server hands these back as a real JSON object
+// (see viewEnvironment), no client-side splitting needed.
 func environmentFrame(obj map[string]interface{}) browseFrame {
 	rows := []browseRow{
-		{label: fmt.Sprintf("AvailabilityStatus: %s", displayFieldValue("AvailabilityStatus", obj["AvailabilityStatus"], obj))},
-		{label: fmt.Sprintf("EntryCount: %s", formatFieldValue(obj["EntryCount"]))},
+		{label: fmt.Sprintf("availability_status: %s", stringField(obj, "availability_status"))},
 	}
-	entryRows := 0
-	if raw, ok := obj["Raw"].(string); ok && raw != "" {
-		if decoded, err := base64.StdEncoding.DecodeString(raw); err == nil {
-			for _, entry := range strings.Split(string(decoded), "\x00") {
-				if entry == "" {
-					continue
-				}
-				rows = append(rows, browseRow{label: entry})
-				entryRows++
-			}
-		}
+	env, _ := obj["environment"].(map[string]interface{})
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
 	}
-	return browseFrame{title: fmt.Sprintf("environment: %d entries -- esc/q back", entryRows), rows: rows}
+	sort.Strings(keys)
+	for _, k := range keys {
+		rows = append(rows, browseRow{label: fmt.Sprintf("%s=%s", k, formatFieldValue(env[k]))})
+	}
+	return browseFrame{title: fmt.Sprintf("environment: %d entries -- esc/q back", len(keys)), rows: rows}
 }
 
 // memoryMapsFrame lists a task's memory mappings; enter drills into one
 // mapping's fields, which itself gains an "ELF" row when the mapping is
 // backed by a file mapple has captured ELF metadata for.
 func memoryMapsFrame(obj map[string]interface{}, elfs map[string]interface{}) browseFrame {
-	mappingsRaw, _ := obj["Mappings"].([]interface{})
+	mappingsRaw, _ := obj["mappings"].([]interface{})
 	rows := make([]browseRow, 0, len(mappingsRaw))
 	for _, raw := range mappingsRaw {
 		m, ok := raw.(map[string]interface{})
@@ -372,17 +353,17 @@ func memoryMapsFrame(obj map[string]interface{}, elfs map[string]interface{}) br
 			continue
 		}
 		mapping := m
-		start := uint64Field(mapping, "StartAddress")
-		end := uint64Field(mapping, "EndAddress")
-		perms := mappingPermissions(uint64Field(mapping, "VMFlags"))
-		name := stringField(mapping, "Path")
+		start := stringField(mapping, "start_address")
+		end := stringField(mapping, "end_address")
+		perms := stringField(mapping, "permissions")
+		name := stringField(mapping, "path")
 		if name == "" {
-			name = stringField(mapping, "Name")
+			name = stringField(mapping, "name")
 		}
 		if name == "" {
-			name = "[" + mappingNameKindName(intField(mapping, "NameKind")) + "]"
+			name = "[" + stringField(mapping, "name_kind") + "]"
 		}
-		label := fmt.Sprintf("%012x-%012x %s %s", start, end, perms, name)
+		label := fmt.Sprintf("%s-%s %s %s", start, end, perms, name)
 		rows = append(rows, browseRow{
 			label: label,
 			color: sectionRowColor,
@@ -393,49 +374,32 @@ func memoryMapsFrame(obj map[string]interface{}, elfs map[string]interface{}) br
 }
 
 func memoryMapDetailFrame(mapping, elfs map[string]interface{}) browseFrame {
-	rows := []browseRow{
-		{label: fmt.Sprintf("Permissions: %s", mappingPermissions(uint64Field(mapping, "VMFlags")))},
-	}
-	rows = append(rows, flattenedRows(mapping)...)
-	if id, ok := groupRef(mapping, "ELFObjectID"); ok && id != 0 {
+	rows := flattenedRows(mapping)
+	if id, ok := groupRef(mapping, "elf_object_id"); ok {
 		if obj, ok := lookupObject(elfs, id); ok {
 			rows = append(rows, browseRow{label: "ELF", color: sectionRowColor, push: func() browseFrame { return elfFrame(obj) }})
 		}
 	}
-	start := uint64Field(mapping, "StartAddress")
-	end := uint64Field(mapping, "EndAddress")
-	return browseFrame{title: fmt.Sprintf("mapping %012x-%012x -- esc/q back", start, end), rows: rows}
-}
-
-// mappingPermissions renders a mapping's VM_READ/WRITE/EXEC/SHARED bits as
-// the familiar 4-character /proc/pid/maps-style summary (e.g. "r-xp"): 'r',
-// 'w', 'x' or '-' for each permission, then 's' (shared) or 'p' (private).
-func mappingPermissions(vmFlags uint64) string {
-	perm := func(bit uint64, set, unset byte) byte {
-		if vmFlags&bit != 0 {
-			return set
-		}
-		return unset
-	}
-	return string([]byte{
-		perm(1<<0, 'r', '-'),
-		perm(1<<1, 'w', '-'),
-		perm(1<<2, 'x', '-'),
-		perm(1<<3, 's', 'p'),
-	})
+	start := stringField(mapping, "start_address")
+	end := stringField(mapping, "end_address")
+	return browseFrame{title: fmt.Sprintf("mapping %s-%s -- esc/q back", start, end), rows: rows}
 }
 
 // elfFrame shows one ELF file's header metadata plus its string and symbol
 // tables as two sub-lists -- kept as separate pushes rather than flattened
 // inline since a heavily-linked binary can have thousands of symbols.
 func elfFrame(obj map[string]interface{}) browseFrame {
-	rows := []browseRow{
-		{label: fmt.Sprintf("Status: %s", displayFieldValue("Status", obj["Status"], obj))},
+	stringsRaw, _ := obj["strings"].([]interface{})
+	symbolsRaw, _ := obj["symbols"].([]interface{})
+
+	fields := make(map[string]interface{}, len(obj))
+	for k, v := range obj {
+		if k == "strings" || k == "symbols" {
+			continue
+		}
+		fields[k] = v
 	}
-	metadata, _ := obj["Metadata"].(map[string]interface{})
-	rows = append(rows, flattenedRows(metadata)...)
-	stringsRaw, _ := obj["Strings"].([]interface{})
-	symbolsRaw, _ := obj["Symbols"].([]interface{})
+	rows := flattenedRows(fields)
 	rows = append(rows,
 		browseRow{label: fmt.Sprintf("Strings (%d)", len(stringsRaw)), color: sectionRowColor, push: func() browseFrame { return elfStringListFrame(stringsRaw) }},
 		browseRow{label: fmt.Sprintf("Symbols (%d)", len(symbolsRaw)), color: sectionRowColor, push: func() browseFrame { return elfSymbolListFrame(symbolsRaw) }},
@@ -451,14 +415,13 @@ func elfStringListFrame(items []interface{}) browseFrame {
 			continue
 		}
 		entry := s
-		kind := elfStringKindName(intField(entry, "StringKind"))
-		bytesRaw, _ := entry["Bytes"].(string)
-		label := fmt.Sprintf("%-12s %s", kind, decodeELFStringBytes("Bytes", bytesRaw, entry))
+		kind := stringField(entry, "string_kind")
+		label := fmt.Sprintf("%-12s %s", kind, stringField(entry, "value"))
 		rows = append(rows, browseRow{
 			label: label,
 			color: sectionRowColor,
 			push: func() browseFrame {
-				return fieldListFrame(fmt.Sprintf("elf string %d", intField(entry, "StringIndex")), entry)
+				return fieldListFrame(fmt.Sprintf("elf string %d", intField(entry, "string_index")), entry)
 			},
 		})
 	}
@@ -473,60 +436,38 @@ func elfSymbolListFrame(items []interface{}) browseFrame {
 			continue
 		}
 		entry := s
-		kind := elfSymbolKindName(intField(entry, "SymbolKind"))
-		label := fmt.Sprintf("%-8s %s", kind, stringField(entry, "Name"))
+		kind := stringField(entry, "symbol_kind")
+		label := fmt.Sprintf("%-8s %s", kind, stringField(entry, "name"))
 		rows = append(rows, browseRow{
 			label: label,
 			color: sectionRowColor,
 			push: func() browseFrame {
-				return fieldListFrame(fmt.Sprintf("elf symbol %d", intField(entry, "SymbolIndex")), entry)
+				return fieldListFrame(fmt.Sprintf("elf symbol %d", intField(entry, "symbol_index")), entry)
 			},
 		})
 	}
 	return browseFrame{title: fmt.Sprintf("elf symbols: %d -- enter for detail, esc/q back", len(rows)), rows: rows}
 }
 
-func fdKindName(k int) string {
-	switch k {
-	case 1:
-		return "regular"
-	case 2:
-		return "directory"
-	case 3:
-		return "character"
-	case 4:
-		return "block"
-	case 5:
-		return "pipe"
-	case 6:
-		return "socket"
-	case 7:
-		return "symlink"
-	case 8:
-		return "anon_inode"
-	default:
-		return "other"
-	}
-}
-
 // fieldListFrame is a leaf: flat key/value rows, nested objects flattened
-// with dotted keys (e.g. an fd's "Details.Stat.Mode").
+// with dotted keys (e.g. an fd's "details.stat.mode").
 func fieldListFrame(title string, fields map[string]interface{}) browseFrame {
 	rows := flattenedRows(fields)
 	return browseFrame{title: title + " -- esc/q back", rows: rows}
 }
 
 // flattenedRows renders every field as a leaf row, flattening nested
-// objects with dotted keys. ObjectID/ELFObjectID are dropped: they're wire
-// protocol handles, not process data, and where ELFObjectID matters
+// objects with dotted keys. elf_object_id is dropped: where it matters
 // (memory_map) the caller adds its own dedicated "ELF" row instead of
-// showing the raw id.
+// showing the raw id. Every value here already arrived pre-decoded from the
+// server (see server/pslistview.go) -- formatFieldValue only renders it,
+// it never interprets a raw code.
 func flattenedRows(fields map[string]interface{}) []browseRow {
 	flat := map[string]interface{}{}
 	flattenFields("", fields, flat)
 	keys := make([]string, 0, len(flat))
 	for k := range flat {
-		if k == "ObjectID" || strings.HasSuffix(k, ".ObjectID") || k == "ELFObjectID" {
+		if k == "elf_object_id" || strings.HasSuffix(k, ".elf_object_id") {
 			continue
 		}
 		keys = append(keys, k)
@@ -534,936 +475,24 @@ func flattenedRows(fields map[string]interface{}) []browseRow {
 	sort.Strings(keys)
 	rows := make([]browseRow, len(keys))
 	for i, k := range keys {
-		displayed := displayFieldValue(k, flat[k], flat)
+		displayed := formatFieldValue(flat[k])
 		rows[i] = browseRow{label: fmt.Sprintf("%s: %s", k, displayed), color: fieldValueColor(displayed)}
 	}
 	return rows
 }
 
-// displayFieldValue is formatFieldValue plus overrides for the fields the
-// kernel side reports as raw wire codes or raw bytes: enum-typed numbers
-// (fd kind, socket family/type/state, object/data status, ...) get their
-// real name, a socket address gets decoded into an IP or path instead of a
-// base64 blob, and an LSM context gets decoded back into its original text.
-// siblings is the full flattened field set the row's key came from, needed
-// to decode a socket Address using its sibling Type/Flags fields.
-func displayFieldValue(key string, v interface{}, siblings map[string]interface{}) string {
-	if n, ok := v.(float64); ok {
-		if name, ok := namedEnumField(key, n, siblings); ok {
-			return name
-		}
-		if isHexAddressField(key) {
-			return fmt.Sprintf("%#x", uint64(n))
-		}
-		if isUnixModeField(key) {
-			return unixModeString(uint32(n))
-		}
-		if isEpochNanoField(key) {
-			return formatEpochNanos(n)
-		}
-		if isEpochSecondsField(key) {
-			return formatEpochSeconds(key, n, siblings)
-		}
-	}
-	if s, ok := v.(string); ok {
-		if strings.HasSuffix(key, "Address") {
-			return decodeSocketAddress(key, s, siblings)
-		}
-		if strings.HasSuffix(key, "Bytes") {
-			return decodeELFStringBytes(key, s, siblings)
-		}
-		if decoded, ok := decodeRawBytesField(key, s); ok {
-			return decoded
-		}
-	}
-	return formatFieldValue(v)
-}
-
-// lastSegment returns the part of a flattened dotted key after its final
-// ".", which is what names the field regardless of which object it's
-// nested under (e.g. "Network.Local.Type" and "Network.Peer.Type" both end
-// in "Type").
-func lastSegment(key string) string {
-	if i := strings.LastIndex(key, "."); i >= 0 {
-		return key[i+1:]
-	}
-	return key
-}
-
-// isHexAddressField picks out the memory/file-offset fields that read like
-// addresses (a memory_map's StartAddress/EndAddress, an ELF header's
-// EntryAddress/*HeaderOffset), which are conventionally shown in hex
-// (matching /proc/pid/maps) rather than as a huge, unreadable decimal.
-func isHexAddressField(key string) bool {
-	switch lastSegment(key) {
-	case "StartAddress", "EndAddress", "EntryAddress", "ProgramHeaderOffset", "SectionHeaderOffset", "PageOffset":
-		return true
-	default:
-		return false
-	}
-}
-
-// unixModeString renders a POSIX stat mode as its "ls -l" form: a leading
-// file-type character (regular files get '-') followed by the familiar
-// rwxrwxrwx permission triplet, with the raw octal mode alongside since
-// that's still the form most people search for.
-func unixModeString(mode uint32) string {
-	const (
-		sIFMT   = 0o170000
-		sIFSOCK = 0o140000
-		sIFLNK  = 0o120000
-		sIFREG  = 0o100000
-		sIFBLK  = 0o060000
-		sIFDIR  = 0o040000
-		sIFCHR  = 0o020000
-		sIFIFO  = 0o010000
-	)
-	typeChar := byte('?')
-	switch mode & sIFMT {
-	case sIFSOCK:
-		typeChar = 's'
-	case sIFLNK:
-		typeChar = 'l'
-	case sIFREG:
-		typeChar = '-'
-	case sIFBLK:
-		typeChar = 'b'
-	case sIFDIR:
-		typeChar = 'd'
-	case sIFCHR:
-		typeChar = 'c'
-	case sIFIFO:
-		typeChar = 'p'
-	}
-	perm := func(bit uint32, c byte) byte {
-		if mode&bit != 0 {
-			return c
-		}
-		return '-'
-	}
-	bits := []byte{
-		typeChar,
-		perm(0o400, 'r'), perm(0o200, 'w'), perm(0o100, 'x'),
-		perm(0o040, 'r'), perm(0o020, 'w'), perm(0o010, 'x'),
-		perm(0o004, 'r'), perm(0o002, 'w'), perm(0o001, 'x'),
-	}
-	if mode&0o4000 != 0 { // setuid
-		if bits[3] == 'x' {
-			bits[3] = 's'
-		} else {
-			bits[3] = 'S'
-		}
-	}
-	if mode&0o2000 != 0 { // setgid
-		if bits[6] == 'x' {
-			bits[6] = 's'
-		} else {
-			bits[6] = 'S'
-		}
-	}
-	if mode&0o1000 != 0 { // sticky
-		if bits[9] == 'x' {
-			bits[9] = 't'
-		} else {
-			bits[9] = 'T'
-		}
-	}
-	return fmt.Sprintf("%s (%#o)", string(bits), mode)
-}
-
-// isUnixModeField picks out the fields that carry a real POSIX stat mode
-// (type bits + rwxrwxrwx), verified against the actual kernel encoders
-// (memory_maps.c/elf.c/pslist.c all fill these from vfs_getattr's
-// stat.mode). FDDetails' own "FileMode" is deliberately excluded: despite
-// the name, that one is the kernel's internal file->f_mode flags (see
-// fd.c), a completely different bitmask that would render nonsense if run
-// through this.
-func isUnixModeField(key string) bool {
-	switch key {
-	case "FileMode", "ExecutableMode":
-		return true
-	}
-	return strings.HasSuffix(key, "Stat.Mode")
-}
-
-// isEpochNanoField and isEpochSecondsField pick out the fields that are a
-// real wall-clock timestamp (verified against the kernel encoders: these
-// are always a captured struct timespec/kstat time, never a duration) --
-// Resources' CPUUserTimeNS/CPUSystemTimeNS look similar but are cumulative
-// CPU time *durations* since process start, not a point in time, so they're
-// deliberately not matched here and stay a plain number.
-func isEpochNanoField(key string) bool {
-	switch lastSegment(key) {
-	case "ExecutableMtimeNS", "ExecutableCtimeNS", "FileMtimeNS", "FileCtimeNS":
-		return true
-	default:
-		return false
-	}
-}
-
-func isEpochSecondsField(key string) bool {
-	switch lastSegment(key) {
-	case "AccessTimeSec", "BirthTimeSec", "ChangeTimeSec", "ModificationTimeSec":
-		return true
-	default:
-		return false
-	}
-}
-
-const timestampLayout = "2006-01-02 15:04:05 MST"
-
-func formatEpochNanos(ns float64) string {
-	return time.Unix(0, int64(ns)).UTC().Format(timestampLayout)
-}
-
-// formatEpochSeconds combines a *Sec field with its sibling *Nsec field
-// (the wire protocol always encodes kernel timestamps as a seconds+
-// nanoseconds pair, per struct mapple_pslist_timespec) into one timestamp.
-func formatEpochSeconds(key string, seconds float64, siblings map[string]interface{}) string {
-	nsecKey := strings.TrimSuffix(key, "Sec") + "Nsec"
-	nsec, _ := siblings[nsecKey].(float64)
-	return time.Unix(int64(seconds), int64(nsec)).UTC().Format(timestampLayout)
-}
-
-// decodeELFStringBytes decodes an elf_string record's base64'd Bytes using
-// its sibling StringKind: a build id is binary (hex), everything else
-// (interpreter path, needed/soname, rpath/runpath) is text.
-func decodeELFStringBytes(key, encoded string, siblings map[string]interface{}) string {
-	raw, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		return encoded
-	}
-	prefix := strings.TrimSuffix(key, "Bytes")
-	kind, _ := siblings[prefix+"StringKind"].(float64)
-	if int(kind) == 6 { // build_id
-		return fmt.Sprintf("% x", raw)
-	}
-	return string(raw)
-}
-
-// namedEnumField translates the small closed-set numeric fields the wire
-// protocol (server/internal/moduleclient/wire/pslist.go) and the Linux
-// kernel (address family/socket type/protocol/socket state constants)
-// report as bare integers. Dispatch is on the key's last dotted segment,
-// since that's what names the field regardless of which object it's nested
-// under (e.g. "Network.Local.Type" and "Network.Peer.Type" both end in
-// "Type"); "Status" is the one name reused for two different enums (an
-// object's own completeness vs. a socket endpoint's own status), so it's
-// disambiguated by checking whether it hangs off Local/Peer. siblings lets
-// Protocol/ProtocolState check the socket's own Family first: IPPROTO_*/
-// TCP_* names are only meaningful for an actual INET/INET6 socket -- e.g. a
-// netlink socket's numerically-identical Protocol/ProtocolState values mean
-// something else entirely (a netlink family number, an unused state), and
-// labeling them "IPPROTO_15"/"TCP_CLOSE" would be actively wrong, not just
-// unhelpful, so those fields fall back to the raw number for every other
-// family instead of guessing.
-func namedEnumField(key string, v float64, siblings map[string]interface{}) (string, bool) {
-	code := int(v)
-	last := lastSegment(key)
-	switch last {
-	case "Kind":
-		return namedCode(fdKindName(code), v), true
-	case "Status":
-		if strings.HasSuffix(key, "Local.Status") || strings.HasSuffix(key, "Peer.Status") {
-			return namedCode(socketEndpointStatusName(code), v), true
-		}
-		return namedCode(objectStatusName(code), v), true
-	case "CommandLineStatus":
-		return namedCode(commandLineStatusName(code), v), true
-	case "ExecutableStatus":
-		return namedCode(executableStatusName(code), v), true
-	case "DumpableStatus", "LSMStatus", "LSMProviderStatus", "PathStatus", "IdentityStatus", "StatStatus", "FDInfoStatus",
-		"CWDStatus", "RootStatus", "CgroupStatus", "CgroupHostPathStatus", "CgroupNamespacePathStatus",
-		"MemoryStatus", "IOStatus", "NetworkStatus", "NameStatus", "FileMetadataStatus":
-		return namedCode(dataStatusName(code), v), true
-	case "AvailabilityStatus":
-		return namedCode(environmentStatusName(code), v), true
-	case "MemoryReason":
-		return namedCode(memoryReasonName(code), v), true
-	case "MappingType":
-		return namedCode(mappingTypeName(code), v), true
-	case "NameKind":
-		return namedCode(mappingNameKindName(code), v), true
-	case "StringKind":
-		return namedCode(elfStringKindName(code), v), true
-	case "SymbolKind":
-		return namedCode(elfSymbolKindName(code), v), true
-	case "ELFClass":
-		return namedCode(elfClassName(code), v), true
-	case "DataEncoding":
-		return namedCode(elfDataEncodingName(code), v), true
-	case "OSABI":
-		return namedCode(elfOSABIName(code), v), true
-	case "ObjectType":
-		return namedCode(elfObjectTypeName(code), v), true
-	case "Machine":
-		return namedCode(elfMachineName(code), v), true
-	case "Type":
-		return namedCode(socketEndpointTypeName(code), v), true
-	case "Family":
-		return namedCode(addressFamilyName(code), v), true
-	case "SocketType":
-		return namedCode(socketTypeName(code), v), true
-	case "Protocol":
-		if isInetFamily(key, siblings) {
-			return namedCode(protocolName(code), v), true
-		}
-		return "", false
-	case "SocketState":
-		return namedCode(socketStateName(code), v), true
-	case "ProtocolState":
-		if !isInetFamily(key, siblings) {
-			return "", false
-		}
-		return namedCode(protocolStateName(code), v), true
-	}
-	if names, ok := flagTableFor(key); ok {
-		return namedFlags(uint64(v), names), true
-	}
-	if last == "OpenFlags" {
-		return openFlagsName(uint64(v)), true
-	}
-	return "", false
-}
-
-func environmentStatusName(c int) string {
-	switch c {
-	case 1:
-		return "available"
-	case 2:
-		return "empty"
-	case 3:
-		return "unavailable"
-	case 4:
-		return "too_large"
-	case 5:
-		return "raced"
-	default:
-		return "unknown"
-	}
-}
-
-func memoryReasonName(c int) string {
-	switch c {
-	case 0:
-		return "none"
-	case 1:
-		return "no_mm"
-	default:
-		return "unknown"
-	}
-}
-
-func mappingTypeName(c int) string {
-	switch c {
-	case 1:
-		return "anonymous"
-	case 2:
-		return "file"
-	case 3:
-		return "special"
-	default:
-		return "unknown"
-	}
-}
-
-func mappingNameKindName(c int) string {
-	switch c {
-	case 0:
-		return "none"
-	case 1:
-		return "heap"
-	case 2:
-		return "stack"
-	case 3:
-		return "anonymous"
-	case 4:
-		return "shared_anonymous"
-	case 5:
-		return "special"
-	default:
-		return "unknown"
-	}
-}
-
-func elfStringKindName(c int) string {
-	switch c {
-	case 1:
-		return "interpreter"
-	case 2:
-		return "needed"
-	case 3:
-		return "soname"
-	case 4:
-		return "rpath"
-	case 5:
-		return "runpath"
-	case 6:
-		return "build_id"
-	default:
-		return "unknown"
-	}
-}
-
-func elfSymbolKindName(c int) string {
-	switch c {
-	case 1:
-		return "import"
-	case 2:
-		return "export"
-	default:
-		return "unknown"
-	}
-}
-
-// elfClassName, elfDataEncodingName, elfOSABIName, elfObjectTypeName and
-// elfMachineName are standard ELF header constants (elf.h), not part of our
-// wire protocol -- the kernel reports the raw e_ident/e_type/e_machine
-// values directly.
-func elfClassName(c int) string {
-	switch c {
-	case 1:
-		return "ELFCLASS32"
-	case 2:
-		return "ELFCLASS64"
-	default:
-		return fmt.Sprintf("ELFCLASS_%d", c)
-	}
-}
-
-func elfDataEncodingName(c int) string {
-	switch c {
-	case 1:
-		return "ELFDATA2LSB"
-	case 2:
-		return "ELFDATA2MSB"
-	default:
-		return fmt.Sprintf("ELFDATA_%d", c)
-	}
-}
-
-func elfOSABIName(c int) string {
-	switch c {
-	case 0:
-		return "ELFOSABI_NONE"
-	case 1:
-		return "ELFOSABI_HPUX"
-	case 2:
-		return "ELFOSABI_NETBSD"
-	case 3:
-		return "ELFOSABI_LINUX"
-	case 6:
-		return "ELFOSABI_SOLARIS"
-	case 9:
-		return "ELFOSABI_FREEBSD"
-	case 97:
-		return "ELFOSABI_ARM"
-	case 255:
-		return "ELFOSABI_STANDALONE"
-	default:
-		return fmt.Sprintf("ELFOSABI_%d", c)
-	}
-}
-
-func elfObjectTypeName(c int) string {
-	switch c {
-	case 0:
-		return "ET_NONE"
-	case 1:
-		return "ET_REL"
-	case 2:
-		return "ET_EXEC"
-	case 3:
-		return "ET_DYN"
-	case 4:
-		return "ET_CORE"
-	default:
-		return fmt.Sprintf("ET_%d", c)
-	}
-}
-
-func elfMachineName(c int) string {
-	switch c {
-	case 3:
-		return "EM_386"
-	case 8:
-		return "EM_MIPS"
-	case 40:
-		return "EM_ARM"
-	case 62:
-		return "EM_X86_64"
-	case 183:
-		return "EM_AARCH64"
-	case 243:
-		return "EM_RISCV"
-	default:
-		return fmt.Sprintf("EM_%d", c)
-	}
-}
-
-// flagBit is one named bit in a bitmask field.
-type flagBit struct {
-	mask uint64
-	name string
-}
-
-// namedFlags renders a bitmask as its set flag names joined with "|",
-// followed by the raw hex value in parens, e.g. "READ|WRITE (0x3)" -- never
-// just the flags, so a value with bits this table doesn't know about still
-// shows its full number instead of silently dropping them. A zero value
-// renders as "none (0x0)".
-func namedFlags(value uint64, bits []flagBit) string {
-	var names []string
-	remaining := value
-	for _, b := range bits {
-		if value&b.mask == b.mask && b.mask != 0 {
-			names = append(names, b.name)
-			remaining &^= b.mask
-		}
-	}
-	label := "none"
-	if len(names) > 0 {
-		label = strings.Join(names, "|")
-	}
-	if remaining != 0 {
-		if len(names) > 0 {
-			label += fmt.Sprintf("|unknown(%#x)", remaining)
-		} else {
-			label = fmt.Sprintf("unknown(%#x)", remaining)
-		}
-	}
-	return fmt.Sprintf("%s (%#x)", label, value)
-}
-
-// flagTableFor maps a flattened field's last dotted segment to its bitmask
-// table, mirroring the MAPPLE_PSLIST_*_FLAG* / VM_* definitions in
-// shared/commands.h. OpenFlags is handled separately (openFlagsName) since
-// its access-mode bits (O_RDONLY/O_WRONLY/O_RDWR) aren't independent flags.
-func flagTableFor(key string) ([]flagBit, bool) {
-	last := lastSegment(key)
-	switch last {
-	case "ExecutableFlags":
-		return executableFlagBits, true
-	case "DescriptorFlags":
-		return fdDescriptorFlagBits, true
-	case "NamespaceAvailableMask", "NamespaceUnsupportedMask":
-		return namespaceFlagBits, true
-	case "VMFlags":
-		return vmFlagBits, true
-	case "FileFlags":
-		return memoryMapFileFlagBits, true
-	}
-	return nil, false
-}
-
-var executableFlagBits = []flagBit{
-	{1 << 0, "DELETED"},
-	{1 << 1, "PATH_UNAVAILABLE"},
-	{1 << 2, "METADATA_UNAVAILABLE"},
-}
-
-var fdDescriptorFlagBits = []flagBit{
-	{1 << 0, "CLOEXEC"},
-}
-
-var namespaceFlagBits = []flagBit{
-	{1 << 0, "USER"},
-	{1 << 1, "UTS"},
-	{1 << 2, "IPC"},
-	{1 << 3, "MOUNT"},
-	{1 << 4, "PID_ACTIVE"},
-	{1 << 5, "PID_CHILDREN"},
-	{1 << 6, "NETWORK"},
-	{1 << 7, "CGROUP"},
-	{1 << 8, "TIME"},
-	{1 << 9, "TIME_CHILDREN"},
-}
-
-var memoryMapFileFlagBits = []flagBit{
-	{1 << 0, "DELETED"},
-}
-
-// vmFlagBits mirrors Linux's VM_* mapping flags (shared/commands.h's
-// MAPPLE_PSLIST_VM_*), the same set /proc/pid/smaps prints under "VmFlags:".
-var vmFlagBits = []flagBit{
-	{1 << 0, "READ"},
-	{1 << 1, "WRITE"},
-	{1 << 2, "EXEC"},
-	{1 << 3, "SHARED"},
-	{1 << 4, "MAYREAD"},
-	{1 << 5, "MAYWRITE"},
-	{1 << 6, "MAYEXEC"},
-	{1 << 7, "MAYSHARE"},
-	{1 << 8, "GROWSDOWN"},
-	{1 << 9, "UFFD_MISSING"},
-	{1 << 10, "PFNMAP"},
-	{1 << 12, "UFFD_WP"},
-	{1 << 13, "LOCKED"},
-	{1 << 14, "IO"},
-	{1 << 15, "SEQ_READ"},
-	{1 << 16, "RAND_READ"},
-	{1 << 17, "DONTCOPY"},
-	{1 << 18, "DONTEXPAND"},
-	{1 << 19, "LOCKONFAULT"},
-	{1 << 20, "ACCOUNT"},
-	{1 << 21, "NORESERVE"},
-	{1 << 22, "HUGETLB"},
-	{1 << 23, "SYNC"},
-	{1 << 25, "WIPEONFORK"},
-	{1 << 26, "DONTDUMP"},
-	{1 << 27, "SOFTDIRTY"},
-	{1 << 28, "MIXEDMAP"},
-	{1 << 29, "HUGEPAGE"},
-	{1 << 30, "NOHUGEPAGE"},
-	{1 << 31, "MERGEABLE"},
-}
-
-// openFlagsName decodes an fd's open(2) flags: the low bits are an access
-// mode (not independent flags -- O_RDONLY is literally 0, so it can't be a
-// bit in a normal flag table), the rest are real bits.
-func openFlagsName(value uint64) string {
-	mode := "O_RDONLY"
-	switch value & 0x3 {
-	case 1:
-		mode = "O_WRONLY"
-	case 2:
-		mode = "O_RDWR"
-	}
-	names := []string{mode}
-	remaining := value &^ 0x3
-	for _, b := range openFlagBits {
-		if remaining&b.mask == b.mask {
-			names = append(names, b.name)
-			remaining &^= b.mask
-		}
-	}
-	label := strings.Join(names, "|")
-	if remaining != 0 {
-		label += fmt.Sprintf("|unknown(%#x)", remaining)
-	}
-	return fmt.Sprintf("%s (%#x)", label, value)
-}
-
-var openFlagBits = []flagBit{
-	{0o100, "O_CREAT"},
-	{0o200, "O_EXCL"},
-	{0o400, "O_NOCTTY"},
-	{0o1000, "O_TRUNC"},
-	{0o2000, "O_APPEND"},
-	{0o4000, "O_NONBLOCK"},
-	{0o10000, "O_DSYNC"},
-	{0o20000, "O_ASYNC"},
-	{0o40000, "O_DIRECT"},
-	{0o100000, "O_LARGEFILE"},
-	{0o200000, "O_DIRECTORY"},
-	{0o400000, "O_NOFOLLOW"},
-	{0o1000000, "O_NOATIME"},
-	{0o2000000, "O_CLOEXEC"},
-	{0o10000000, "O_PATH"},
-	{0o20000000, "O_TMPFILE"},
-}
-
-func namedCode(name string, raw float64) string {
-	return fmt.Sprintf("%s (%d)", name, int64(raw))
-}
-
-func objectStatusName(c int) string {
-	switch c {
-	case 1:
-		return "complete"
-	case 2:
-		return "partial"
-	case 3:
-		return "unavailable"
-	case 4:
-		return "raced"
-	case 5:
-		return "too_large"
-	default:
-		return "unknown"
-	}
-}
-
-func dataStatusName(c int) string {
-	switch c {
-	case 1:
-		return "available"
-	case 2:
-		return "unavailable"
-	case 3:
-		return "too_large"
-	case 4:
-		return "raced"
-	case 5:
-		return "unsupported"
-	default:
-		return "unknown"
-	}
-}
-
-func commandLineStatusName(c int) string {
-	switch c {
-	case 1:
-		return "available"
-	case 2:
-		return "empty"
-	case 3:
-		return "unavailable"
-	case 4:
-		return "too_large"
-	default:
-		return "unknown"
-	}
-}
-
-func executableStatusName(c int) string {
-	switch c {
-	case 1:
-		return "available"
-	case 2:
-		return "none"
-	case 3:
-		return "unavailable"
-	default:
-		return "unknown"
-	}
-}
-
-func socketEndpointTypeName(t int) string {
-	switch t {
-	case 0:
-		return "none"
-	case 1:
-		return "ipv4"
-	case 2:
-		return "ipv6"
-	case 3:
-		return "unix"
-	case 4:
-		return "netlink"
-	default:
-		return "unknown"
-	}
-}
-
-func socketEndpointStatusName(c int) string {
-	switch c {
-	case 1:
-		return "available"
-	case 2:
-		return "unavailable"
-	case 3:
-		return "not_connected"
-	case 4:
-		return "unsupported"
-	default:
-		return "unknown"
-	}
-}
-
-// addressFamilyName, socketTypeName, protocolName, socketStateName and
-// protocolStateName are standard Linux/POSIX values (include/linux/socket.h,
-// the SOCK_*/IPPROTO_* constants, and net/tcp_states.h), not part of our own
-// wire protocol -- the kernel side reports socket->state (socketStateName)
-// and sk->sk_state (protocolStateName) directly (see fd.c), and the latter
-// reuses the TCP_* enum for non-TCP protocols too (e.g. Unix stream
-// sockets), which is standard Linux kernel convention, not a Mapple choice.
-func addressFamilyName(f int) string {
-	switch f {
-	case 0:
-		return "AF_UNSPEC"
-	case 1:
-		return "AF_UNIX"
-	case 2:
-		return "AF_INET"
-	case 10:
-		return "AF_INET6"
-	case 16:
-		return "AF_NETLINK"
-	case 17:
-		return "AF_PACKET"
-	case 38:
-		return "AF_ALG"
-	case 40:
-		return "AF_VSOCK"
-	case 42:
-		return "AF_QIPCRTR"
-	default:
-		return fmt.Sprintf("AF_%d", f)
-	}
-}
-
-func socketTypeName(t int) string {
-	switch t {
-	case 1:
-		return "SOCK_STREAM"
-	case 2:
-		return "SOCK_DGRAM"
-	case 3:
-		return "SOCK_RAW"
-	case 4:
-		return "SOCK_RDM"
-	case 5:
-		return "SOCK_SEQPACKET"
-	case 6:
-		return "SOCK_DCCP"
-	case 10:
-		return "SOCK_PACKET"
-	default:
-		return fmt.Sprintf("SOCK_%d", t)
-	}
-}
-
-func protocolName(p int) string {
-	switch p {
-	case 0:
-		return "IPPROTO_IP"
-	case 1:
-		return "IPPROTO_ICMP"
-	case 2:
-		return "IPPROTO_IGMP"
-	case 6:
-		return "IPPROTO_TCP"
-	case 17:
-		return "IPPROTO_UDP"
-	case 41:
-		return "IPPROTO_IPV6"
-	case 58:
-		return "IPPROTO_ICMPV6"
-	case 132:
-		return "IPPROTO_SCTP"
-	default:
-		return fmt.Sprintf("IPPROTO_%d", p)
-	}
-}
-
-func socketStateName(s int) string {
-	switch s {
-	case 0:
-		return "SS_FREE"
-	case 1:
-		return "SS_UNCONNECTED"
-	case 2:
-		return "SS_CONNECTING"
-	case 3:
-		return "SS_CONNECTED"
-	case 4:
-		return "SS_DISCONNECTING"
-	default:
-		return fmt.Sprintf("SS_%d", s)
-	}
-}
-
-func protocolStateName(s int) string {
-	switch s {
-	case 1:
-		return "TCP_ESTABLISHED"
-	case 2:
-		return "TCP_SYN_SENT"
-	case 3:
-		return "TCP_SYN_RECV"
-	case 4:
-		return "TCP_FIN_WAIT1"
-	case 5:
-		return "TCP_FIN_WAIT2"
-	case 6:
-		return "TCP_TIME_WAIT"
-	case 7:
-		return "TCP_CLOSE"
-	case 8:
-		return "TCP_CLOSE_WAIT"
-	case 9:
-		return "TCP_LAST_ACK"
-	case 10:
-		return "TCP_LISTEN"
-	case 11:
-		return "TCP_CLOSING"
-	case 12:
-		return "TCP_NEW_SYN_RECV"
-	default:
-		return fmt.Sprintf("TCP_%d", s)
-	}
-}
-
-// isInetFamily reports whether key's enclosing object's sibling Family field
-// (e.g. "Network.Protocol" -> "Network.Family") is AF_INET or AF_INET6.
-func isInetFamily(key string, siblings map[string]interface{}) bool {
-	prefix := ""
-	if i := strings.LastIndex(key, "."); i >= 0 {
-		prefix = key[:i+1]
-	}
-	fam, ok := siblings[prefix+"Family"].(float64)
-	if !ok {
-		return false
-	}
-	f := int(fam)
-	return f == 2 || f == 10 // AF_INET, AF_INET6
-}
-
-// decodeSocketAddress decodes a SocketEndpoint's base64'd raw address bytes
-// using its sibling Type (and, for a Unix socket, Flags' abstract bit) from
-// the same flattened field set -- an IPv4/IPv6 address renders as text, a
-// Unix path as its (possibly "@"-prefixed abstract) path, anything else as
-// hex so nothing is silently hidden.
-func decodeSocketAddress(key, encoded string, siblings map[string]interface{}) string {
-	raw, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		return encoded
-	}
-	prefix := strings.TrimSuffix(key, "Address")
-	epType := -1
-	if v, ok := siblings[prefix+"Type"].(float64); ok {
-		epType = int(v)
-	}
-	switch epType {
-	case 1, 2: // ipv4, ipv6
-		if len(raw) == 4 || len(raw) == 16 {
-			return net.IP(raw).String()
-		}
-	case 3: // unix
-		abstract := false
-		if v, ok := siblings[prefix+"Flags"].(float64); ok {
-			abstract = int(v)&1 != 0
-		}
-		if abstract {
-			return "@" + strings.TrimSuffix(strings.TrimPrefix(string(raw), "\x00"), "\x00")
-		}
-		return strings.TrimRight(string(raw), "\x00")
-	}
-	if len(raw) == 0 {
-		return "(none)"
-	}
-	return fmt.Sprintf("% x", raw)
-}
-
-func decodeRawBytesField(key, encoded string) (string, bool) {
-	if !strings.HasSuffix(key, "LSMContext") {
-		return "", false
-	}
-	raw, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil || len(raw) == 0 {
-		return "", false
-	}
-	if isPrintable(raw) {
-		return string(raw), true
-	}
-	return fmt.Sprintf("% x", raw), true
-}
-
 // formatFieldValue avoids Go's default %v scientific notation for large
 // float64s -- every number here round-tripped through JSON from a Go
-// integer (nanosecond timestamps in particular), so it should print like
-// one even though the free-form decode path only gives us float64. String
-// fields get the same treatment for a different reason: CommandLine is
-// NUL-separated argv data straight from /proc/PID/cmdline's convention,
-// and a NUL byte is invisible in a terminal, so "/sbin/init\x00nokaslr\x00"
-// would otherwise render as the unreadable "/sbin/initnokaslr".
+// integer, so it should print like one even though the free-form decode
+// path only gives us float64.
 func formatFieldValue(v interface{}) string {
 	switch val := v.(type) {
 	case float64:
 		return strconv.FormatFloat(val, 'f', -1, 64)
 	case string:
-		return strings.TrimSpace(strings.ReplaceAll(val, "\x00", " "))
+		return val
+	case bool:
+		return strconv.FormatBool(val)
 	case []interface{}:
 		parts := make([]string, len(val))
 		for i, e := range val {

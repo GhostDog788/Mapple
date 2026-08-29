@@ -58,20 +58,21 @@ func sessionStateColor(s api.SessionState) color.Color {
 	}
 }
 
-// taskStateColor maps a Linux process state letter (from /proc's
-// TASK_STATE_TO_CHAR_STR convention) to a color: running is worth
-// highlighting, uninterruptible-sleep/stopped are worth a caution color,
-// zombie is worth flagging, idle kernel threads are dimmed since they
-// dominate a typical task list and rarely matter.
+// taskStateColor maps a task's decoded state word (server/pslistview.go's
+// taskStateName -- the standard /proc TASK_STATE_TO_CHAR_STR mapping spelled
+// out) to a color: running is worth highlighting, uninterruptible-sleep/
+// stopped are worth a caution color, zombie is worth flagging, idle kernel
+// threads are dimmed since they dominate a typical task list and rarely
+// matter.
 func taskStateColor(state string) color.Color {
 	switch state {
-	case "R":
+	case "running":
 		return lipgloss.Green
-	case "D", "T":
+	case "disk_sleep", "stopped", "tracing_stop":
 		return lipgloss.Yellow
-	case "Z":
+	case "zombie":
 		return lipgloss.Red
-	case "I":
+	case "idle":
 		return lipgloss.BrightBlack
 	default:
 		return nil
