@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -12,8 +13,9 @@ import (
 )
 
 type sessionsLoadedMsg struct {
-	sessions []api.Session
-	err      error
+	sessions    []api.Session
+	openBrowser bool // true for an explicit `session list`, false for a background refresh
+	err         error
 }
 
 type sessionCreatedMsg struct {
@@ -58,7 +60,14 @@ func apiErr(op string, err error, statusCode int, body []byte) error {
 	return nil
 }
 
-func (m Model) loadSessions() tea.Cmd {
+// loadSessions fetches the session list and opens the session browser
+// (an explicit `session list`). loadSessionsQuiet fetches the same data
+// silently, for keeping the id-prefix-resolution cache warm after
+// create/delete/renew without interrupting whatever the user is doing.
+func (m Model) loadSessions() tea.Cmd      { return m.loadSessionsImpl(true) }
+func (m Model) loadSessionsQuiet() tea.Cmd { return m.loadSessionsImpl(false) }
+
+func (m Model) loadSessionsImpl(openBrowser bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -69,7 +78,7 @@ func (m Model) loadSessions() tea.Cmd {
 		if resp.JSON200 == nil {
 			return sessionsLoadedMsg{err: apiErr("list sessions", nil, resp.StatusCode(), resp.Body)}
 		}
-		return sessionsLoadedMsg{sessions: *resp.JSON200}
+		return sessionsLoadedMsg{sessions: *resp.JSON200, openBrowser: openBrowser}
 	}
 }
 
@@ -178,6 +187,42 @@ func commandErr(op string, status int, busy, broken, notFound *api.Error) error 
 	default:
 		return fmt.Errorf("%s: http %d", op, status)
 	}
+}
+
+// commandBits maps each wire protocol command to its bit position in
+// InfoResult.SupportedCommands (shared/commands.h's MAPPLE_COMMAND_* enum
+// values, one bit per command), in the same order the "command" REPL verb
+// accepts them (see keys.go's replGrammar).
+var commandBits = []struct {
+	bit  uint
+	name string
+}{
+	{1, "echo"},
+	{2, "pslist"},
+	{3, "info"},
+}
+
+// commandNames renders a supported_commands bitmask as the actual command
+// names it advertises rather than the raw bits -- any bit this build doesn't
+// recognize (a newer server) is kept, not silently dropped, as "bit<N>".
+func commandNames(mask int64) string {
+	var names []string
+	remaining := uint64(mask)
+	for _, c := range commandBits {
+		if remaining&(1<<c.bit) != 0 {
+			names = append(names, c.name)
+			remaining &^= 1 << c.bit
+		}
+	}
+	for bit := uint(0); bit < 64; bit++ {
+		if remaining&(1<<bit) != 0 {
+			names = append(names, fmt.Sprintf("bit%d", bit))
+		}
+	}
+	if len(names) == 0 {
+		return "(none)"
+	}
+	return strings.Join(names, ", ")
 }
 
 func encodeEchoDisplay(data []byte) string {

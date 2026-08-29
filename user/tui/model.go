@@ -2,60 +2,16 @@ package tui
 
 import (
 	"fmt"
-	"sort"
 	"strings"
+	"time"
 
-	"charm.land/bubbles/v2/list"
 	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/GhostDog788/Mapple/user/api"
 )
-
-type view int
-
-const (
-	viewSessions view = iota
-	viewCreate
-	viewDetail
-	viewEcho
-	viewPslist
-)
-
-type sessionItem struct{ api.Session }
-
-func (s sessionItem) FilterValue() string { return s.Id + " " + string(s.State) }
-func (s sessionItem) Title() string {
-	dest := ""
-	if s.Destination.Type == api.Tcp && s.Destination.Host != nil && s.Destination.Port != nil {
-		dest = fmt.Sprintf("tcp %s:%d", *s.Destination.Host, *s.Destination.Port)
-	} else if s.Destination.Path != nil {
-		dest = "chardev " + *s.Destination.Path
-	}
-	return fmt.Sprintf("%s  [%s]  %s", s.Id[:8], s.State, dest)
-}
-func (s sessionItem) Description() string {
-	return fmt.Sprintf("created %s, expires %s", s.CreatedAt.Format("15:04:05"), s.ExpiresAt.Format("15:04:05"))
-}
-
-type taskItem struct {
-	pid, tgid, ppid int
-	state           string
-	comm            string
-	hasIdentity     bool
-	exePath         string
-}
-
-func (t taskItem) FilterValue() string { return fmt.Sprintf("%d %s", t.pid, t.comm) }
-func (t taskItem) Title() string {
-	return fmt.Sprintf("%-8d %-20s %s", t.pid, t.comm, t.state)
-}
-func (t taskItem) Description() string {
-	if t.hasIdentity && t.exePath != "" {
-		return fmt.Sprintf("tgid=%d ppid=%d  %s", t.tgid, t.ppid, t.exePath)
-	}
-	return fmt.Sprintf("tgid=%d ppid=%d", t.tgid, t.ppid)
-}
 
 const (
 	sortByPID = iota
@@ -63,230 +19,29 @@ const (
 	sortByState
 )
 
-type Model struct {
-	client      api.ClientWithResponsesInterface
-	profileName string
-	profile     Profile
+// pslistHistoryLimit is how many past `command pslist` results the TUI keeps
+// in memory (server/kernel side keep none of this -- it's purely a client
+// convenience for flipping back to a recent snapshot without re-fetching).
+const pslistHistoryLimit = 5
 
-	view   view
-	status string
-	err    error
-
-	width, height int
-
-	sessions   list.Model
-	created    map[string]bool // leases this TUI instance created, for auto-renew
-	selected   api.Session
-	haveSel    bool
-	detailText string
-
-	createType  api.DestinationType
-	createInput textinput.Model
-
-	echoInput textinput.Model
-
-	pslistItems []taskItem
-	pslistList  list.Model
-	pslistSort  int
-	pslistBusy  bool
+// pslistHistoryEntry is one past pslist result. Kept as a pointer in the
+// history slice so re-slicing to enforce the length cap doesn't copy
+// snapshots (these can be a few hundred KB for a busy machine).
+type pslistHistoryEntry struct {
+	snapshot  api.ProcessSnapshot
+	fetchedAt time.Time
 }
 
-func New(client api.ClientWithResponsesInterface, profileName string, profile Profile) Model {
-	delegate := list.NewDefaultDelegate()
-	sessions := list.New(nil, delegate, 0, 0)
-	sessions.Title = "mapple sessions"
-
-	pslist := list.New(nil, delegate, 0, 0)
-	pslist.Title = "pslist"
-
-	createInput := textinput.New()
-	createInput.Placeholder = "host:port"
-	createInput.Focus()
-
-	echoInput := textinput.New()
-	echoInput.Placeholder = "text to echo"
-
-	return Model{
-		client:      client,
-		profileName: profileName,
-		profile:     profile,
-		view:        viewSessions,
-		sessions:    sessions,
-		pslistList:  pslist,
-		created:     make(map[string]bool),
-		createType:  api.Tcp,
-		createInput: createInput,
-		echoInput:   echoInput,
-	}
-}
-
-func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.loadSessions(), autoRenewTick())
-}
-
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
-		listHeight := msg.Height - 4
-		if listHeight < 3 {
-			listHeight = 3
-		}
-		m.sessions.SetSize(msg.Width, listHeight)
-		m.pslistList.SetSize(msg.Width, listHeight)
-		return m, nil
-
-	case tea.KeyPressMsg:
-		return m.handleKey(msg)
-
-	case sessionsLoadedMsg:
-		if msg.err != nil {
-			m.err = msg.err
-			return m, nil
-		}
-		m.err = nil
-		items := make([]list.Item, len(msg.sessions))
-		for i, s := range msg.sessions {
-			items[i] = sessionItem{s}
-		}
-		cmd := m.sessions.SetItems(items)
-		return m, cmd
-
-	case sessionCreatedMsg:
-		if msg.err != nil {
-			m.err = msg.err
-			m.view = viewCreate
-			return m, nil
-		}
-		m.created[msg.session.Id] = true
-		m.status = "created session " + msg.session.Id[:8]
-		m.view = viewSessions
-		return m, m.loadSessions()
-
-	case sessionDeletedMsg:
-		if msg.err != nil {
-			m.err = msg.err
-		}
-		delete(m.created, msg.id)
-		return m, m.loadSessions()
-
-	case sessionRenewedMsg:
-		if msg.err != nil {
-			m.err = msg.err
-			return m, nil
-		}
-		if m.haveSel && m.selected.Id == msg.session.Id {
-			m.selected = msg.session
-		}
-		return m, m.loadSessions()
-
-	case autoRenewTickMsg:
-		var cmds []tea.Cmd
-		for id := range m.created {
-			cmds = append(cmds, m.renewSession(id))
-		}
-		cmds = append(cmds, autoRenewTick())
-		return m, tea.Batch(cmds...)
-
-	case infoResultMsg:
-		if msg.err != nil {
-			m.err = msg.err
-			return m, nil
-		}
-		m.err = nil
-		m.detailText = fmt.Sprintf("INFO\n  session_id: %d\n  max_sessions: %d\n  supported_commands: %#b",
-			msg.info.SessionId, msg.info.MaxSessions, msg.info.SupportedCommands)
-		return m, nil
-
-	case echoResultMsg:
-		if msg.err != nil {
-			m.err = msg.err
-			m.view = viewDetail
-			return m, nil
-		}
-		m.err = nil
-		m.detailText = "ECHO reply: " + encodeEchoDisplay(msg.data)
-		m.view = viewDetail
-		return m, nil
-
-	case pslistResultMsg:
-		m.pslistBusy = false
-		if msg.err != nil {
-			m.err = msg.err
-			m.view = viewDetail
-			return m, nil
-		}
-		m.err = nil
-		m.pslistItems = tasksFromSnapshot(msg.snapshot)
-		return m, m.applyPslistSort()
-	}
-	return m, nil
-}
-
-func (m Model) View() tea.View {
-	var b strings.Builder
-	header := fmt.Sprintf("mapple  profile=%s  server=%s\n", m.profileName, m.profile.ServerURL)
-	b.WriteString(header)
-	if m.err != nil {
-		b.WriteString("error: " + m.err.Error() + "\n")
-	} else if m.status != "" {
-		b.WriteString(m.status + "\n")
-	}
-	b.WriteString("\n")
-
-	switch m.view {
-	case viewSessions:
-		b.WriteString(m.sessions.View())
-		b.WriteString("\nn=new  enter=detail  r=renew  d=delete  R=refresh  q=quit\n")
-	case viewCreate:
-		b.WriteString(fmt.Sprintf("Create session (tab to toggle type)\ntype: %s\n\n%s\n\nenter=submit  esc=cancel\n",
-			m.createType, m.createInput.View()))
-	case viewDetail:
-		b.WriteString(sessionDetailView(m.selected))
-		if m.detailText != "" {
-			b.WriteString("\n" + m.detailText + "\n")
-		}
-		b.WriteString("\ni=info  e=echo  p=pslist  esc=back\n")
-	case viewEcho:
-		b.WriteString("Echo payload:\n\n" + m.echoInput.View() + "\n\nenter=send  esc=cancel\n")
-	case viewPslist:
-		if m.pslistBusy {
-			b.WriteString("loading pslist...\n")
-		} else {
-			b.WriteString(fmt.Sprintf("sort: %s  (s to cycle, / to filter)\n\n", pslistSortName(m.pslistSort)))
-			b.WriteString(m.pslistList.View())
-		}
-		b.WriteString("\nesc=back\n")
-	}
-	return tea.NewView(b.String())
-}
-
-func sessionDetailView(s api.Session) string {
-	dest := ""
-	switch {
-	case s.Destination.Type == api.Tcp && s.Destination.Host != nil && s.Destination.Port != nil:
-		dest = fmt.Sprintf("tcp %s:%d", *s.Destination.Host, *s.Destination.Port)
-	case s.Destination.Path != nil:
-		dest = "chardev " + *s.Destination.Path
-	}
-	info := "none"
-	if s.Info != nil {
-		info = fmt.Sprintf("session_id=%d max_sessions=%d supported_commands=%#b",
-			s.Info.SessionId, s.Info.MaxSessions, s.Info.SupportedCommands)
-	}
-	return fmt.Sprintf("Session %s\n  state:       %s\n  destination: %s\n  created:     %s\n  expires:     %s\n  info:        %s",
-		s.Id, s.State, dest, s.CreatedAt.Format("2006-01-02 15:04:05"), s.ExpiresAt.Format("2006-01-02 15:04:05"), info)
-}
-
-func pslistSortName(mode int) string {
-	switch mode {
-	case sortByComm:
-		return "comm"
-	case sortByState:
-		return "state"
-	default:
-		return "pid"
-	}
+// taskItem is a flattened summary of one pslist task, kept only for the
+// integration test's sanity checks (pid 1 is systemd, etc) -- the
+// interactive browser (browse.go) reads the raw snapshot maps directly
+// since it needs the Identity/Security/Files link IDs taskItem discards.
+type taskItem struct {
+	pid, tgid, ppid int
+	state           string
+	comm            string
+	hasIdentity     bool
+	exePath         string
 }
 
 func tasksFromSnapshot(snap api.ProcessSnapshot) []taskItem {
@@ -303,13 +58,10 @@ func tasksFromSnapshot(snap api.ProcessSnapshot) []taskItem {
 			comm:  stringField(raw, "Comm"),
 			state: string(rune(intField(raw, "State"))),
 		}
-		if idID, ok := raw["IdentityID"]; ok && idID != nil {
-			if idFloat, ok := idID.(float64); ok {
-				key := fmt.Sprintf("%d", int(idFloat))
-				if identity, ok := identities[key].(map[string]interface{}); ok {
-					t.hasIdentity = true
-					t.exePath = stringField(identity, "ExecutablePath")
-				}
+		if id, ok := groupRef(raw, "IdentityID"); ok {
+			if identity, ok := lookupObject(identities, id); ok {
+				t.hasIdentity = true
+				t.exePath = stringField(identity, "ExecutablePath")
 			}
 		}
 		items = append(items, t)
@@ -331,19 +83,356 @@ func stringField(m map[string]interface{}, key string) string {
 	return ""
 }
 
-func (m *Model) applyPslistSort() tea.Cmd {
-	items := append([]taskItem(nil), m.pslistItems...)
-	switch m.pslistSort {
+func pslistSortName(mode int) string {
+	switch mode {
 	case sortByComm:
-		sort.Slice(items, func(i, j int) bool { return items[i].comm < items[j].comm })
+		return "comm"
 	case sortByState:
-		sort.Slice(items, func(i, j int) bool { return items[i].state < items[j].state })
+		return "state"
 	default:
-		sort.Slice(items, func(i, j int) bool { return items[i].pid < items[j].pid })
+		return "pid"
 	}
-	listItems := make([]list.Item, len(items))
-	for i, it := range items {
-		listItems[i] = it
+}
+
+// wizard tracks an in-progress multi-step `session create` prompt.
+type wizard struct {
+	step      int
+	transport api.DestinationType
+}
+
+type Model struct {
+	client      api.ClientWithResponsesInterface
+	profileName string
+	profile     Profile
+
+	input    textinput.Model
+	viewport viewport.Model
+	lines    []string // command-line-mode transcript; browse frames render separately
+
+	history      []string // every submitted line, oldest first -- shell-style up/down recall
+	historyPos   int      // index into history; == len(history) means "not browsing, on the draft"
+	historyDraft string   // input text stashed when history browsing starts, restored past the newest entry
+
+	sessions []api.Session // last `session list` fetch, for id-prefix resolution
+	current  *api.Session
+	created  map[string]bool // leases this TUI created, for auto-renew
+
+	frames    []browseFrame // navigation stack; empty = command-line mode
+	pending   *wizard
+	searching bool // top frame is a pslist frame and "/" is capturing a search string into input
+
+	lastSnapshot   *api.ProcessSnapshot
+	pslistSortMode int
+	pslistFilter   string
+	pslistHistory  []*pslistHistoryEntry // oldest first, capped at pslistHistoryLimit
+
+	width, height int
+}
+
+const replPlaceholder = "session list | session create | command pslist | help"
+
+func New(client api.ClientWithResponsesInterface, profileName string, profile Profile) Model {
+	input := textinput.New()
+	input.Placeholder = replPlaceholder
+	input.Focus()
+	vp := viewport.New()
+
+	m := Model{
+		client:      client,
+		profileName: profileName,
+		profile:     profile,
+		input:       input,
+		viewport:    vp,
+		created:     make(map[string]bool),
 	}
-	return m.pslistList.SetItems(listItems)
+	m.printLine("not connected -- try `session list` or `session create`. Type `help` for the full command list.")
+	return m
+}
+
+func (m *Model) printLine(s string) {
+	m.lines = append(m.lines, s)
+	m.refreshTranscript()
+}
+
+func (m *Model) printf(format string, args ...interface{}) {
+	m.printLine(fmt.Sprintf(format, args...))
+}
+
+func (m *Model) printError(format string, args ...interface{}) {
+	m.printLine(errorStyle.Render(fmt.Sprintf("error: "+format, args...)))
+}
+
+func (m *Model) printSuccess(format string, args ...interface{}) {
+	m.printLine(successStyle.Render(fmt.Sprintf(format, args...)))
+}
+
+func (m *Model) refreshTranscript() {
+	if len(m.frames) > 0 {
+		return // browse mode owns the viewport content while active
+	}
+	m.viewport.SetContent(strings.Join(m.lines, "\n"))
+	m.viewport.GotoBottom()
+}
+
+func (m *Model) refreshBrowseView() {
+	if len(m.frames) == 0 {
+		m.refreshTranscript()
+		return
+	}
+	top := m.frames[len(m.frames)-1]
+	m.viewport.SetContent(strings.Join(top.render(m.width), "\n"))
+	m.viewport.EnsureVisible(top.cursor+2, 0, 0) // +2 for the title/blank line render() prepends
+}
+
+// applyLayout recomputes the viewport height for the current mode: browse
+// mode has no input line, so it gets one more row than command-line mode.
+// Called on resize and on every push/popFrame, since switching mode doesn't
+// itself produce a WindowSizeMsg.
+func (m *Model) applyLayout() {
+	if m.height == 0 {
+		return
+	}
+	chrome := 6 // header + blank + status bar + input + hint + slack
+	if len(m.frames) > 0 {
+		chrome-- // no input line while browsing
+	}
+	contentHeight := m.height - chrome
+	if contentHeight < 3 {
+		contentHeight = 3
+	}
+	m.viewport.SetHeight(contentHeight)
+}
+
+// recordHistory appends a submitted line to the shell-style command
+// history (skipping an immediate exact repeat, same as most shells) and
+// resets history browsing back to the draft position.
+func (m *Model) recordHistory(line string) {
+	if len(m.history) == 0 || m.history[len(m.history)-1] != line {
+		m.history = append(m.history, line)
+	}
+	m.historyPos = len(m.history)
+	m.historyDraft = ""
+}
+
+// navigateHistory moves by delta through history (-1 = older, +1 = newer),
+// stashing/restoring whatever was being typed at the draft position, same
+// as a shell's up/down recall.
+func (m *Model) navigateHistory(delta int) {
+	if len(m.history) == 0 {
+		return
+	}
+	if m.historyPos == len(m.history) {
+		m.historyDraft = m.input.Value()
+	}
+	pos := m.historyPos + delta
+	if pos < 0 {
+		pos = 0
+	}
+	if pos > len(m.history) {
+		pos = len(m.history)
+	}
+	m.historyPos = pos
+	if m.historyPos == len(m.history) {
+		m.input.SetValue(m.historyDraft)
+	} else {
+		m.input.SetValue(m.history[m.historyPos])
+	}
+	m.input.CursorEnd()
+}
+
+func (m *Model) statusLine() string {
+	if m.current == nil {
+		return "status: not connected"
+	}
+	s := *m.current
+	return fmt.Sprintf("status: %s [%s] %s  expires %s",
+		shortID(s.Id), s.State, destSummary(s.Destination), s.ExpiresAt.Format("15:04:05"))
+}
+
+func (m Model) Init() tea.Cmd {
+	return tea.Batch(m.loadSessionsQuiet(), autoRenewTick())
+}
+
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		m.viewport.SetWidth(msg.Width)
+		m.applyLayout()
+		m.input.SetWidth(msg.Width)
+		m.refreshBrowseView()
+		return m, nil
+
+	case tea.KeyPressMsg:
+		return m.handleKey(msg)
+
+	case sessionsLoadedMsg:
+		if msg.err != nil {
+			m.printError("session list: %v", msg.err)
+			return m, nil
+		}
+		m.sessions = msg.sessions
+		if msg.openBrowser {
+			m.pushFrame(sessionListFrame(msg.sessions))
+		}
+		return m, nil
+
+	case sessionCreatedMsg:
+		if msg.err != nil {
+			m.printError("session create: %v", msg.err)
+			return m, nil
+		}
+		m.created[msg.session.Id] = true
+		sess := msg.session
+		m.current = &sess
+		m.printSuccess("connected %s (%s)", shortID(sess.Id), destSummary(sess.Destination))
+		return m, m.loadSessionsQuiet()
+
+	case sessionDeletedMsg:
+		if msg.err != nil {
+			m.printError("session delete: %v", msg.err)
+			return m, m.loadSessionsQuiet()
+		}
+		if m.current != nil && m.current.Id == msg.id {
+			m.current = nil
+		}
+		delete(m.created, msg.id)
+		m.printSuccess("deleted %s", shortID(msg.id))
+		return m, m.loadSessionsQuiet()
+
+	case sessionRenewedMsg:
+		if msg.err != nil {
+			m.printError("renew: %v", msg.err)
+			return m, nil
+		}
+		if m.current != nil && m.current.Id == msg.session.Id {
+			sess := msg.session
+			m.current = &sess
+		}
+		return m, nil
+
+	case autoRenewTickMsg:
+		var cmds []tea.Cmd
+		for id := range m.created {
+			cmds = append(cmds, m.renewSession(id))
+		}
+		cmds = append(cmds, autoRenewTick())
+		return m, tea.Batch(cmds...)
+
+	case infoResultMsg:
+		if msg.err != nil {
+			m.printError("info: %v", msg.err)
+			return m, nil
+		}
+		m.printSuccess("info: session_id=%d max_sessions=%d supported_commands=%s",
+			msg.info.SessionId, msg.info.MaxSessions, commandNames(msg.info.SupportedCommands))
+		return m, nil
+
+	case echoResultMsg:
+		if msg.err != nil {
+			m.printError("echo: %v", msg.err)
+			return m, nil
+		}
+		m.printSuccess("echo: %s", encodeEchoDisplay(msg.data))
+		return m, nil
+
+	case pslistResultMsg:
+		if msg.err != nil {
+			m.printError("pslist: %v", msg.err)
+			return m, nil
+		}
+		snap := msg.snapshot
+		m.lastSnapshot = &snap
+		m.pslistSortMode = sortByPID
+		m.pslistFilter = ""
+		m.pslistHistory = append(m.pslistHistory, &pslistHistoryEntry{snapshot: snap, fetchedAt: time.Now()})
+		if len(m.pslistHistory) > pslistHistoryLimit {
+			m.pslistHistory = m.pslistHistory[len(m.pslistHistory)-pslistHistoryLimit:]
+		}
+		m.printSuccess("pslist: %d tasks, %d objects, status=%s (history %d/%d)",
+			snap.TaskCount, snap.ObjectCount, snap.Status, len(m.pslistHistory), pslistHistoryLimit)
+		m.pushFrame(pslistFrame(snap, m.pslistSortMode, m.pslistFilter))
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m *Model) connectTo(s api.Session) {
+	sess := s
+	m.current = &sess
+	m.printSuccess("connected %s (%s)", shortID(sess.Id), destSummary(sess.Destination))
+}
+
+func (m *Model) pushFrame(f browseFrame) {
+	m.frames = append(m.frames, f)
+	m.applyLayout()
+	m.refreshBrowseView()
+}
+
+// popFrame pops the top browse frame; returns true if it popped all the
+// way out to command-line mode.
+func (m *Model) popFrame() bool {
+	if len(m.frames) == 0 {
+		return true
+	}
+	m.frames = m.frames[:len(m.frames)-1]
+	backToCommandLine := len(m.frames) == 0
+	m.applyLayout()
+	m.refreshBrowseView()
+	return backToCommandLine
+}
+
+// replaceTopFrame swaps the top frame in place (same stack depth) -- used to
+// re-render the pslist frame after a "/" search changes the filter, rather
+// than stacking a duplicate frame the way pushFrame would.
+func (m *Model) replaceTopFrame(f browseFrame) {
+	if len(m.frames) == 0 {
+		return
+	}
+	m.frames[len(m.frames)-1] = f
+	m.refreshBrowseView()
+}
+
+// renderStatusBar renders the connection status as a full-width,
+// reverse-video bar directly above the input line -- next to where the
+// user is actually looking/typing, not scrolled away at the top with the
+// rest of the transcript.
+func (m Model) renderStatusBar() string {
+	style := lipgloss.NewStyle().Bold(true).Reverse(true)
+	if m.current != nil {
+		if c := sessionStateColor(m.current.State); c != nil {
+			style = style.Foreground(c)
+		}
+	}
+	if m.width > 0 {
+		style = style.Width(m.width)
+	}
+	return style.Render(" " + m.statusLine())
+}
+
+func (m Model) View() tea.View {
+	var b strings.Builder
+	b.WriteString(headerStyle.Render(fmt.Sprintf("mapple  profile=%s  server=%s", m.profileName, m.profile.ServerURL)))
+	b.WriteString("\n\n")
+	b.WriteString(m.viewport.View())
+	b.WriteString("\n")
+	b.WriteString(m.renderStatusBar())
+	b.WriteString("\n")
+	if len(m.frames) > 0 {
+		top := m.frames[len(m.frames)-1]
+		if m.searching {
+			b.WriteString(m.input.View() + "\n")
+			b.WriteString(hintStyle.Render("enter search  esc cancel") + "\n")
+		} else {
+			hint := "↑/↓ move  ←/→ scroll  enter select  esc/q back  ctrl+c quit"
+			if top.kind == framePslist {
+				hint = "↑/↓ move  ←/→ scroll  / filter  s sort  enter select  esc/q back  ctrl+c quit"
+			}
+			b.WriteString(hintStyle.Render(hint) + "\n")
+		}
+	} else {
+		b.WriteString(m.input.View() + "\n")
+		b.WriteString(hintStyle.Render("tab complete  enter run  ↑/↓ history  pgup/pgdn scroll  ctrl+c quit") + "\n")
+	}
+	return tea.NewView(b.String())
 }
