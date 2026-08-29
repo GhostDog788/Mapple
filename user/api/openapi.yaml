@@ -400,6 +400,17 @@ components:
         elfs:
           type: object
           additionalProperties: true
+        elf_symbol_names:
+          description: >
+            Snapshot-wide interned ELF symbol name table: every elfs[].
+            imports[].groups[].symbols[].name / exports[]...name is an index
+            into this array, not a repeated string. Symbol names repeat
+            enormously across shared libraries (every consumer of libc
+            imports "malloc", "printf", ...), so this is the dominant size
+            lever for a system with many mapped shared objects.
+          type: array
+          items:
+            type: string
         files:
           type: object
           additionalProperties: true

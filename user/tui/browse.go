@@ -144,14 +144,15 @@ func shortID(id string) string {
 // taskDetailFrame and its children take one value instead of a growing list
 // of positional map parameters.
 type pslistObjects struct {
-	identities   map[string]interface{}
-	securities   map[string]interface{}
-	contexts     map[string]interface{}
-	resources    map[string]interface{}
-	environments map[string]interface{}
-	memoryMaps   map[string]interface{}
-	elfs         map[string]interface{}
-	files        map[string]interface{}
+	identities     map[string]interface{}
+	securities     map[string]interface{}
+	contexts       map[string]interface{}
+	resources      map[string]interface{}
+	environments   map[string]interface{}
+	memoryMaps     map[string]interface{}
+	elfs           map[string]interface{}
+	elfSymbolNames []string
+	files          map[string]interface{}
 }
 
 func mapOrNil(m *map[string]interface{}) map[string]interface{} {
@@ -161,16 +162,24 @@ func mapOrNil(m *map[string]interface{}) map[string]interface{} {
 	return *m
 }
 
+func sliceOrNil(s *[]string) []string {
+	if s == nil {
+		return nil
+	}
+	return *s
+}
+
 func pslistFrame(snap api.ProcessSnapshot, sortMode int, filterText string) browseFrame {
 	objs := pslistObjects{
-		identities:   mapOrNil(snap.Identities),
-		securities:   mapOrNil(snap.Securities),
-		contexts:     mapOrNil(snap.Contexts),
-		resources:    mapOrNil(snap.Resources),
-		environments: mapOrNil(snap.Environments),
-		memoryMaps:   mapOrNil(snap.MemoryMaps),
-		elfs:         mapOrNil(snap.Elfs),
-		files:        mapOrNil(snap.Files),
+		identities:     mapOrNil(snap.Identities),
+		securities:     mapOrNil(snap.Securities),
+		contexts:       mapOrNil(snap.Contexts),
+		resources:      mapOrNil(snap.Resources),
+		environments:   mapOrNil(snap.Environments),
+		memoryMaps:     mapOrNil(snap.MemoryMaps),
+		elfs:           mapOrNil(snap.Elfs),
+		elfSymbolNames: sliceOrNil(snap.ElfSymbolNames),
+		files:          mapOrNil(snap.Files),
 	}
 
 	tasks := snap.Tasks
@@ -274,7 +283,7 @@ func taskDetailFrame(task map[string]interface{}, objs pslistObjects) browseFram
 	}
 	if id, ok := groupRef(task, "memory_maps_id"); ok {
 		if obj, ok := lookupObject(objs.memoryMaps, id); ok {
-			rows = append(rows, browseRow{label: "Memory Maps", color: sectionRowColor, push: func() browseFrame { return memoryMapsFrame(obj, objs.elfs) }})
+			rows = append(rows, browseRow{label: "Memory Maps", color: sectionRowColor, push: func() browseFrame { return memoryMapsFrame(obj, objs.elfs, objs.elfSymbolNames) }})
 		}
 	}
 	if id, ok := groupRef(task, "files_id"); ok {
@@ -344,7 +353,7 @@ func environmentFrame(obj map[string]interface{}) browseFrame {
 // memoryMapsFrame lists a task's memory mappings; enter drills into one
 // mapping's fields, which itself gains an "ELF" row when the mapping is
 // backed by a file mapple has captured ELF metadata for.
-func memoryMapsFrame(obj map[string]interface{}, elfs map[string]interface{}) browseFrame {
+func memoryMapsFrame(obj map[string]interface{}, elfs map[string]interface{}, symbolNames []string) browseFrame {
 	mappingsRaw, _ := obj["mappings"].([]interface{})
 	rows := make([]browseRow, 0, len(mappingsRaw))
 	for _, raw := range mappingsRaw {
@@ -367,17 +376,17 @@ func memoryMapsFrame(obj map[string]interface{}, elfs map[string]interface{}) br
 		rows = append(rows, browseRow{
 			label: label,
 			color: sectionRowColor,
-			push:  func() browseFrame { return memoryMapDetailFrame(mapping, elfs) },
+			push:  func() browseFrame { return memoryMapDetailFrame(mapping, elfs, symbolNames) },
 		})
 	}
 	return browseFrame{title: fmt.Sprintf("memory maps: %d mappings -- enter for detail, esc/q back", len(rows)), rows: rows}
 }
 
-func memoryMapDetailFrame(mapping, elfs map[string]interface{}) browseFrame {
+func memoryMapDetailFrame(mapping, elfs map[string]interface{}, symbolNames []string) browseFrame {
 	rows := flattenedRows(mapping)
 	if id, ok := groupRef(mapping, "elf_object_id"); ok {
 		if obj, ok := lookupObject(elfs, id); ok {
-			rows = append(rows, browseRow{label: "ELF", color: sectionRowColor, push: func() browseFrame { return elfFrame(obj) }})
+			rows = append(rows, browseRow{label: "ELF", color: sectionRowColor, push: func() browseFrame { return elfFrame(obj, symbolNames) }})
 		}
 	}
 	start := stringField(mapping, "start_address")
@@ -385,16 +394,22 @@ func memoryMapDetailFrame(mapping, elfs map[string]interface{}) browseFrame {
 	return browseFrame{title: fmt.Sprintf("mapping %s-%s -- esc/q back", start, end), rows: rows}
 }
 
-// elfFrame shows one ELF file's header metadata plus its string and symbol
-// tables as two sub-lists -- kept as separate pushes rather than flattened
-// inline since a heavily-linked binary can have thousands of symbols.
-func elfFrame(obj map[string]interface{}) browseFrame {
+// elfFrame shows one ELF file's header metadata plus its string, import and
+// export tables as separate pushes rather than flattened inline, since a
+// heavily-linked binary can have thousands of symbols. Import/export symbol
+// names are interned snapshot-wide (see server/pslistview.go's
+// elfSymbolCatalog) -- symbolNames is that shared table, resolved here by
+// index rather than the TUI re-parsing anything.
+func elfFrame(obj map[string]interface{}, symbolNames []string) browseFrame {
 	stringsRaw, _ := obj["strings"].([]interface{})
-	symbolsRaw, _ := obj["symbols"].([]interface{})
+	imports, _ := obj["imports"].(map[string]interface{})
+	importGroups, _ := imports["groups"].([]interface{})
+	exports, _ := obj["exports"].(map[string]interface{})
+	exportGroups, _ := exports["groups"].([]interface{})
 
 	fields := make(map[string]interface{}, len(obj))
 	for k, v := range obj {
-		if k == "strings" || k == "symbols" {
+		if k == "strings" || k == "imports" || k == "exports" {
 			continue
 		}
 		fields[k] = v
@@ -402,9 +417,81 @@ func elfFrame(obj map[string]interface{}) browseFrame {
 	rows := flattenedRows(fields)
 	rows = append(rows,
 		browseRow{label: fmt.Sprintf("Strings (%d)", len(stringsRaw)), color: sectionRowColor, push: func() browseFrame { return elfStringListFrame(stringsRaw) }},
-		browseRow{label: fmt.Sprintf("Symbols (%d)", len(symbolsRaw)), color: sectionRowColor, push: func() browseFrame { return elfSymbolListFrame(symbolsRaw) }},
+		browseRow{label: fmt.Sprintf("Imports (%d)", countGroupedSymbols(importGroups)), color: sectionRowColor, push: func() browseFrame { return elfSymbolGroupsFrame("imports", importGroups, symbolNames) }},
+		browseRow{label: fmt.Sprintf("Exports (%d)", countGroupedSymbols(exportGroups)), color: sectionRowColor, push: func() browseFrame { return elfSymbolGroupsFrame("exports", exportGroups, symbolNames) }},
 	)
 	return browseFrame{title: "elf -- esc/q back", rows: rows}
+}
+
+func countGroupedSymbols(groups []interface{}) int {
+	n := 0
+	for _, raw := range groups {
+		g, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		syms, _ := g["symbols"].([]interface{})
+		n += len(syms)
+	}
+	return n
+}
+
+// elfSymbolGroupsFrame flattens the server's (type, binding, visibility[,
+// section_index])-grouped symbol table into one row per symbol, resolving
+// its interned name -- the grouping exists on the wire purely to avoid
+// repeating those fields per symbol, so once resolved for display there's no
+// reason to keep the TUI's list nested by group.
+func elfSymbolGroupsFrame(kind string, groups []interface{}, symbolNames []string) browseFrame {
+	var rows []browseRow
+	for _, raw := range groups {
+		g, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		groupLabel := fmt.Sprintf("%s/%s/%s", stringField(g, "type"), stringField(g, "binding"), stringField(g, "visibility"))
+		syms, _ := g["symbols"].([]interface{})
+		for _, sraw := range syms {
+			sym, ok := sraw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			entry := sym
+			name := resolveSymbolName(entry, symbolNames)
+			label := fmt.Sprintf("%-40s %s", name, groupLabel)
+			rows = append(rows, browseRow{
+				label: label,
+				color: sectionRowColor,
+				push: func() browseFrame {
+					return fieldListFrame(fmt.Sprintf("elf %s symbol", strings.TrimSuffix(kind, "s")), withResolvedSymbolName(entry, name))
+				},
+			})
+		}
+	}
+	return browseFrame{title: fmt.Sprintf("elf %s: %d symbols -- enter for detail, esc/q back", kind, len(rows)), rows: rows}
+}
+
+// resolveSymbolName looks a symbol's interned "name" index up in the
+// snapshot-wide table; an out-of-range index (a malformed/mismatched
+// response) falls back to showing the raw index rather than panicking or
+// silently showing nothing.
+func resolveSymbolName(sym map[string]interface{}, symbolNames []string) string {
+	idx := intField(sym, "name")
+	if idx >= 0 && idx < len(symbolNames) {
+		return symbolNames[idx]
+	}
+	return fmt.Sprintf("#%d", idx)
+}
+
+// withResolvedSymbolName returns a copy of a symbol entry with its "name"
+// index replaced by the resolved string, so the detail view shows the
+// actual name instead of a meaningless catalog index.
+func withResolvedSymbolName(sym map[string]interface{}, name string) map[string]interface{} {
+	out := make(map[string]interface{}, len(sym))
+	for k, v := range sym {
+		out[k] = v
+	}
+	out["name"] = name
+	return out
 }
 
 func elfStringListFrame(items []interface{}) browseFrame {
@@ -426,27 +513,6 @@ func elfStringListFrame(items []interface{}) browseFrame {
 		})
 	}
 	return browseFrame{title: fmt.Sprintf("elf strings: %d -- enter for detail, esc/q back", len(rows)), rows: rows}
-}
-
-func elfSymbolListFrame(items []interface{}) browseFrame {
-	rows := make([]browseRow, 0, len(items))
-	for _, raw := range items {
-		s, ok := raw.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		entry := s
-		kind := stringField(entry, "symbol_kind")
-		label := fmt.Sprintf("%-8s %s", kind, stringField(entry, "name"))
-		rows = append(rows, browseRow{
-			label: label,
-			color: sectionRowColor,
-			push: func() browseFrame {
-				return fieldListFrame(fmt.Sprintf("elf symbol %d", intField(entry, "symbol_index")), entry)
-			},
-		})
-	}
-	return browseFrame{title: fmt.Sprintf("elf symbols: %d -- enter for detail, esc/q back", len(rows)), rows: rows}
 }
 
 // fieldListFrame is a leaf: flat key/value rows, nested objects flattened

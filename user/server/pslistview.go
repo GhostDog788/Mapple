@@ -421,17 +421,6 @@ func elfStringKindName(k wire.ELFStringKind) string {
 	}
 }
 
-func elfSymbolKindName(k wire.ELFSymbolKind) string {
-	switch k {
-	case wire.ELFSymbolImport:
-		return "import"
-	case wire.ELFSymbolExport:
-		return "export"
-	default:
-		return fmt.Sprintf("unknown_%d", k)
-	}
-}
-
 // elfClassName, elfDataEncodingName, elfOSABIName, elfObjectTypeName,
 // elfMachineName, elfBindingName, elfSymbolTypeName and elfVisibilityName
 // are standard ELF header constants (elf.h), not part of the mapple wire
@@ -1432,19 +1421,103 @@ func mappingPermissions(vmFlags uint64) (string, bool) {
 	return string(perm), vmFlags&0x8 != 0
 }
 
-func viewELFObject(o *moduleclient.ELFObject) map[string]interface{} {
+// elfSymbolCatalog interns ELF symbol names into a single snapshot-wide
+// table, referenced by index instead of repeated inline. Symbol names repeat
+// enormously across shared libraries (every consumer of libc imports
+// "malloc", "printf", ...), so on a system with many mapped shared objects
+// this dwarfs every other size lever in the schema -- interning it is what
+// keeps the ELF section from dominating the whole snapshot's size.
+type elfSymbolCatalog struct {
+	index map[string]int
+	names []string
+}
+
+func newELFSymbolCatalog() *elfSymbolCatalog {
+	return &elfSymbolCatalog{index: make(map[string]int)}
+}
+
+func (c *elfSymbolCatalog) intern(name string) int {
+	if i, ok := c.index[name]; ok {
+		return i
+	}
+	i := len(c.names)
+	c.index[name] = i
+	c.names = append(c.names, name)
+	return i
+}
+
+// elfSymbolGroupKey groups symbols the same way ELF's own symbol table
+// naturally clusters them -- by (type, binding, visibility), plus
+// section_index for exports (a defined symbol's section is meaningful; an
+// import/undefined symbol's isn't, so imports don't key or carry it) -- so a
+// symbol's per-group metadata is paid for once per group, not once per
+// symbol.
+type elfSymbolGroupKey struct {
+	symbolType   string
+	binding      string
+	visibility   string
+	sectionIndex uint16
+}
+
+// viewELFSymbolGroups renders one kind (import or export) of a file's
+// symbol table as v8's grouped shape: a symbol itself costs one interned
+// name index (plus value/size_bytes for a defined export), never a
+// duplicated string or a repeated type/binding/visibility triple.
+func viewELFSymbolGroups(symbols []*wire.ELFSymbol, catalog *elfSymbolCatalog, kind wire.ELFSymbolKind, includeSection bool) []map[string]interface{} {
+	var order []elfSymbolGroupKey
+	groups := map[elfSymbolGroupKey][]map[string]interface{}{}
+	for _, s := range symbols {
+		if s.SymbolKind != kind {
+			continue
+		}
+		key := elfSymbolGroupKey{
+			symbolType: elfSymbolTypeName(s.SymbolType),
+			binding:    elfBindingName(s.Binding),
+			visibility: elfVisibilityName(s.Visibility),
+		}
+		if includeSection {
+			key.sectionIndex = s.SectionIndex
+		}
+		entry := map[string]interface{}{"name": catalog.intern(s.Name)}
+		if includeSection {
+			entry["value"] = hexU64(s.Value)
+			entry["size_bytes"] = s.Size
+		}
+		if _, ok := groups[key]; !ok {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], entry)
+	}
+	result := make([]map[string]interface{}, 0, len(order))
+	for _, key := range order {
+		g := map[string]interface{}{
+			"type":       key.symbolType,
+			"binding":    key.binding,
+			"visibility": key.visibility,
+			"symbols":    groups[key],
+		}
+		if includeSection {
+			g["section_index"] = key.sectionIndex
+		}
+		result = append(result, g)
+	}
+	return result
+}
+
+func viewELFObject(o *moduleclient.ELFObject, catalog *elfSymbolCatalog) map[string]interface{} {
 	strs := make([]map[string]interface{}, 0, len(o.Strings))
 	for _, s := range o.Strings {
 		strs = append(strs, viewELFString(s))
 	}
-	syms := make([]map[string]interface{}, 0, len(o.Symbols))
-	for _, s := range o.Symbols {
-		syms = append(syms, viewELFSymbol(s))
-	}
 	m := viewELFMetadata(&o.Metadata)
 	m["status"] = objectStatusName(o.Status)
 	m["strings"] = strs
-	m["symbols"] = syms
+	m["imports"] = map[string]interface{}{
+		"groups": viewELFSymbolGroups(o.Symbols, catalog, wire.ELFSymbolImport, false),
+	}
+	m["exports"] = map[string]interface{}{
+		"groups": viewELFSymbolGroups(o.Symbols, catalog, wire.ELFSymbolExport, true),
+	}
 	return m
 }
 
@@ -1487,21 +1560,6 @@ func viewELFString(s *wire.ELFString) map[string]interface{} {
 		"string_kind":  elfStringKindName(s.StringKind),
 		"byte_length":  s.ByteLength,
 		"value":        decodeELFStringValue(s.StringKind, s.Bytes),
-	}
-}
-
-func viewELFSymbol(s *wire.ELFSymbol) map[string]interface{} {
-	return map[string]interface{}{
-		"symbol_index":  s.SymbolIndex,
-		"symbol_kind":   elfSymbolKindName(s.SymbolKind),
-		"binding":       elfBindingName(s.Binding),
-		"symbol_type":   elfSymbolTypeName(s.SymbolType),
-		"visibility":    elfVisibilityName(s.Visibility),
-		"section_index": s.SectionIndex,
-		"name_length":   s.NameLength,
-		"value":         hexU64(s.Value),
-		"size":          s.Size,
-		"name":          s.Name,
 	}
 }
 
@@ -1556,9 +1614,14 @@ func apiProcessSnapshot(snap *moduleclient.ProcessSnapshot) (api.ProcessSnapshot
 	for id, o := range snap.MemoryMaps {
 		memoryMaps[idKey(id)] = viewMemoryMapsObject(o)
 	}
+	elfCatalog := newELFSymbolCatalog()
 	elfs := make(map[string]interface{}, len(snap.ELFs))
 	for id, o := range snap.ELFs {
-		elfs[idKey(id)] = viewELFObject(o)
+		elfs[idKey(id)] = viewELFObject(o, elfCatalog)
+	}
+	elfSymbolNames := elfCatalog.names
+	if elfSymbolNames == nil {
+		elfSymbolNames = []string{}
 	}
 	files := make(map[string]interface{}, len(snap.FilesObjects))
 	for id, o := range snap.FilesObjects {
@@ -1587,6 +1650,7 @@ func apiProcessSnapshot(snap *moduleclient.ProcessSnapshot) (api.ProcessSnapshot
 		Environments:    &environments,
 		MemoryMaps:      &memoryMaps,
 		Elfs:            &elfs,
+		ElfSymbolNames:  &elfSymbolNames,
 		Files:           &files,
 	}, nil
 }

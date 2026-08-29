@@ -33,3 +33,5 @@ todo.md
 docs/personal
 user/dev/
 user/bin/
+
+*.json
