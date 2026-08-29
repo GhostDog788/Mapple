@@ -564,14 +564,360 @@ func dumpableReasonName(r uint16) string {
 	}
 }
 
-// errorOrNil renders a wire error code the way v8 does throughout: null
-// when there's no error, the raw errno number (never a decoded name --
-// v8 never decodes an *_error field anywhere) when there is one.
+// errorOrNil renders a wire error code as null when there's no error, or
+// its symbolic errno name when there is one -- the server parses to real
+// values wherever it can, so a frontend never has to know that 111 means
+// ECONNREFUSED.
 func errorOrNil(code uint32) interface{} {
 	if code == 0 {
 		return nil
 	}
-	return code
+	return errnoName(code)
+}
+
+// errnoName maps the stable, POSIX-standard low-numbered errno codes (plus
+// the common socket-layer ones) to their symbolic name. Anything else
+// renders as "errno_N" rather than guessing.
+func errnoName(code uint32) string {
+	if name, ok := errnoNames[code]; ok {
+		return name
+	}
+	return fmt.Sprintf("errno_%d", code)
+}
+
+var errnoNames = map[uint32]string{
+	1: "EPERM", 2: "ENOENT", 3: "ESRCH", 4: "EINTR", 5: "EIO", 6: "ENXIO",
+	7: "E2BIG", 8: "ENOEXEC", 9: "EBADF", 10: "ECHILD", 11: "EAGAIN",
+	12: "ENOMEM", 13: "EACCES", 14: "EFAULT", 15: "ENOTBLK", 16: "EBUSY",
+	17: "EEXIST", 18: "EXDEV", 19: "ENODEV", 20: "ENOTDIR", 21: "EISDIR",
+	22: "EINVAL", 23: "ENFILE", 24: "EMFILE", 25: "ENOTTY", 26: "ETXTBSY",
+	27: "EFBIG", 28: "ENOSPC", 29: "ESPIPE", 30: "EROFS", 31: "EMLINK",
+	32: "EPIPE", 33: "EDOM", 34: "ERANGE", 35: "EDEADLK", 36: "ENAMETOOLONG",
+	37: "ENOLCK", 38: "ENOSYS", 39: "ENOTEMPTY", 40: "ELOOP",
+	98: "EADDRINUSE", 99: "EADDRNOTAVAIL", 101: "ENETUNREACH",
+	104: "ECONNRESET", 106: "EISCONN", 107: "ENOTCONN", 110: "ETIMEDOUT",
+	111: "ECONNREFUSED", 112: "EHOSTDOWN", 113: "EHOSTUNREACH",
+}
+
+// fsMagicName maps the common Linux filesystem superblock magic numbers
+// (linux/magic.h) to their filesystem name. Falls back to hex for anything
+// not in this small well-known set.
+func fsMagicName(magic uint64) string {
+	if name, ok := fsMagicNames[magic]; ok {
+		return name
+	}
+	return hexPad64(magic)
+}
+
+var fsMagicNames = map[uint64]string{
+	0xEF53:     "ext2/3/4",
+	0x01021994: "tmpfs",
+	0x9fa0:     "proc",
+	0x62656572: "sysfs",
+	0x1cd1:     "devpts",
+	0x63677270: "cgroup2",
+	0x27e0eb:   "cgroup",
+	0x9123683E: "btrfs",
+	0x58465342: "xfs",
+	0x794c7630: "overlayfs",
+	0x6969:     "nfs",
+	0x73717368: "squashfs",
+	0x858458f6: "ramfs/hugetlbfs",
+	0x42494e4d: "binfmt_misc",
+	0xf97cff8c: "selinuxfs",
+	0x50495045: "pipefs",
+	0x534F434B: "sockfs",
+	0x09041934: "anon_inodefs",
+	0x19800202: "mqueue",
+	0x64626720: "debugfs",
+	0x74726163: "tracefs",
+	0xcafe4a11: "bpf",
+}
+
+// unixMode renders a POSIX stat mode as its "ls -l" form: a file-type
+// character followed by the rwxrwxrwx permission triplet -- the actual
+// parsed value of a mode, not the packed octal number.
+func unixMode(mode uint32) string {
+	const (
+		sIFMT   = 0o170000
+		sIFSOCK = 0o140000
+		sIFLNK  = 0o120000
+		sIFREG  = 0o100000
+		sIFBLK  = 0o060000
+		sIFDIR  = 0o040000
+		sIFCHR  = 0o020000
+		sIFIFO  = 0o010000
+	)
+	typeChar := byte('?')
+	switch mode & sIFMT {
+	case sIFSOCK:
+		typeChar = 's'
+	case sIFLNK:
+		typeChar = 'l'
+	case sIFREG:
+		typeChar = '-'
+	case sIFBLK:
+		typeChar = 'b'
+	case sIFDIR:
+		typeChar = 'd'
+	case sIFCHR:
+		typeChar = 'c'
+	case sIFIFO:
+		typeChar = 'p'
+	}
+	perm := func(bit uint32, c byte) byte {
+		if mode&bit != 0 {
+			return c
+		}
+		return '-'
+	}
+	bits := []byte{
+		typeChar,
+		perm(0o400, 'r'), perm(0o200, 'w'), perm(0o100, 'x'),
+		perm(0o040, 'r'), perm(0o020, 'w'), perm(0o010, 'x'),
+		perm(0o004, 'r'), perm(0o002, 'w'), perm(0o001, 'x'),
+	}
+	if mode&0o4000 != 0 {
+		if bits[3] == 'x' {
+			bits[3] = 's'
+		} else {
+			bits[3] = 'S'
+		}
+	}
+	if mode&0o2000 != 0 {
+		if bits[6] == 'x' {
+			bits[6] = 's'
+		} else {
+			bits[6] = 'S'
+		}
+	}
+	if mode&0o1000 != 0 {
+		if bits[9] == 'x' {
+			bits[9] = 't'
+		} else {
+			bits[9] = 'T'
+		}
+	}
+	return string(bits)
+}
+
+// pidTypeName decodes an async fd owner's target kind -- confirmed against
+// fd.c, which reads it straight from file->f_owner.pid_type, the kernel's
+// own stable enum pid_type.
+func pidTypeName(t uint16) string {
+	switch t {
+	case 0:
+		return "pid"
+	case 1:
+		return "tgid"
+	case 2:
+		return "pgid"
+	case 3:
+		return "sid"
+	default:
+		return fmt.Sprintf("unknown_%d", t)
+	}
+}
+
+// addressFamilyName, socketTypeName, protocolName, socketStateName,
+// protocolStateName and socketShutdownName are standard Linux/POSIX values
+// (include/linux/socket.h, net/tcp_states.h), not part of the mapple wire
+// protocol. protocolName/protocolStateName are only meaningful for an
+// actual INET/INET6 socket -- the kernel reuses the same numeric range for
+// other families to mean something else entirely, so those fall back to
+// "unknown_N" for every other family instead of guessing a wrong name.
+func isInetFamily(family uint16) bool { return family == 2 || family == 10 }
+
+func addressFamilyName(f uint16) string {
+	switch f {
+	case 0:
+		return "AF_UNSPEC"
+	case 1:
+		return "AF_UNIX"
+	case 2:
+		return "AF_INET"
+	case 10:
+		return "AF_INET6"
+	case 16:
+		return "AF_NETLINK"
+	case 17:
+		return "AF_PACKET"
+	case 38:
+		return "AF_ALG"
+	case 40:
+		return "AF_VSOCK"
+	case 42:
+		return "AF_QIPCRTR"
+	default:
+		return fmt.Sprintf("unknown_%d", f)
+	}
+}
+
+func socketTypeName(t uint16) string {
+	switch t {
+	case 1:
+		return "SOCK_STREAM"
+	case 2:
+		return "SOCK_DGRAM"
+	case 3:
+		return "SOCK_RAW"
+	case 4:
+		return "SOCK_RDM"
+	case 5:
+		return "SOCK_SEQPACKET"
+	case 6:
+		return "SOCK_DCCP"
+	case 10:
+		return "SOCK_PACKET"
+	default:
+		return fmt.Sprintf("unknown_%d", t)
+	}
+}
+
+func protocolName(family, p uint16) string {
+	if !isInetFamily(family) {
+		return fmt.Sprintf("unknown_%d", p)
+	}
+	switch p {
+	case 0:
+		return "IPPROTO_IP"
+	case 1:
+		return "IPPROTO_ICMP"
+	case 2:
+		return "IPPROTO_IGMP"
+	case 6:
+		return "IPPROTO_TCP"
+	case 17:
+		return "IPPROTO_UDP"
+	case 41:
+		return "IPPROTO_IPV6"
+	case 58:
+		return "IPPROTO_ICMPV6"
+	case 132:
+		return "IPPROTO_SCTP"
+	default:
+		return fmt.Sprintf("unknown_%d", p)
+	}
+}
+
+func socketStateName(s uint16) string {
+	switch s {
+	case 0:
+		return "SS_FREE"
+	case 1:
+		return "SS_UNCONNECTED"
+	case 2:
+		return "SS_CONNECTING"
+	case 3:
+		return "SS_CONNECTED"
+	case 4:
+		return "SS_DISCONNECTING"
+	default:
+		return fmt.Sprintf("unknown_%d", s)
+	}
+}
+
+func protocolStateName(family, protocol, s uint16) string {
+	if !isInetFamily(family) || protocol != 6 {
+		return fmt.Sprintf("unknown_%d", s)
+	}
+	switch s {
+	case 1:
+		return "TCP_ESTABLISHED"
+	case 2:
+		return "TCP_SYN_SENT"
+	case 3:
+		return "TCP_SYN_RECV"
+	case 4:
+		return "TCP_FIN_WAIT1"
+	case 5:
+		return "TCP_FIN_WAIT2"
+	case 6:
+		return "TCP_TIME_WAIT"
+	case 7:
+		return "TCP_CLOSE"
+	case 8:
+		return "TCP_CLOSE_WAIT"
+	case 9:
+		return "TCP_LAST_ACK"
+	case 10:
+		return "TCP_LISTEN"
+	case 11:
+		return "TCP_CLOSING"
+	case 12:
+		return "TCP_NEW_SYN_RECV"
+	default:
+		return fmt.Sprintf("unknown_%d", s)
+	}
+}
+
+func socketShutdownName(v uint16) string {
+	switch v & 0x3 {
+	case 1:
+		return "read"
+	case 2:
+		return "write"
+	case 3:
+		return "both"
+	default:
+		return "none"
+	}
+}
+
+// elfOSABIName mirrors the ELFOSABI_* constants (elf.h) -- v8 left this raw,
+// but the table is well known and stable, so it's decoded here.
+func elfOSABIName(a uint8) string {
+	switch a {
+	case 0:
+		return "SYSV"
+	case 1:
+		return "HPUX"
+	case 2:
+		return "NETBSD"
+	case 3:
+		return "LINUX"
+	case 6:
+		return "SOLARIS"
+	case 9:
+		return "FREEBSD"
+	case 97:
+		return "ARM"
+	case 255:
+		return "STANDALONE"
+	default:
+		return fmt.Sprintf("unknown_%d", a)
+	}
+}
+
+// statxBits mirrors the stable UAPI STATX_* bits (linux/stat.h) describing
+// which stat fields the kernel actually populated.
+var statxBits = []flagBit{
+	{0x001, "TYPE"}, {0x002, "MODE"}, {0x004, "NLINK"}, {0x008, "UID"},
+	{0x010, "GID"}, {0x020, "ATIME"}, {0x040, "MTIME"}, {0x080, "CTIME"},
+	{0x100, "INO"}, {0x200, "SIZE"}, {0x400, "BLOCKS"}, {0x800, "BTIME"},
+	{0x1000, "MNT_ID"}, {0x2000, "DIOALIGN"},
+}
+
+// fsAttrBits mirrors the stable UAPI FS_*_FL inode attribute bits
+// (linux/fs.h) reported via statx/FS_IOC_GETFLAGS.
+var fsAttrBits = []flagBit{
+	{0x1, "SECRM"}, {0x2, "UNRM"}, {0x4, "COMPR"}, {0x8, "SYNC"},
+	{0x10, "IMMUTABLE"}, {0x20, "APPEND"}, {0x40, "NODUMP"}, {0x80, "NOATIME"},
+	{0x100, "DIRTY"}, {0x200, "COMPRBLK"}, {0x400, "NOCOMP"}, {0x800, "ENCRYPT"},
+	{0x1000, "INDEX"}, {0x8000, "TOPDIR"}, {0x10000, "HUGE_FILE"},
+	{0x20000, "EXTENT"}, {0x100000, "EA_INODE"}, {0x200000, "EOFBLOCKS"},
+	{0x400000, "NOCOW"}, {0x2000000, "INLINE_DATA"}, {0x4000000, "PROJINHERIT"},
+	{0x10000000, "CASEFOLD"}, {0x80000000, "RESERVED"},
+}
+
+// fmodeBits covers only the small subset of the kernel-internal f_mode
+// bitmask (linux/fs.h) that has been stable across kernel versions; f_mode
+// is not stable UAPI, so anything outside this subset renders as
+// "unknown_0x..." rather than risk a wrong name for a bit whose meaning can
+// differ by kernel version.
+var fmodeBits = []flagBit{
+	{0x1, "READ"}, {0x2, "WRITE"}, {0x4, "LSEEK"}, {0x8, "PREAD"},
+	{0x10, "PWRITE"}, {0x20, "EXEC"}, {0x40, "NDELAY"}, {0x80, "EXCL"},
 }
 
 // --- per-group view builders ---
@@ -632,11 +978,11 @@ func viewIdentity(o *moduleclient.IdentityObject) map[string]interface{} {
 		executable["device_major"] = o.ExecutableDeviceMajor
 		executable["device_minor"] = o.ExecutableDeviceMinor
 		executable["inode"] = strU64(o.ExecutableInode)
-		executable["mode"] = o.ExecutableMode
+		executable["mode"] = unixMode(o.ExecutableMode)
 		executable["size"] = strU64(o.ExecutableSize)
 		executable["mtime_ns"] = isoNanos(o.ExecutableMtimeNS)
 		executable["ctime_ns"] = isoNanos(o.ExecutableCtimeNS)
-		executable["filesystem_magic"] = hexPad64(o.ExecutableFilesystemMagic)
+		executable["filesystem_magic"] = fsMagicName(o.ExecutableFilesystemMagic)
 	}
 	m["executable"] = executable
 	return m
@@ -907,9 +1253,9 @@ func viewFilesObject(o *moduleclient.FilesObject) map[string]interface{} {
 
 func viewFDEntry(e *moduleclient.FDEntry) map[string]interface{} {
 	m := map[string]interface{}{
-		"fd":               e.FD.FD,
-		"kind":             fdKindName(e.FD.Kind),
-		"descriptor_flags": e.FD.DescriptorFlags,
+		"fd":      e.FD.FD,
+		"kind":    fdKindName(e.FD.Kind),
+		"cloexec": e.FD.DescriptorFlags&wire.FDDescriptorFlagCloexec != 0,
 		"open_flags": map[string]interface{}{
 			"value":  e.FD.OpenFlags,
 			"access": openAccessMode(e.FD.OpenFlags),
@@ -948,7 +1294,7 @@ func viewFDEntry(e *moduleclient.FDEntry) map[string]interface{} {
 
 func viewFDDetails(d *wire.FDDetails, deviceMajor, deviceMinor uint32, inode, mountID uint64) map[string]interface{} {
 	m := map[string]interface{}{
-		"file_mode": hexPad64(d.FileMode),
+		"file_mode": flagNames(d.FileMode, fmodeBits),
 		"position":  strI64(d.Position),
 		"version":   strU64(d.Version),
 		"credentials": map[string]interface{}{
@@ -958,7 +1304,7 @@ func viewFDDetails(d *wire.FDDetails, deviceMajor, deviceMinor uint32, inode, mo
 			"filesystem_uid": d.CredentialFilesystemUID, "filesystem_gid": d.CredentialFilesystemGID,
 		},
 		"async_owner": map[string]interface{}{
-			"pid": d.AsyncOwnerPID, "type": d.AsyncOwnerType, "signal": d.AsyncSignal,
+			"pid": d.AsyncOwnerPID, "type": pidTypeName(d.AsyncOwnerType), "signal": d.AsyncSignal,
 			"uid": d.AsyncOwnerUID, "effective_uid": d.AsyncOwnerEffectiveUID,
 		},
 	}
@@ -991,8 +1337,8 @@ func viewFDStat(s wire.FDStat, deviceMajor, deviceMinor uint32, inode, mountID u
 	return map[string]interface{}{
 		"status":                     "available",
 		"error":                      nil,
-		"result_mask":                s.ResultMask,
-		"mode":                       s.Mode,
+		"result_mask":                flagNames(uint64(s.ResultMask), statxBits),
+		"mode":                       unixMode(s.Mode),
 		"link_count":                 s.LinkCount,
 		"block_size":                 s.BlockSize,
 		"uid":                        s.UID,
@@ -1006,11 +1352,11 @@ func viewFDStat(s wire.FDStat, deviceMajor, deviceMinor uint32, inode, mountID u
 		"inode":                      strU64(inode),
 		"size":                       strI64(s.Size),
 		"blocks":                     strU64(s.Blocks),
-		"attributes":                 hexPad64(s.Attributes),
-		"attributes_mask":            hexPad64(s.AttributesMask),
+		"attributes":                 flagNames(s.Attributes, fsAttrBits),
+		"attributes_mask":            flagNames(s.AttributesMask, fsAttrBits),
 		"mount_id":                   strU64(mountID),
 		"change_cookie":              strU64(s.ChangeCookie),
-		"filesystem_magic":           hexPad64(s.FilesystemMagic),
+		"filesystem_magic":           fsMagicName(s.FilesystemMagic),
 		"access_time":                isoSecNsec(s.AccessTimeSec, s.AccessTimeNsec),
 		"birth_time":                 isoSecNsec(s.BirthTimeSec, s.BirthTimeNsec),
 		"change_time":                isoSecNsec(s.ChangeTimeSec, s.ChangeTimeNsec),
@@ -1035,17 +1381,17 @@ func viewNetworkObject(o *moduleclient.FilesObject) map[string]interface{} {
 	}
 }
 
-// viewNetwork leaves family/type/protocol/socket_state/protocol_state/
-// shutdown as bare wire numbers (matching v8 exactly) -- only the socket
-// endpoint's own "type" gets a decoded name alongside its raw type_value.
+// viewNetwork decodes every enum field to its real name -- family/type/
+// protocol/socket_state/protocol_state/shutdown are all standard Linux
+// values with stable meanings, so none of them stay a bare wire number.
 func viewNetwork(n *wire.Network) map[string]interface{} {
 	return map[string]interface{}{
-		"family":            n.Family,
-		"type":              n.SocketType,
-		"protocol":          n.Protocol,
-		"socket_state":      n.SocketState,
-		"protocol_state":    n.ProtocolState,
-		"shutdown":          n.Shutdown,
+		"family":            addressFamilyName(n.Family),
+		"type":              socketTypeName(n.SocketType),
+		"protocol":          protocolName(n.Family, n.Protocol),
+		"socket_state":      socketStateName(n.SocketState),
+		"protocol_state":    protocolStateName(n.Family, n.Protocol, n.ProtocolState),
+		"shutdown":          socketShutdownName(n.Shutdown),
 		"error":             errorOrNil(uint32(n.Error)),
 		"soft_error":        errorOrNil(uint32(n.SoftError)),
 		"bound_device":      n.BoundDevice,
@@ -1154,11 +1500,11 @@ func (c *mappedFilesCatalog) resolve(mm *wire.MemoryMap) (uint64, bool) {
 		identity["error"] = nil
 		identity["device"] = map[string]interface{}{"major": mm.FileDeviceMajor, "minor": mm.FileDeviceMinor}
 		identity["inode"] = strU64(mm.FileInode)
-		identity["mode"] = mm.FileMode
+		identity["mode"] = unixMode(mm.FileMode)
 		identity["size"] = strU64(mm.FileSize)
 		identity["mtime_ns"] = isoNanos(mm.FileMtimeNS)
 		identity["ctime_ns"] = isoNanos(mm.FileCtimeNS)
-		identity["filesystem_magic"] = hexPad64(mm.FileFilesystemMagic)
+		identity["filesystem_magic"] = fsMagicName(mm.FileFilesystemMagic)
 	} else {
 		identity["error"] = errorOrNil(mm.FileMetadataError)
 		identity["device"] = nil
@@ -1260,7 +1606,8 @@ func viewELFFile(o *moduleclient.ELFObject, catalog *elfSymbolCatalog, mappedFil
 	header := map[string]interface{}{
 		"class":             elfClassName(md.ELFClass),
 		"data_encoding":     elfDataEncodingName(md.DataEncoding),
-		"os_abi":            md.OSABI,
+		"os_abi":            elfOSABIName(md.OSABI),
+		"os_abi_value":      md.OSABI,
 		"abi_version":       md.ABIVersion,
 		"object_type":       elfObjectTypeName(md.ObjectType),
 		"object_type_value": md.ObjectType,
@@ -1279,11 +1626,11 @@ func viewELFFile(o *moduleclient.ELFObject, catalog *elfSymbolCatalog, mappedFil
 	fileIdentity := map[string]interface{}{
 		"device":           map[string]interface{}{"major": md.FileDeviceMajor, "minor": md.FileDeviceMinor},
 		"inode":            strU64(md.FileInode),
-		"mode":             md.FileMode,
+		"mode":             unixMode(md.FileMode),
 		"size":             strU64(md.FileSize),
 		"mtime_ns":         isoNanos(md.FileMtimeNS),
 		"ctime_ns":         isoNanos(md.FileCtimeNS),
-		"filesystem_magic": hexPad64(md.FileFilesystemMagic),
+		"filesystem_magic": fsMagicName(md.FileFilesystemMagic),
 	}
 
 	var interpreter, needed, soname, rpath, runpath, buildIDs []string
