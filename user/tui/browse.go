@@ -609,26 +609,24 @@ func fieldListFrame(title string, fields map[string]interface{}) browseFrame {
 // arrived pre-decoded from the server (see server/pslistview.go) --
 // formatFieldValue only renders it, it never interprets a raw code.
 func objectRows(title string, fields map[string]interface{}) []browseRow {
-	keys := make([]string, 0, len(fields))
-	for k := range fields {
+	var leafKeys, folderKeys []string
+	for k, v := range fields {
 		if k == "file" {
 			continue
 		}
-		keys = append(keys, k)
+		if _, ok := v.(map[string]interface{}); ok {
+			folderKeys = append(folderKeys, k)
+		} else {
+			leafKeys = append(leafKeys, k)
+		}
 	}
-	sort.Strings(keys)
-	rows := make([]browseRow, 0, len(keys))
-	for _, k := range keys {
+	sortFieldKeys(leafKeys)
+	sortFieldKeys(folderKeys)
+
+	rows := make([]browseRow, 0, len(leafKeys)+len(folderKeys))
+	for _, k := range leafKeys {
 		key := k
 		v := fields[key]
-		if nested, ok := v.(map[string]interface{}); ok {
-			rows = append(rows, browseRow{
-				label: key,
-				color: sectionRowColor,
-				push:  func() browseFrame { return fieldListFrame(title+"."+key, nested) },
-			})
-			continue
-		}
 		displayed := formatFieldValue(v)
 		if isByteSizeField(key) {
 			if s, ok := v.(string); ok {
@@ -639,7 +637,66 @@ func objectRows(title string, fields map[string]interface{}) []browseRow {
 		}
 		rows = append(rows, browseRow{label: fmt.Sprintf("%s: %s", key, displayed), color: fieldValueColor(displayed)})
 	}
+	for _, k := range folderKeys {
+		key := k
+		nested, _ := fields[key].(map[string]interface{})
+		rows = append(rows, browseRow{
+			label: key,
+			color: sectionRowColor,
+			push:  func() browseFrame { return fieldListFrame(title+"."+key, nested) },
+		})
+	}
 	return rows
+}
+
+// fieldOrderPriority ranks the field names worth always seeing first, in a
+// meaningful order, instead of alphabetically -- e.g. a memory mapping's
+// "start" must stay immediately followed by "end", not sorted apart by
+// whatever else happens to start with a letter in between. Applies
+// wherever a name in this list occurs, across every object shape in the
+// schema; anything not listed falls back to alphabetical order after all
+// of these. See sortFieldKeys/objectRows: fields (leaves) always sort
+// before folders (nested objects) regardless of this list.
+var fieldOrderPriority = []string{
+	// status/type discriminators -- worth knowing before anything else
+	"status", "collection_status", "path_status", "argv_status",
+	"identity_status", "metadata_status", "type", "kind",
+	// identifiers
+	"pid", "tgid", "ppid", "fd",
+	// paired address range -- start must stay immediately before end
+	"start", "end",
+	// the thing itself
+	"path", "value", "name", "comm",
+	// memory-map permission fields, kept together
+	"permissions", "permission_limits", "sharing", "may_share", "deleted",
+	// common ownership/identity
+	"uid", "gid", "effective_uid", "effective_gid", "mode", "size", "inode",
+	// timestamps, near the end of the leaf fields
+	"mtime_ns", "ctime_ns", "access_time", "birth_time", "change_time", "modification_time",
+	// errors last among leaves
+	"error",
+}
+
+func fieldPriorityIndex(key string) int {
+	for i, k := range fieldOrderPriority {
+		if k == key {
+			return i
+		}
+	}
+	return len(fieldOrderPriority)
+}
+
+// sortFieldKeys orders keys by fieldOrderPriority, falling back to
+// alphabetical for anything not in that list (and as the tiebreak among
+// keys that are, though none of the priority entries collide today).
+func sortFieldKeys(keys []string) {
+	sort.SliceStable(keys, func(i, j int) bool {
+		pi, pj := fieldPriorityIndex(keys[i]), fieldPriorityIndex(keys[j])
+		if pi != pj {
+			return pi < pj
+		}
+		return keys[i] < keys[j]
+	})
 }
 
 // isByteSizeField reports whether a field name represents a byte quantity
