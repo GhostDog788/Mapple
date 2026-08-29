@@ -13,13 +13,15 @@ import (
 )
 
 // browseFrameKind marks the handful of frames that support an operation
-// beyond generic cursor navigation -- currently just framePslist, which
-// gains "/" search (see handleBrowseKey).
+// beyond generic cursor navigation -- framePslist gains "/" search and "s"
+// sort-cycle, frameGroupChecklist gains space-to-toggle and "f" to fetch
+// (see handleBrowseKey).
 type browseFrameKind int
 
 const (
 	frameGeneric browseFrameKind = iota
 	framePslist
+	frameGroupChecklist
 )
 
 // A browseFrame is one level of the Enter-drills-in/Esc-or-q-backs-out
@@ -130,6 +132,47 @@ func shortID(id string) string {
 		return id[:8]
 	}
 	return id
+}
+
+// --- pslist group checklist (`command pslist groups`) ---
+
+// pslistGroupNames are the api.PslistGroup enum's own string values, in the
+// same order the server declares them in -- also the group checklist's
+// display order.
+var pslistGroupNames = []string{
+	"identity", "environment", "security", "context", "resources",
+	"fds", "fds_details", "network", "memory_maps", "elf",
+}
+
+// defaultPslistGroupSelection checks every group, matching today's
+// behavior (a bare `command pslist` requests everything) until the user
+// deliberately opens `command pslist groups` and unchecks something.
+func defaultPslistGroupSelection() map[string]bool {
+	sel := make(map[string]bool, len(pslistGroupNames))
+	for _, g := range pslistGroupNames {
+		sel[g] = true
+	}
+	return sel
+}
+
+// groupChecklistFrame lists the 10 pslist groups with a checkbox each;
+// handleBrowseKey handles space/enter (toggle a group row) and "f"/enter-
+// on-the-Fetch-row (fire the request with only the checked groups).
+func groupChecklistFrame(selection map[string]bool) browseFrame {
+	rows := make([]browseRow, 0, len(pslistGroupNames)+1)
+	for _, g := range pslistGroupNames {
+		mark := "[ ]"
+		if selection[g] {
+			mark = "[x]"
+		}
+		rows = append(rows, browseRow{label: fmt.Sprintf("%s %s", mark, g)})
+	}
+	rows = append(rows, browseRow{label: "Fetch", color: sectionRowColor})
+	return browseFrame{
+		title: "pslist groups (space/enter toggles, f or enter-on-Fetch requests, esc/q cancels)",
+		rows:  rows,
+		kind:  frameGroupChecklist,
+	}
 }
 
 // --- pslist: task list -> task detail -> section (identity/security/files) ---
@@ -587,9 +630,58 @@ func objectRows(title string, fields map[string]interface{}) []browseRow {
 			continue
 		}
 		displayed := formatFieldValue(v)
+		if isByteSizeField(key) {
+			if s, ok := v.(string); ok {
+				if human, ok := humanBytes(s); ok {
+					displayed = human
+				}
+			}
+		}
 		rows = append(rows, browseRow{label: fmt.Sprintf("%s: %s", key, displayed), color: fieldValueColor(displayed)})
 	}
 	return rows
+}
+
+// isByteSizeField reports whether a field name represents a byte quantity
+// worth showing in human-scaled form. Detected by name since the server
+// sends these as plain numeric strings (see strU64 in
+// server/pslistview.go), the same JSON type as any other big-number
+// field (inode, mtime, ...) that should *not* be scaled.
+func isByteSizeField(key string) bool {
+	switch key {
+	case "size", "byte_length":
+		return true
+	}
+	return strings.HasSuffix(key, "_bytes")
+}
+
+// humanBytes renders a byte count as e.g. "1.23MB (32324123124)" -- the
+// human-scaled value alongside the exact raw one, so nothing is lost.
+func humanBytes(raw string) (string, bool) {
+	n, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return "", false
+	}
+	const (
+		kb = 1 << 10
+		mb = 1 << 20
+		gb = 1 << 30
+		tb = 1 << 40
+	)
+	var scaled string
+	switch {
+	case n >= tb:
+		scaled = fmt.Sprintf("%.2fTB", float64(n)/tb)
+	case n >= gb:
+		scaled = fmt.Sprintf("%.2fGB", float64(n)/gb)
+	case n >= mb:
+		scaled = fmt.Sprintf("%.2fMB", float64(n)/mb)
+	case n >= kb:
+		scaled = fmt.Sprintf("%.2fKB", float64(n)/kb)
+	default:
+		scaled = fmt.Sprintf("%dB", n)
+	}
+	return fmt.Sprintf("%s (%d)", scaled, n), true
 }
 
 // formatFieldValue avoids Go's default %v scientific notation for large

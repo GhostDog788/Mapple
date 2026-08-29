@@ -92,7 +92,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 	}
 
 	// 5. PSLIST, and the Model-level task extraction that feeds the list view.
-	msg = m.fetchPslist(id)()
+	msg = m.fetchPslist(id, nil)()
 	pslist, ok := msg.(pslistResultMsg)
 	if !ok || pslist.err != nil {
 		t.Fatalf("fetchPslist: %+v", msg)

@@ -66,6 +66,16 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.replaceTopFrame(pslistFrame(*m.lastSnapshot, m.pslistSortMode, m.pslistFilter))
 		}
 		return m, nil
+	case "space":
+		if top.kind == frameGroupChecklist {
+			m.toggleChecklistRow(top.cursor)
+		}
+		return m, nil
+	case "f":
+		if top.kind == frameGroupChecklist {
+			return m.startPslistFetchSelected()
+		}
+		return m, nil
 	case "esc", "q":
 		if m.popFrame() {
 			m.input.Focus()
@@ -74,6 +84,13 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if len(top.rows) == 0 {
 			return m, nil
+		}
+		if top.kind == frameGroupChecklist {
+			if top.cursor < len(pslistGroupNames) {
+				m.toggleChecklistRow(top.cursor)
+				return m, nil
+			}
+			return m.startPslistFetchSelected()
 		}
 		row := top.rows[top.cursor]
 		switch {
@@ -92,6 +109,44 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+// toggleChecklistRow flips the group at row index cursor and rebuilds the
+// checklist frame in place, restoring cursor afterward -- replaceTopFrame
+// on its own would reset it to 0 (groupChecklistFrame always builds a fresh
+// browseFrame at cursor 0), which would make repeated toggles unusable
+// (every space/enter press would snap you back to the top row).
+func (m Model) toggleChecklistRow(cursor int) {
+	if cursor < 0 || cursor >= len(pslistGroupNames) || m.pslistGroupSelection == nil {
+		return
+	}
+	group := pslistGroupNames[cursor]
+	m.pslistGroupSelection[group] = !m.pslistGroupSelection[group]
+	m.replaceTopFrame(groupChecklistFrame(m.pslistGroupSelection))
+	m.frames[len(m.frames)-1].cursor = cursor
+	m.refreshBrowseView()
+}
+
+// startPslistFetchSelected closes the group checklist and fires the pslist
+// request with only the checked groups.
+func (m Model) startPslistFetchSelected() (tea.Model, tea.Cmd) {
+	if m.current == nil {
+		m.printLine("not connected -- `session connect` or `session create` first")
+		return m, nil
+	}
+	var groups []api.PslistGroup
+	for _, g := range pslistGroupNames {
+		if m.pslistGroupSelection[g] {
+			groups = append(groups, api.PslistGroup(g))
+		}
+	}
+	if len(groups) == 0 {
+		m.printError("select at least one group first (space toggles, f fetches)")
+		return m, nil
+	}
+	m.popFrame()
+	m.input.Focus()
+	return m, m.fetchPslist(m.current.Id, groups)
 }
 
 // handleSearchKey captures the string typed after "/" into m.input --
@@ -179,7 +234,7 @@ var replGrammar = map[int]map[string][]string{
 // subverb (session's own subverbs take an id/no argument, so "session help"
 // is already reachable at word index 1 above).
 var replGrammar2 = map[string][]string{
-	"command pslist": {"history", "help"},
+	"command pslist": {"history", "groups", "help"},
 	"command info":   {"help"},
 	"command echo":   {"help"},
 }
@@ -322,8 +377,11 @@ func (m *Model) printCommandEchoHelp() {
 
 func (m *Model) printCommandPslistHelp() {
 	m.printLine(strings.Join([]string{
-		"command pslist                  -- fetch a fresh process/thread snapshot",
-		"                                   (kept in history, see below)",
+		"command pslist                  -- fetch a fresh process/thread snapshot, requesting every",
+		"                                   group the module supports (kept in history, see below)",
+		"command pslist groups           -- opens a checklist of the 10 pslist groups; space/enter",
+		"                                   toggles the group under the cursor, f (or enter on the",
+		"                                   Fetch row) requests only the checked ones, esc/q cancels",
 		"command pslist history          -- browse up to the last 5 pslist results;",
 		"                                   enter views one without re-fetching",
 		"",
@@ -540,7 +598,7 @@ func (m Model) resolveSession(prefix string) (api.Session, error) {
 
 func (m Model) dispatchCommand(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
-		m.printLine("usage: command info|echo <text>|pslist [history]")
+		m.printLine("usage: command info|echo <text>|pslist [groups|history]")
 		return m, nil
 	}
 	if args[0] == "help" {
@@ -598,10 +656,18 @@ func (m Model) dispatchCommand(args []string) (tea.Model, tea.Cmd) {
 		return m, m.sendEcho(id, text)
 	case "pslist":
 		if len(args) > 1 {
+			if args[1] == "groups" {
+				if len(args) > 2 {
+					m.printError("unexpected argument %q", args[2])
+					return m, nil
+				}
+				m.pushFrame(groupChecklistFrame(m.pslistGroupSelection))
+				return m, nil
+			}
 			m.printError("unexpected argument %q", args[1])
 			return m, nil
 		}
-		return m, m.fetchPslist(id)
+		return m, m.fetchPslist(id, nil)
 	default:
 		m.printError("unknown command %q", args[0])
 		return m, nil

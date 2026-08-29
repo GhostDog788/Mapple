@@ -125,10 +125,11 @@ type Model struct {
 	pending   *wizard
 	searching bool // top frame is a pslist frame and "/" is capturing a search string into input
 
-	lastSnapshot   *api.ProcessSnapshot
-	pslistSortMode int
-	pslistFilter   string
-	pslistHistory  []*pslistHistoryEntry // oldest first, capped at pslistHistoryLimit
+	lastSnapshot         *api.ProcessSnapshot
+	pslistSortMode       int
+	pslistFilter         string
+	pslistHistory        []*pslistHistoryEntry // oldest first, capped at pslistHistoryLimit
+	pslistGroupSelection map[string]bool       // `command pslist groups` checklist state, keyed by pslistGroupNames
 
 	width, height int
 }
@@ -142,14 +143,15 @@ func New(client api.ClientWithResponsesInterface, profileName string, profile Pr
 	vp := viewport.New()
 
 	m := Model{
-		client:         client,
-		profileName:    profileName,
-		profile:        profile,
-		moduleProfiles: moduleProfiles,
-		configPath:     configPath,
-		input:          input,
-		viewport:       vp,
-		created:        make(map[string]bool),
+		client:               client,
+		profileName:          profileName,
+		profile:              profile,
+		moduleProfiles:       moduleProfiles,
+		configPath:           configPath,
+		input:                input,
+		viewport:             vp,
+		created:              make(map[string]bool),
+		pslistGroupSelection: defaultPslistGroupSelection(),
 	}
 	m.printLine("not connected -- try `session list` or `session create`. Type `help` for the full command list.")
 	return m

@@ -157,14 +157,19 @@ func (m Model) sendEcho(id, text string) tea.Cmd {
 	}
 }
 
-func (m Model) fetchPslist(id string) tea.Cmd {
+// fetchPslist requests a pslist snapshot. groups is nil for "everything the
+// module supports" (today's default, unchanged); a non-nil slice (built
+// from the `command pslist groups` checklist) requests only those groups.
+func (m Model) fetchPslist(id string, groups []api.PslistGroup) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		compact := api.Compact
-		resp, err := m.client.PostSessionsIdCommandsPslistWithResponse(ctx, id, api.PostSessionsIdCommandsPslistJSONRequestBody{
-			Format: &compact,
-		})
+		body := api.PostSessionsIdCommandsPslistJSONRequestBody{Format: &compact}
+		if len(groups) > 0 {
+			body.RequestedGroups = &groups
+		}
+		resp, err := m.client.PostSessionsIdCommandsPslistWithResponse(ctx, id, body)
 		if err != nil {
 			return pslistResultMsg{err: err}
 		}
