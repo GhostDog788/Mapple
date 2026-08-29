@@ -329,8 +329,14 @@ components:
         max_sessions:
           type: integer
         supported_commands:
-          type: integer
-          format: int64
+          description: >
+            Decoded wire-protocol command names this session's kernel
+            module supports (e.g. "echo", "pslist", "info") -- a bit this
+            build doesn't recognize (a newer module) renders as "bit_N"
+            rather than being silently dropped.
+          type: array
+          items:
+            type: string
     EchoPayload:
       type: object
       required: [data]

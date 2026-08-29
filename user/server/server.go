@@ -3,10 +3,12 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/GhostDog788/Mapple/user/api"
 	"github.com/GhostDog788/Mapple/user/server/internal/moduleclient"
+	"github.com/GhostDog788/Mapple/user/server/internal/moduleclient/wire"
 )
 
 type Server struct {
@@ -49,8 +51,36 @@ func apiInfoResult(info moduleclient.InfoResult) api.InfoResult {
 	return api.InfoResult{
 		SessionId:         int64(info.SessionID),
 		MaxSessions:       int(info.MaxSessions),
-		SupportedCommands: int64(info.SupportedCommands),
+		SupportedCommands: commandNames(info.SupportedCommands),
 	}
+}
+
+// commandNameByBit mirrors the wire protocol's own Command bit positions
+// (moduleclient/wire.Command* -- CommandEcho=1, CommandPslist=2,
+// CommandInfo=3), each a bit index into the info response's
+// supported_commands mask.
+var commandNameByBit = map[uint]string{
+	uint(wire.CommandEcho):   "echo",
+	uint(wire.CommandPslist): "pslist",
+	uint(wire.CommandInfo):   "info",
+}
+
+// commandNames renders a supported_commands bitmask as the actual command
+// names it advertises rather than raw bits -- any bit this build doesn't
+// recognize (a newer module) is kept, not silently dropped, as "bit_N".
+func commandNames(mask uint64) []string {
+	names := []string{}
+	for bit := uint(0); bit < 64; bit++ {
+		if mask&(1<<bit) == 0 {
+			continue
+		}
+		if name, ok := commandNameByBit[bit]; ok {
+			names = append(names, name)
+		} else {
+			names = append(names, fmt.Sprintf("bit_%d", bit))
+		}
+	}
+	return names
 }
 
 func apiSession(l *Lease) api.Session {
