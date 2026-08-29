@@ -430,7 +430,10 @@ func memoryMapsFrame(obj map[string]interface{}, objects map[string]interface{},
 }
 
 func memoryMapDetailFrame(mapping map[string]interface{}, objects map[string]interface{}, symbolNames []string) browseFrame {
-	rows := flattenedRows(mapping)
+	start := stringField(mapping, "start")
+	end := stringField(mapping, "end")
+	title := fmt.Sprintf("mapping %s-%s", start, end)
+	rows := objectRows(title, mapping)
 	if fileID, ok := mapping["file"].(float64); ok {
 		mappedFiles, _ := objects["mapped_files"].(map[string]interface{})
 		if fileObj, ok := lookupByID(mappedFiles, fileID); ok {
@@ -442,9 +445,7 @@ func memoryMapDetailFrame(mapping map[string]interface{}, objects map[string]int
 			}
 		}
 	}
-	start := stringField(mapping, "start")
-	end := stringField(mapping, "end")
-	return browseFrame{title: fmt.Sprintf("mapping %s-%s -- esc/q back", start, end), rows: rows}
+	return browseFrame{title: title + " -- esc/q back", rows: rows}
 }
 
 // elfFrame shows one ELF file's header/identity/interpreter-needed-etc.
@@ -466,7 +467,7 @@ func elfFrame(obj map[string]interface{}, symbolNames []string) browseFrame {
 		}
 		fields[k] = v
 	}
-	rows := flattenedRows(fields)
+	rows := objectRows("elf", fields)
 	rows = append(rows,
 		browseRow{label: fmt.Sprintf("Imports (%d)", countGroupedSymbols(importGroups)), color: sectionRowColor, push: func() browseFrame { return elfSymbolGroupsFrame("imports", importGroups, symbolNames) }},
 		browseRow{label: fmt.Sprintf("Exports (%d)", countGroupedSymbols(exportGroups)), color: sectionRowColor, push: func() browseFrame { return elfSymbolGroupsFrame("exports", exportGroups, symbolNames) }},
@@ -545,34 +546,48 @@ func withResolvedSymbolName(sym map[string]interface{}, name string) map[string]
 	return out
 }
 
-// fieldListFrame is a leaf: flat key/value rows, nested objects flattened
-// with dotted keys (e.g. an fd's "details.stat.mode").
+// fieldListFrame is an object browser: each of the object's own fields
+// becomes a row via objectRows. title is also the breadcrumb prefix a
+// nested folder row appends its own key to (e.g. "security" ->
+// "security.credentials" -> "security.credentials.uids"), so the frame
+// title always shows the full path you've drilled into.
 func fieldListFrame(title string, fields map[string]interface{}) browseFrame {
-	rows := flattenedRows(fields)
-	return browseFrame{title: title + " -- esc/q back", rows: rows}
+	return browseFrame{title: title + " -- esc/q back", rows: objectRows(title, fields)}
 }
 
-// flattenedRows renders every field as a leaf row, flattening nested
-// objects with dotted keys. A mapping's own "file" id is dropped: the
-// caller (memoryMapDetailFrame) adds its own dedicated "File"/"ELF" rows
-// instead of showing the raw id. Every value here already arrived
-// pre-decoded from the server (see server/pslistview.go) -- formatFieldValue
-// only renders it, it never interprets a raw code.
-func flattenedRows(fields map[string]interface{}) []browseRow {
-	flat := map[string]interface{}{}
-	flattenFields("", fields, flat)
-	keys := make([]string, 0, len(flat))
-	for k := range flat {
-		if k == "file" || strings.HasSuffix(k, ".file") {
+// objectRows renders one level of an object's fields: a scalar or array
+// value is a leaf row; a nested object becomes a "folder" row (colored,
+// pushes a new fieldListFrame for that nested object) instead of a
+// flattened dotted-path row, so drilling into any group works the same way
+// at every depth -- "security" -> "credentials" -> "uids" -> "effective",
+// not one row labeled "credentials.uids.effective". A mapping's own "file"
+// id is dropped: the caller (memoryMapDetailFrame) adds its own dedicated
+// "File"/"ELF" rows instead of showing the raw id. Every value here already
+// arrived pre-decoded from the server (see server/pslistview.go) --
+// formatFieldValue only renders it, it never interprets a raw code.
+func objectRows(title string, fields map[string]interface{}) []browseRow {
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		if k == "file" {
 			continue
 		}
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	rows := make([]browseRow, len(keys))
-	for i, k := range keys {
-		displayed := formatFieldValue(flat[k])
-		rows[i] = browseRow{label: fmt.Sprintf("%s: %s", k, displayed), color: fieldValueColor(displayed)}
+	rows := make([]browseRow, 0, len(keys))
+	for _, k := range keys {
+		key := k
+		v := fields[key]
+		if nested, ok := v.(map[string]interface{}); ok {
+			rows = append(rows, browseRow{
+				label: key,
+				color: sectionRowColor,
+				push:  func() browseFrame { return fieldListFrame(title+"."+key, nested) },
+			})
+			continue
+		}
+		displayed := formatFieldValue(v)
+		rows = append(rows, browseRow{label: fmt.Sprintf("%s: %s", key, displayed), color: fieldValueColor(displayed)})
 	}
 	return rows
 }
@@ -599,19 +614,5 @@ func formatFieldValue(v interface{}) string {
 		return "(none)"
 	default:
 		return fmt.Sprintf("%v", v)
-	}
-}
-
-func flattenFields(prefix string, in map[string]interface{}, out map[string]interface{}) {
-	for k, v := range in {
-		key := k
-		if prefix != "" {
-			key = prefix + "." + k
-		}
-		if nested, ok := v.(map[string]interface{}); ok {
-			flattenFields(key, nested, out)
-		} else {
-			out[key] = v
-		}
 	}
 }
