@@ -117,6 +117,11 @@ type Model struct {
 	historyPos   int      // index into history; == len(history) means "not browsing, on the draft"
 	historyDraft string   // input text stashed when history browsing starts, restored past the newest entry
 
+	historySearching       bool   // ctrl+r reverse-i-search is capturing keys instead of handleReplKey
+	historySearchQuery     string // typed search text; "" matches everything
+	historySearchIndex     int    // position into matchingHistory's results; 0 = most recent match
+	historySearchOrigInput string // input value to restore if esc cancels the search
+
 	sessions []api.Session // last `session list` fetch, for id-prefix resolution
 	current  *api.Session
 	created  map[string]bool // leases this TUI created, for auto-renew
@@ -288,6 +293,19 @@ func (m *Model) navigateHistory(delta int) {
 		m.input.SetValue(m.history[m.historyPos])
 	}
 	m.input.CursorEnd()
+}
+
+// matchingHistory returns every entry of history containing query as a
+// substring, most recent first -- an empty query matches everything, so
+// ctrl+r with nothing typed yet just cycles back through all of history.
+func matchingHistory(history []string, query string) []string {
+	var matches []string
+	for i := len(history) - 1; i >= 0; i-- {
+		if strings.Contains(history[i], query) {
+			matches = append(matches, history[i])
+		}
+	}
+	return matches
 }
 
 func (m *Model) statusLine() string {

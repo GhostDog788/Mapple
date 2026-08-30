@@ -54,6 +54,12 @@ type browseRow struct {
 	// set m.lastSnapshot/sort/filter on the model handleBrowseKey is
 	// actually holding, which a captured closure can't reach correctly.
 	viewHistory *pslistHistoryEntry
+
+	// recall carries a past REPL command for a `history` row, same
+	// reasoning as connect/viewHistory above: selecting it loads the text
+	// back into the real input handleBrowseKey is holding (same effect as
+	// recalling it with up/down) without running it immediately.
+	recall *string
 }
 
 func (f *browseFrame) clampCursor() {
@@ -283,6 +289,19 @@ func pslistHistoryFrame(history []*pslistHistoryEntry) browseFrame {
 		rows[i] = browseRow{label: label, viewHistory: entry}
 	}
 	title := fmt.Sprintf("pslist history (%d/%d) -- enter to view, esc/q back", len(history), pslistHistoryLimit)
+	return browseFrame{title: title, rows: rows}
+}
+
+// historyFrame lists every submitted REPL command, most recent first --
+// modeled on pslistHistoryFrame above, but selecting a row recalls the
+// command into the input (see browseRow.recall) rather than viewing data.
+func historyFrame(history []string) browseFrame {
+	rows := make([]browseRow, len(history))
+	for i := range history {
+		cmd := history[len(history)-1-i]
+		rows[i] = browseRow{label: cmd, recall: &cmd}
+	}
+	title := fmt.Sprintf("command history (%d) -- enter to recall, esc/q back", len(history))
 	return browseFrame{title: title, rows: rows}
 }
 

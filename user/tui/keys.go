@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -17,6 +18,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if len(m.frames) > 0 {
 		return m.handleBrowseKey(msg)
+	}
+	if m.historySearching {
+		return m.handleHistorySearchKey(msg)
 	}
 	return m.handleReplKey(msg)
 }
@@ -103,6 +107,11 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.pslistSortMode = sortByPID
 			m.pslistFilter = ""
 			m.pushFrame(pslistFrame(row.viewHistory.snapshot, m.pslistSortMode, m.pslistFilter))
+		case row.recall != nil:
+			m.popFrame()
+			m.input.Focus()
+			m.input.SetValue(*row.recall)
+			m.input.CursorEnd()
 		case row.push != nil:
 			m.pushFrame(row.push())
 		}
@@ -201,28 +210,112 @@ func (m Model) handleReplKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "down":
 		m.navigateHistory(1)
 		return m, nil
+	case "ctrl+r":
+		m.historySearching = true
+		m.historySearchOrigInput = m.input.Value()
+		m.historySearchQuery = ""
+		m.historySearchIndex = 0
+		m.applyHistorySearch()
+		return m, nil
 	case "enter":
 		line := strings.TrimSpace(m.input.Value())
 		m.input.SetValue("")
-		if line == "" {
-			return m, nil
-		}
-		m.recordHistory(line)
-		m.printLine("> " + line)
-		if m.pending != nil {
-			return m.advanceWizard(line)
-		}
-		return m.dispatch(line)
+		return m.submitLine(line)
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
 }
 
+// submitLine records and dispatches a completed REPL line -- shared by the
+// normal enter key and history-search's enter (which accepts a recalled
+// command and runs it immediately, same as a real shell's ctrl+r).
+func (m Model) submitLine(line string) (tea.Model, tea.Cmd) {
+	if line == "" {
+		return m, nil
+	}
+	m.recordHistory(line)
+	m.printLine("> " + line)
+	if m.pending != nil {
+		return m.advanceWizard(line)
+	}
+	return m.dispatch(line)
+}
+
+// --- history search mode: ctrl+r, shell-style incremental reverse search ---
+
+// handleHistorySearchKey implements a ctrl+r reverse-i-search: typing
+// narrows to history entries containing the typed substring (most recent
+// match first), repeated ctrl+r cycles to the next older match, enter
+// accepts and runs the match immediately (matching a real shell's ctrl+r),
+// esc restores whatever was typed before the search started. Any other key
+// (arrows, tab, ...) leaves the current match loaded in the input and
+// drops back to normal editing.
+func (m Model) handleHistorySearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case msg.String() == "ctrl+r":
+		m.historySearchIndex++
+		m.applyHistorySearch()
+		return m, nil
+	case msg.String() == "esc":
+		m.endHistorySearch()
+		m.input.SetValue(m.historySearchOrigInput)
+		m.input.CursorEnd()
+		return m, nil
+	case msg.String() == "enter":
+		line := strings.TrimSpace(m.input.Value())
+		m.endHistorySearch()
+		m.input.SetValue("")
+		return m.submitLine(line)
+	case msg.String() == "backspace":
+		if len(m.historySearchQuery) > 0 {
+			_, size := utf8.DecodeLastRuneInString(m.historySearchQuery)
+			m.historySearchQuery = m.historySearchQuery[:len(m.historySearchQuery)-size]
+		}
+		m.historySearchIndex = 0
+		m.applyHistorySearch()
+		return m, nil
+	case msg.Text != "":
+		m.historySearchQuery += msg.Text
+		m.historySearchIndex = 0
+		m.applyHistorySearch()
+		return m, nil
+	default:
+		m.endHistorySearch()
+		return m, nil
+	}
+}
+
+// applyHistorySearch recomputes the current match for
+// historySearchQuery/historySearchIndex and reflects it in the input box
+// behind a bash-style "(reverse-i-search)`query': " prompt.
+func (m *Model) applyHistorySearch() {
+	m.input.Prompt = fmt.Sprintf("(reverse-i-search)`%s': ", m.historySearchQuery)
+	matches := matchingHistory(m.history, m.historySearchQuery)
+	if len(matches) == 0 {
+		m.input.SetValue("")
+		return
+	}
+	if m.historySearchIndex >= len(matches) {
+		m.historySearchIndex = len(matches) - 1
+	}
+	if m.historySearchIndex < 0 {
+		m.historySearchIndex = 0
+	}
+	m.input.SetValue(matches[m.historySearchIndex])
+	m.input.CursorEnd()
+}
+
+func (m *Model) endHistorySearch() {
+	m.historySearching = false
+	m.input.Prompt = "> "
+	m.input.Placeholder = replPlaceholder
+}
+
 // --- tab completion ---
 
 var replGrammar = map[int]map[string][]string{
-	0: {"": {"session", "command", "log", "help", "quit", "exit"}},
+	0: {"": {"session", "command", "log", "history", "help", "quit", "exit"}},
 	1: {
 		"session": {"list", "connect", "create", "delete", "current", "profiles", "save-profile", "help"},
 		"command": {"info", "echo", "pslist", "help"},
@@ -312,6 +405,17 @@ func (m Model) dispatch(line string) (tea.Model, tea.Cmd) {
 		return m.dispatchCommand(rest)
 	case "log":
 		return m.dispatchLog(rest)
+	case "history":
+		if len(rest) > 0 {
+			m.printError("unexpected argument %q", rest[0])
+			return m, nil
+		}
+		if len(m.history) == 0 {
+			m.printLine("no command history yet")
+			return m, nil
+		}
+		m.pushFrame(historyFrame(m.history))
+		return m, nil
 	default:
 		m.printError("unknown command %q -- try `help`", verb)
 		return m, nil
@@ -323,11 +427,15 @@ func (m *Model) printHelp() {
 		"session          -- manage sessions -- see `session help`",
 		"command          -- run a command against the connected session -- see `command help`",
 		"log              -- view retained logs -- see `log help`",
+		"history          -- browse previously submitted commands, enter to recall",
 		"help             -- this message",
 		"quit, exit       -- exit the TUI",
 		"",
 		"any verb above takes a trailing `help` for more detail (`session help`,",
 		"`command help`), and each command in turn has its own (`command pslist help`).",
+		"",
+		"ctrl+r           -- incremental reverse history search: type to filter,",
+		"                    ctrl+r again for an older match, enter runs it, esc cancels",
 	}, "\n"))
 }
 
