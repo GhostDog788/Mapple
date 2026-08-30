@@ -164,8 +164,7 @@ func (m Model) fetchPslist(id string, groups []api.PslistGroup) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		compact := api.Compact
-		body := api.PostSessionsIdCommandsPslistJSONRequestBody{Format: &compact}
+		var body api.PostSessionsIdCommandsPslistJSONRequestBody
 		if len(groups) > 0 {
 			body.RequestedGroups = &groups
 		}

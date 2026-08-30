@@ -184,14 +184,6 @@ paths:
                   type: array
                   items:
                     $ref: "#/components/schemas/PslistGroup"
-                format:
-                  description: >
-                    JSON whitespace only -- no effect on content. compact
-                    (the default) has no extra spaces/tabs/newlines; pretty
-                    adds them for human reading.
-                  type: string
-                  enum: [compact, pretty]
-                  default: compact
       responses:
         "200":
           description: >
