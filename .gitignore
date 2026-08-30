@@ -3,15 +3,13 @@ lab.local.env
 
 # Synced per-target kernel trees + generated GDB/build outputs.
 kernel/kernel-cache/
+kernel/kernel-cache
 kernel/.gdb/
 kernel/build/
-user/.gdb/
-user/build/
 compile_commands.json
 kernel/compile_commands.json
 kernel/module_compile_commands.json
 kernel/linux_compile_commands.json
-user/compile_commands.json
 .cache/
 
 # Kbuild stragglers.
@@ -22,6 +20,7 @@ user/compile_commands.json
 .*.cmd
 Module.symvers
 modules.order
+!go.mod
 
 # IDE / agent noise.
 .vscode/ipch/
@@ -32,3 +31,7 @@ session.md
 todo.md
 
 docs/personal
+user/dev/
+user/bin/
+
+*.json

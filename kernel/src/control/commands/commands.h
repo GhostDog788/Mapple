@@ -12,6 +12,7 @@ struct mapple_decoded_header {
 	u16 version;
 	u16 command;
 	u32 flags;
+	u32 status;
 	u64 payload_size;
 };
 
@@ -33,7 +34,7 @@ int mapple_protocol_run(struct mapple_session *session);
 
 int mapple_command_read(struct mapple_command_context *context, void *buffer, size_t size);
 int mapple_command_write_response_header(struct mapple_command_context *context, u16 command, u32 flags,
-						 u64 response_size);
+						 u32 status, u64 response_size);
 int mapple_command_write(struct mapple_command_context *context, const void *buffer, size_t size);
 
 #endif /* MAPPLE_KERNEL_COMMANDS_H */

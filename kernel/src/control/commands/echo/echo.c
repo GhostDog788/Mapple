@@ -10,7 +10,7 @@ static int mapple_echo_sized(struct mapple_command_context *context, u8 *buffer)
 {
 	int ret;
 
-	ret = mapple_command_write_response_header(context, MAPPLE_COMMAND_ECHO, 0,
+	ret = mapple_command_write_response_header(context, MAPPLE_COMMAND_ECHO, 0, MAPPLE_STATUS_OK,
 						   context->payload_size);
 	if (ret)
 		return ret;
@@ -35,7 +35,7 @@ static int mapple_echo_stream(struct mapple_command_context *context, u8 *buffer
 	int ret;
 
 	ret = mapple_command_write_response_header(context, MAPPLE_COMMAND_ECHO,
-						   MAPPLE_HEADER_FLAG_STREAM, 0);
+						   MAPPLE_HEADER_FLAG_STREAM, MAPPLE_STATUS_OK, 0);
 	if (ret)
 		return ret;
 	for (;;) {

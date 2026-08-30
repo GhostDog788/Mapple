@@ -14,7 +14,7 @@
 #endif
 
 #define MAPPLE_PROTOCOL_MAGIC 0x4d41504cU /* "MAPL" in network byte order */
-#define MAPPLE_PROTOCOL_VERSION 2U
+#define MAPPLE_PROTOCOL_VERSION 3U
 
 #define MAPPLE_HEADER_FLAG_STREAM (1U << 0)
 #define MAPPLE_HEADER_KNOWN_FLAGS MAPPLE_HEADER_FLAG_STREAM
@@ -22,7 +22,19 @@
 enum mapple_command_id {
 	MAPPLE_COMMAND_ECHO = 1,
 	MAPPLE_COMMAND_PSLIST = 2,
+	MAPPLE_COMMAND_INFO = 3,
 	MAPPLE_COMMAND_COUNT
+};
+
+enum mapple_status {
+	MAPPLE_STATUS_OK = 0,
+	MAPPLE_STATUS_INVALID_ARGUMENT = 1,
+	MAPPLE_STATUS_UNSUPPORTED_COMMAND = 2,
+	MAPPLE_STATUS_BUSY = 3,
+	MAPPLE_STATUS_NOT_FOUND = 4,
+	MAPPLE_STATUS_PERMISSION_DENIED = 5,
+	MAPPLE_STATUS_RESOURCE_EXHAUSTED = 6,
+	MAPPLE_STATUS_INTERNAL_ERROR = 7,
 };
 
 struct mapple_wire_header {
@@ -30,7 +42,15 @@ struct mapple_wire_header {
 	__u16 version;
 	__u16 command;
 	__u32 flags;
+	__u32 status;
 	__u64 payload_size;
+} PACKED_STRUCT;
+
+struct mapple_info_response {
+	__u64 session_id;
+	__u32 max_sessions;
+	__u32 reserved;
+	__u64 supported_commands;
 } PACKED_STRUCT;
 
 #define MAPPLE_PSLIST_COMM_SIZE 16U

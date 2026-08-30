@@ -13,15 +13,18 @@ static void mapple_decode_header(const struct mapple_wire_header *wire, struct m
 	header->version = get_unaligned_be16(&wire->version);
 	header->command = get_unaligned_be16(&wire->command);
 	header->flags = get_unaligned_be32(&wire->flags);
+	header->status = get_unaligned_be32(&wire->status);
 	header->payload_size = get_unaligned_be64(&wire->payload_size);
 }
 
-static void mapple_encode_header(struct mapple_wire_header *wire, u16 command, u32 flags, u64 payload_size)
+static void mapple_encode_header(struct mapple_wire_header *wire, u16 command, u32 flags, u32 status,
+				  u64 payload_size)
 {
 	put_unaligned_be32(MAPPLE_PROTOCOL_MAGIC, &wire->magic);
 	put_unaligned_be16(MAPPLE_PROTOCOL_VERSION, &wire->version);
 	put_unaligned_be16(command, &wire->command);
 	put_unaligned_be32(flags, &wire->flags);
+	put_unaligned_be32(status, &wire->status);
 	put_unaligned_be64(payload_size, &wire->payload_size);
 }
 
@@ -33,6 +36,8 @@ static bool mapple_header_is_streaming(const struct mapple_decoded_header *heade
 static bool mapple_header_is_valid(const struct mapple_decoded_header *header)
 {
 	if (header->magic != MAPPLE_PROTOCOL_MAGIC || header->version != MAPPLE_PROTOCOL_VERSION)
+		return false;
+	if (header->status != MAPPLE_STATUS_OK)
 		return false;
 	if (header->flags & ~MAPPLE_HEADER_KNOWN_FLAGS)
 		return false;
@@ -56,7 +61,7 @@ int mapple_command_read(struct mapple_command_context *context, void *buffer, si
 }
 
 int mapple_command_write_response_header(struct mapple_command_context *context, u16 command, u32 flags,
-										 u64 response_size)
+										 u32 status, u64 response_size)
 {
 	struct mapple_wire_header wire;
 	int ret;
@@ -67,7 +72,9 @@ int mapple_command_write_response_header(struct mapple_command_context *context,
 		return -EINVAL;
 	if ((flags & MAPPLE_HEADER_FLAG_STREAM) && response_size)
 		return -EINVAL;
-	mapple_encode_header(&wire, command, flags, response_size);
+	if (status != MAPPLE_STATUS_OK && (flags || response_size))
+		return -EINVAL;
+	mapple_encode_header(&wire, command, flags, status, response_size);
 	ret = mapple_stream_write_all(&context->session->stream, &wire, sizeof(wire));
 	if (ret)
 		return ret;
