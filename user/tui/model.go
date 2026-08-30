@@ -478,16 +478,31 @@ func (m Model) renderStatusBar() string {
 	return style.Render(" " + m.statusLine())
 }
 
+// viewportViewWithNotice renders the viewport, overlaying any active toast
+// (m.notice) onto its last visible line instead of adding an extra line.
+// Inline (non-alt-screen) rendering has no fixed scroll region, so growing
+// the total output by a line just scrolls the terminal, pushing the header
+// off the top instead of the toast appearing to "pop in" -- overlapping the
+// bottom line keeps total height constant no matter whether a toast is up.
+func (m Model) viewportViewWithNotice() string {
+	content := m.viewport.View()
+	if m.notice == "" {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) == 0 {
+		return m.notice
+	}
+	lines[len(lines)-1] = m.notice
+	return strings.Join(lines, "\n")
+}
+
 func (m Model) View() tea.View {
 	var b strings.Builder
 	b.WriteString(headerStyle.Render(fmt.Sprintf("mapple  profile=%s  server=%s", m.profileName, m.profile.ServerURL)))
 	b.WriteString("\n\n")
-	b.WriteString(m.viewport.View())
+	b.WriteString(m.viewportViewWithNotice())
 	b.WriteString("\n")
-	if m.notice != "" {
-		b.WriteString(m.notice)
-		b.WriteString("\n")
-	}
 	b.WriteString(m.renderStatusBar())
 	b.WriteString("\n")
 	if len(m.frames) > 0 {
