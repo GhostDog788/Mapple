@@ -222,10 +222,11 @@ func (m Model) handleReplKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // --- tab completion ---
 
 var replGrammar = map[int]map[string][]string{
-	0: {"": {"session", "command", "help", "quit", "exit"}},
+	0: {"": {"session", "command", "log", "help", "quit", "exit"}},
 	1: {
 		"session": {"list", "connect", "create", "delete", "current", "profiles", "save-profile", "help"},
 		"command": {"info", "echo", "pslist", "help"},
+		"log":     {"client", "server", "module", "help"},
 	},
 }
 
@@ -309,6 +310,8 @@ func (m Model) dispatch(line string) (tea.Model, tea.Cmd) {
 		return m.dispatchSession(rest)
 	case "command":
 		return m.dispatchCommand(rest)
+	case "log":
+		return m.dispatchLog(rest)
 	default:
 		m.printError("unknown command %q -- try `help`", verb)
 		return m, nil
@@ -319,11 +322,53 @@ func (m *Model) printHelp() {
 	m.printLine(strings.Join([]string{
 		"session          -- manage sessions -- see `session help`",
 		"command          -- run a command against the connected session -- see `command help`",
+		"log              -- view retained logs -- see `log help`",
 		"help             -- this message",
 		"quit, exit       -- exit the TUI",
 		"",
 		"any verb above takes a trailing `help` for more detail (`session help`,",
 		"`command help`), and each command in turn has its own (`command pslist help`).",
+	}, "\n"))
+}
+
+// dispatchLog handles `log client|server|module`, viewing retained events
+// for that source. Only "client" (this TUI process's own
+// printError/printSuccess history) is wired up today; "server" and
+// "module" are recognized sources that report "not available yet" until a
+// follow-up task adds real retention/fetching for them (see the plan for
+// why: the daemon keeps no log history beyond stdout/journald today, and
+// the wire protocol has no log-fetch command at all).
+func (m Model) dispatchLog(args []string) (tea.Model, tea.Cmd) {
+	if len(args) == 0 {
+		m.printLogHelp()
+		return m, nil
+	}
+	if len(args) > 1 {
+		m.printError("unexpected argument %q", args[1])
+		return m, nil
+	}
+	switch args[0] {
+	case "client":
+		m.pushFrame(clientLogFrame(m.clientLog))
+	case "server":
+		m.printError("server logs: not available yet")
+	case "module":
+		m.printError("module logs: not available yet")
+	case "help":
+		m.printLogHelp()
+	default:
+		m.printError("unknown log source %q -- try `log help`", args[0])
+	}
+	return m, nil
+}
+
+func (m *Model) printLogHelp() {
+	m.printLine(strings.Join([]string{
+		"usage: log client|server|module",
+		"",
+		"client  -- this TUI's own retained error/success history",
+		"server  -- the mappled daemon's logs (not available yet)",
+		"module  -- the kernel agent's logs (not available yet)",
 	}, "\n"))
 }
 

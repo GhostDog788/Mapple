@@ -286,6 +286,24 @@ func pslistHistoryFrame(history []*pslistHistoryEntry) browseFrame {
 	return browseFrame{title: title, rows: rows}
 }
 
+// clientLogFrame lists retained printError/printSuccess events, most
+// recent first -- modeled on pslistHistoryFrame above, but leaf rows only
+// (no drill-down; each entry is already a single line).
+func clientLogFrame(entries []logEntry) browseFrame {
+	rows := make([]browseRow, len(entries))
+	for i := range entries {
+		e := entries[len(entries)-1-i]
+		col := color.Color(lipgloss.Green)
+		if e.level == "error" {
+			col = lipgloss.Red
+		}
+		label := fmt.Sprintf("%s  %-7s %s", e.at.Format("15:04:05"), e.level, e.message)
+		rows[i] = browseRow{label: label, color: col}
+	}
+	title := fmt.Sprintf("client log (%d/%d) -- esc/q back", len(entries), clientLogLimit)
+	return browseFrame{title: title, rows: rows}
+}
+
 func filterSuffix(filterText string) string {
 	if filterText == "" {
 		return ""

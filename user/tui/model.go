@@ -131,7 +131,27 @@ type Model struct {
 	pslistHistory        []*pslistHistoryEntry // oldest first, capped at pslistHistoryLimit
 	pslistGroupSelection map[string]bool       // `command pslist groups` checklist state, keyed by pslistGroupNames
 
+	notice       string     // pre-styled error/success toast; "" = nothing to show
+	noticeExpiry time.Time  // notice is cleared once time.Now() passes this
+	clientLog    []logEntry // every printError/printSuccess, oldest first, capped at clientLogLimit
+
 	width, height int
+}
+
+// noticePopupDuration is how long an error/success toast stays visible
+// before noticeTick clears it.
+const noticePopupDuration = 4 * time.Second
+
+// clientLogLimit caps how many printError/printSuccess events `log client`
+// retains, same idea as pslistHistoryLimit.
+const clientLogLimit = 200
+
+// logEntry is one retained printError/printSuccess event, shown by `log
+// client`. message is the plain (unstyled) formatted text.
+type logEntry struct {
+	at      time.Time
+	level   string // "error" or "success"
+	message string
 }
 
 const replPlaceholder = "session list | session create | command pslist | help"
@@ -167,11 +187,33 @@ func (m *Model) printf(format string, args ...interface{}) {
 }
 
 func (m *Model) printError(format string, args ...interface{}) {
-	m.printLine(errorStyle.Render(fmt.Sprintf("error: "+format, args...)))
+	msg := fmt.Sprintf(format, args...)
+	m.showNotice(errorStyle.Render("error: " + msg))
+	m.appendLog("error", msg)
 }
 
 func (m *Model) printSuccess(format string, args ...interface{}) {
-	m.printLine(successStyle.Render(fmt.Sprintf(format, args...)))
+	msg := fmt.Sprintf(format, args...)
+	m.showNotice(successStyle.Render(msg))
+	m.appendLog("success", msg)
+}
+
+// showNotice prints a pre-styled line to the transcript and also raises it
+// as a toast (m.notice), so it's visible immediately even while a browse
+// frame owns the viewport -- see noticeTick for how it later disappears.
+func (m *Model) showNotice(styled string) {
+	m.printLine(styled)
+	m.notice = styled
+	m.noticeExpiry = time.Now().Add(noticePopupDuration)
+}
+
+// appendLog records a printError/printSuccess event for `log client`,
+// capped at clientLogLimit the same way pslistHistory is capped.
+func (m *Model) appendLog(level, message string) {
+	m.clientLog = append(m.clientLog, logEntry{at: time.Now(), level: level, message: message})
+	if len(m.clientLog) > clientLogLimit {
+		m.clientLog = m.clientLog[len(m.clientLog)-clientLogLimit:]
+	}
 }
 
 func (m *Model) refreshTranscript() {
@@ -258,8 +300,19 @@ func (m *Model) statusLine() string {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.loadSessionsQuiet(), autoRenewTick())
+	return tea.Batch(m.loadSessionsQuiet(), autoRenewTick(), noticeTick())
 }
+
+// noticeTick drives the toast's wall-clock expiry: a short, perpetually
+// self-rescheduling tick (same pattern as autoRenewTick) rather than a
+// one-shot timer returned from printError/printSuccess, since those are
+// called as plain void methods from ~40 places across keys.go that would
+// otherwise all need to start propagating a tea.Cmd back up to Update.
+func noticeTick() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return noticeTickMsg{} })
+}
+
+type noticeTickMsg struct{}
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -318,6 +371,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.current = &sess
 		}
 		return m, nil
+
+	case noticeTickMsg:
+		if m.notice != "" && time.Now().After(m.noticeExpiry) {
+			m.notice = ""
+		}
+		return m, noticeTick()
 
 	case autoRenewTickMsg:
 		var cmds []tea.Cmd
@@ -425,6 +484,10 @@ func (m Model) View() tea.View {
 	b.WriteString("\n\n")
 	b.WriteString(m.viewport.View())
 	b.WriteString("\n")
+	if m.notice != "" {
+		b.WriteString(m.notice)
+		b.WriteString("\n")
+	}
 	b.WriteString(m.renderStatusBar())
 	b.WriteString("\n")
 	if len(m.frames) > 0 {
