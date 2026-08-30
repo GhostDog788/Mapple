@@ -116,7 +116,7 @@ func (m Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // on its own would reset it to 0 (groupChecklistFrame always builds a fresh
 // browseFrame at cursor 0), which would make repeated toggles unusable
 // (every space/enter press would snap you back to the top row).
-func (m Model) toggleChecklistRow(cursor int) {
+func (m *Model) toggleChecklistRow(cursor int) {
 	if cursor < 0 || cursor >= len(pslistGroupNames) || m.pslistGroupSelection == nil {
 		return
 	}
