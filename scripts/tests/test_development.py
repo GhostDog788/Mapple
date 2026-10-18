@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import socket
 import subprocess
 import sys
@@ -20,6 +21,7 @@ import api_verify
 import compile_commands
 import lab
 import debug_kernel
+import go_toolchain
 import kernel_compat
 
 REPO = Path(__file__).resolve().parents[2]
@@ -161,8 +163,61 @@ class LabTests(unittest.TestCase):
                 lab.create_vm()
         self.assertFalse(lab.slot_path('bad').exists())
 
+    def test_setup_grants_kvm_membership_once_for_new_user(self):
+        exists = Path.exists
+        for member in (False, True):
+            with self.subTest(member=member), \
+                 patch.object(Path, 'exists', lambda p: str(p) == '/dev/kvm' or exists(p)), \
+                 patch.object(lab.os, 'access', return_value=False), \
+                 patch.object(lab, 'kvm_group_member', return_value=member), \
+                 patch.object(lab.shutil, 'which', return_value='/available'), \
+                 patch.object(lab, 'run') as run, \
+                 patch.object(lab, 'import_legacy'), patch.object(lab, 'dev_config'):
+                lab.setup()
+                grants = [call.args[0] for call in run.call_args_list if 'usermod' in call.args[0]]
+                self.assertEqual(len(grants), 0 if member else 1)
+                if grants:
+                    self.assertEqual(grants[0][:4], ['sudo', 'usermod', '-aG', 'kvm'])
+
+    def test_vm_start_uses_new_kvm_membership_before_login_and_keeps_tcg_fallback(self):
+        config = self.slot('dev', managed=True, module_port=4444, gdb='127.0.0.1:1234', memory=1024, cpus=2)
+        exists = Path.exists
+        for member in (True, False):
+            with self.subTest(member=member), \
+                 patch.object(Path, 'exists', lambda p: str(p) == '/dev/kvm' or exists(p)), \
+                 patch.object(lab.os, 'access', return_value=False), \
+                 patch.object(lab, 'kvm_group_member', return_value=member), \
+                 patch.object(lab.shutil, 'which', return_value='/usr/bin/sg'), \
+                 patch.object(lab, 'wait_ssh'), patch.object(lab, 'ssh'), \
+                 patch.object(lab, 'run') as run:
+                lab.vm_command('dev', config, 'vm-up')
+                args = run.call_args_list[0].args[0]
+                if member:
+                    self.assertEqual(args[:3], ['sg', 'kvm', '-c'])
+                    args = shlex.split(args[3])
+                else:
+                    self.assertEqual(args[0], 'qemu-system-x86_64')
+                self.assertEqual(args[args.index('-accel') + 1], 'kvm' if member else 'tcg')
+
 
 class GenerationTests(unittest.TestCase):
+    def test_go_selection_handles_ubuntu_bootstrap_and_preserves_newer_toolchains(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / 'user').mkdir()
+            (root / 'user/go.mod').write_text('module example.test/mapple\n\ngo 1.26\n')
+            go = root / 'go'
+            for installed, expected in (('1.22.2', 'go1.26.0+auto'), ('1.26.2', 'auto')):
+                go.write_text('#!/bin/sh\n[ "$GOTOOLCHAIN" = local ] || exit 1\n'
+                              f'echo "go version go{installed} linux/amd64"\n')
+                go.chmod(0o755)
+                with self.subTest(installed=installed), \
+                     patch.object(go_toolchain, 'ROOT', root), \
+                     patch.dict(os.environ, {'PATH': str(root)}):
+                    self.assertEqual(go_toolchain.select(), expected)
+                    with patch.dict(os.environ, {'GOTOOLCHAIN': 'local'}):
+                        self.assertEqual(go_toolchain.environment()['GOTOOLCHAIN'], 'local')
+
     def test_kernel_api_guard_accepts_old_signature_and_rejects_new_one(self):
         with tempfile.TemporaryDirectory() as d:
             headers = Path(d)

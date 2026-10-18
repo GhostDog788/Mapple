@@ -6,14 +6,28 @@ by this tooling. VS Code is optional except when you want its graphical debugger
 
 ## First clone
 
+Git, Make, Python 3, and sudo are required to start. On a minimal Ubuntu
+installation, install them before cloning:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git make python3
+```
+
+Then, from the cloned repository:
+
 ```bash
 make setup
 ```
 
 This installs host build/debug/VM prerequisites using apt and sudo, downloads
 Go module dependencies, and creates matching local HTTPS server and TUI configs.
-A preinstalled Go toolchain is reused; otherwise Ubuntu's Go package is installed
-and Go's automatic toolchain selection satisfies `user/go.mod`.
+If `/dev/kvm` needs group access, setup adds the current user to `kvm`; the next
+`make vm-up` uses that membership immediately, without requiring a new login.
+A compatible preinstalled Go toolchain is reused; otherwise Ubuntu's Go package
+is installed and Make selects the exact minimum released toolchain required by
+`user/go.mod`. This also works with Ubuntu's older Go auto-selector. No global
+Go settings are changed; an explicit `GOTOOLCHAIN` override is respected.
 Use `make setup NO_INSTALL=1` if the host prerequisites are already installed.
 
 Local state lives in gitignored `.lab/`, with credentials at mode `0600`. Repeating

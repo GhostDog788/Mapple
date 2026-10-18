@@ -2,6 +2,11 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := all
 LAB := python3 scripts/lab.py
 
+ifeq ($(origin GOTOOLCHAIN),undefined)
+GOTOOLCHAIN := $(shell python3 scripts/go_toolchain.py)
+endif
+export GOTOOLCHAIN
+
 # Pass options as environment data; .lab/active persists the selected VM.
 export NAME HOST SSH_USER SSH_PORT SSH_KEY ASK_PASS GDB_ENDPOINT SOURCE VMLINUX
 export MODULE_PORT MODULE_PARAMS MEMORY CPUS DISK TERMINAL FOREGROUND NO_INSTALL

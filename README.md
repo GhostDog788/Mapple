@@ -29,7 +29,10 @@ The kernel side never touches a network or a terminal on its own.
 
 ## Development
 
-Develop on an Ubuntu host with an Ubuntu QEMU guest. Start with:
+Develop on an Ubuntu host with an Ubuntu QEMU guest. On minimal Ubuntu
+installations, first install the clone/bootstrap tools with
+`sudo apt-get update && sudo apt-get install -y git make python3`.
+Then, from the cloned repository:
 
 ```bash
 make setup

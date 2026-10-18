@@ -3,10 +3,12 @@
 
 import argparse
 import getpass
+import grp
 import hashlib
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import shlex
 import shutil
@@ -17,6 +19,7 @@ import time
 import urllib.request
 
 import debug_kernel
+import go_toolchain
 import kernel_compat
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -271,9 +274,14 @@ def setup(install=True):
              "sshpass", "openssl", "qemu-system-x86", "qemu-utils", "cloud-image-utils", "xterm"])
         if not shutil.which("go"):
             run(["sudo", "apt-get", "install", "-y", "golang-go"])
+        if Path("/dev/kvm").exists() and not os.access("/dev/kvm", os.R_OK | os.W_OK):
+            user = pwd.getpwuid(os.getuid()).pw_name
+            if not kvm_group_member():
+                run(["sudo", "usermod", "-aG", "kvm", user])
+                print(f"Added {user} to kvm; VM startup uses the updated group without requiring a new login.")
     if not shutil.which("go"):
         fail("Go is missing. Run make setup without NO_INSTALL=1.")
-    run(["go", "mod", "download"], cwd=ROOT / "user")
+    run(["go", "mod", "download"], cwd=ROOT / "user", env=go_toolchain.environment())
     import_legacy()
     dev_config()
     print("Setup complete. Run make vm-create, or make vm-list to use an imported VM.")
@@ -385,6 +393,13 @@ def create_vm():
     print(f"Created {name}. Run make vm-use NAME={name}, make vm-up, then make vm-setup.")
 
 
+def kvm_group_member():
+    try:
+        return pwd.getpwuid(os.getuid()).pw_name in grp.getgrnam("kvm").gr_mem
+    except KeyError:
+        return False
+
+
 def vm_command(name, config, action):
     if not config.get("managed"):
         fail("This slot is an existing VM. Start/stop it with its QEMU launcher; make vm-ssh still works.")
@@ -406,6 +421,11 @@ def vm_command(name, config, action):
         except (ConnectionRefusedError, FileNotFoundError):
             monitor.unlink(missing_ok=True)
     accelerated = os.access("/dev/kvm", os.R_OK | os.W_OK)
+    # usermod updates /etc/group, but this shell retains its old groups until
+    # login. sg lets the very next make vm-up use KVM without restarting it.
+    refresh_group = (not accelerated and Path("/dev/kvm").exists()
+                     and kvm_group_member() and shutil.which("sg"))
+    accelerated = accelerated or bool(refresh_group)
     args = ["qemu-system-x86_64", "-name", f"mapple-{name}", "-machine", "q35",
             "-accel", "kvm" if accelerated else "tcg", "-cpu", "host" if accelerated else "max",
             "-m", str(config["memory"]), "-smp", str(config["cpus"]),
@@ -415,7 +435,10 @@ def vm_command(name, config, action):
             "-device", "virtio-net-pci,netdev=net0", "-gdb", "tcp:" + config["gdb"],
             "-display", "none", "-serial", f"file:{vm / 'console.log'}", "-monitor",
             f"unix:{monitor},server=on,wait=off", "-pidfile", vm / "qemu.pid", "-daemonize"]
-    run(args)
+    if refresh_group:
+        run(["sg", "kvm", "-c", shlex.join(str(a) for a in args)])
+    else:
+        run(args)
     print(f"Waiting for {name} SSH; console: {vm / 'console.log'}", flush=True)
     wait_ssh(config)
     ssh(config, "cloud-init status --wait", timeout=600)
