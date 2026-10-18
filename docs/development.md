@@ -198,6 +198,9 @@ run. While GDB has stopped the guest, SSH and module requests also stop respondi
 continue the guest before invoking another upload or VM command. Breakpoints in
 module initialization require a separate early-load strategy; normal debug upload
 loads the module before attaching, as the previous workflow did.
+Starting, shutting down, or reprovisioning a VM clears its prepared debugger
+state. Run `make run-kernel-debug` again after rebooting before using `make gdb`;
+VS Code's pre-launch task does this automatically.
 
 Debug preparation verifies the guest kernel release and `nokaslr`, reads actual
 runtime module section addresses, relocates a **copy** of the module ELF, and maps

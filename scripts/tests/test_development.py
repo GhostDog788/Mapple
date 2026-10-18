@@ -12,6 +12,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 import zlib
@@ -28,6 +29,31 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 class DoctorTests(unittest.TestCase):
+    def test_local_built_kernel_needs_no_guest_header_package(self):
+        script = (REPO / 'kernel/scripts/00-check-target.sh').read_text()
+        header_check = script[script.index('# --- headers ---'):script.index('# --- vmlinux')]
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d)
+            for name in ('include/generated/autoconf.h', 'include/config/kernel.release'):
+                path = source / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('6.6.6-mapple\n')
+            for release in ('6.6.6-mapple', 'different-kernel'):
+                commands = f'''local_source={shlex.quote(d)}
+live_kernel={release}
+target=dev
+ok() {{ echo "OK $1"; }}
+warn() {{ echo "WARN $1"; }}
+lab_ssh() {{ return 1; }}
+{header_check}
+'''
+                result = subprocess.run(['bash', '-eu', '-c', commands], capture_output=True, text=True, check=True)
+                if release == '6.6.6-mapple':
+                    self.assertIn('OK headers: matching local configured build', result.stdout)
+                    self.assertNotIn('WARN', result.stdout)
+                else:
+                    self.assertIn('WARN headers: missing', result.stdout)
+
     @unittest.skipUnless(shutil.which('ss'), 'ss required')
     def test_debug_check_never_connects_to_or_pauses_guest(self):
         script = (REPO / 'kernel/scripts/00-check-target.sh').read_text()
@@ -198,6 +224,68 @@ class LabTests(unittest.TestCase):
                 else:
                     self.assertEqual(args[0], 'qemu-system-x86_64')
                 self.assertEqual(args[args.index('-accel') + 1], 'kvm' if member else 'tcg')
+
+    def test_vm_power_events_acknowledge_monitor_and_invalidate_prepared_debugger(self):
+        config = self.slot('dev', managed=True, module_port=4444, gdb='127.0.0.1:1234', memory=1024, cpus=2)
+        monitor = self.state / 'vms/dev/monitor.sock'
+        monitor.parent.mkdir(parents=True)
+        prepared = [self.root / 'kernel/.gdb' / name for name in ('current-debug.gdb', 'current-vmlinux')]
+        def prepare():
+            for path in prepared:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('prepared for the current boot')
+        prepare()
+        errors = []
+        with socket.socket(socket.AF_UNIX) as server:
+            server.bind(str(monitor))
+            server.listen()
+            server.settimeout(3)
+            def serve():
+                try:
+                    conn, _ = server.accept()
+                    with conn:
+                        conn.settimeout(3)
+                        conn.sendall(b'QEMU test monitor\r\n')
+                        threading.Event().wait(0.01)
+                        conn.sendall(b'(qemu) ')
+                        request = b''
+                        while not request.endswith(b'\n'):
+                            data = conn.recv(4096)
+                            self.assertTrue(data, 'Client closed before sending the request')
+                            request += data
+                        self.assertEqual(request, b'system_powerdown\n')
+                        conn.sendall(b'system_powerdown\r\n')
+                        # The client must stay connected until QEMU's next prompt.
+                        conn.settimeout(0.05)
+                        with self.assertRaises(socket.timeout):
+                            conn.recv(1)
+                        conn.sendall(b'(qemu) ')
+                        conn.settimeout(3)
+                        self.assertEqual(conn.recv(1), b'')
+                except BaseException as error:
+                    errors.append(error)
+            thread = threading.Thread(target=serve, daemon=True)
+            thread.start()
+            try:
+                lab.vm_command('dev', config, 'vm-down')
+            finally:
+                thread.join(4)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+        self.assertTrue(all(not path.exists() for path in prepared))
+        # A new boot clears old addresses; an already-running VM preserves them.
+        prepare()
+        with patch.object(lab, 'run'), patch.object(lab, 'wait_ssh'), patch.object(lab, 'ssh'):
+            lab.vm_command('dev', config, 'vm-up')
+        self.assertTrue(all(not path.exists() for path in prepared))
+        prepare()
+        with socket.socket(socket.AF_UNIX) as server:
+            server.bind(str(monitor))
+            server.listen()
+            with patch.object(lab, 'run') as run, patch.object(lab, 'wait_ssh'):
+                lab.vm_command('dev', config, 'vm-up')
+            run.assert_not_called()
+        self.assertTrue(all(path.exists() for path in prepared))
 
 
 class GenerationTests(unittest.TestCase):

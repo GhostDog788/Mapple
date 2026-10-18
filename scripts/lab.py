@@ -72,6 +72,11 @@ def load_slot(name=None):
     return name, json.loads(path.read_text())
 
 
+def invalidate_debug():
+    for filename in ("kernel/.gdb/current-debug.gdb", "kernel/.gdb/current-vmlinux"):
+        (ROOT / filename).unlink(missing_ok=True)
+
+
 def select(name):
     load_slot(name)
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -86,9 +91,9 @@ def select(name):
         link.symlink_to(name)
     # Never leave navigation or debugger symbols from a different VM active.
     for filename in ("compile_commands.json", "kernel/compile_commands.json",
-                     "kernel/module_compile_commands.json", "kernel/linux_compile_commands.json",
-                     "kernel/.gdb/current-debug.gdb", "kernel/.gdb/current-vmlinux"):
+                     "kernel/module_compile_commands.json", "kernel/linux_compile_commands.json"):
         (ROOT / filename).unlink(missing_ok=True)
+    invalidate_debug()
     release = cache / name / "kernel.release"
     if release.exists() and (cache / name / "build").exists():
         build_kernel(name)
@@ -400,15 +405,33 @@ def kvm_group_member():
         return False
 
 
+def monitor_command(path, command):
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.settimeout(5)
+        sock.connect(str(path))
+
+        def prompt():
+            response = bytearray()
+            while not response.endswith(b"(qemu) "):
+                data = sock.recv(4096)
+                if not data:
+                    fail("QEMU monitor closed before acknowledging the command.")
+                response.extend(data)
+            return bytes(response)
+
+        prompt()  # Drain the greeting and wait for QEMU to accept input.
+        sock.sendall((command + "\n").encode())
+        return prompt()  # Closing immediately can discard the unread command.
+
+
 def vm_command(name, config, action):
     if not config.get("managed"):
         fail("This slot is an existing VM. Start/stop it with its QEMU launcher; make vm-ssh still works.")
     vm = STATE / "vms" / name
     monitor = vm / "monitor.sock"
     if action == "vm-down":
-        with socket.socket(socket.AF_UNIX) as sock:
-            sock.connect(str(monitor))
-            sock.sendall(b"system_powerdown\n")
+        monitor_command(monitor, "system_powerdown")
+        invalidate_debug()
         print("Guest shutdown requested. Use make vm-status to check it has stopped.")
         return
     if monitor.exists():
@@ -420,6 +443,7 @@ def vm_command(name, config, action):
             return
         except (ConnectionRefusedError, FileNotFoundError):
             monitor.unlink(missing_ok=True)
+    invalidate_debug()
     accelerated = os.access("/dev/kvm", os.R_OK | os.W_OK)
     # usermod updates /etc/group, but this shell retains its old groups until
     # login. sg lets the very next make vm-up use KVM without restarting it.
@@ -464,6 +488,7 @@ def provision(name, config):
     old_boot = ssh(config, "cat /proc/sys/kernel/random/boot_id", capture_output=True).stdout.decode().strip()
     # Provision boot arguments before rebooting into the selected compatible kernel.
     kernel_script("01", name, config, config.get("method", "qemu"), "--debug-symbols")
+    invalidate_debug()
     command = "sudo -S -p '' sh -c 'sleep 2; reboot'"
     password = config.get("sudo_password") or config.get("ssh_password", "")
     try:

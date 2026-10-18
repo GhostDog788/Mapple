@@ -80,7 +80,11 @@ if [[ -n "$cached_kernel" && "$cached_kernel" != "$live_kernel" ]]; then
 fi
 
 # --- headers ---
-if lab_ssh "test -d /lib/modules/$live_kernel/build" 2>/dev/null; then
+if [[ -n "$local_source" && -f "$local_source/include/generated/autoconf.h" &&
+      -f "$local_source/include/config/kernel.release" ]] &&
+   [[ "$(<"$local_source/include/config/kernel.release")" == "$live_kernel" ]]; then
+	ok "headers: matching local configured build available"
+elif lab_ssh "test -d /lib/modules/$live_kernel/build" 2>/dev/null; then
 	ok "headers: /lib/modules/$live_kernel/build present"
 else
 	warn "headers: missing on target; run kernel/scripts/01-provision-target.sh $target <method>"
