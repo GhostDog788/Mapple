@@ -43,6 +43,14 @@ env_file="$(lab_env_file "$repo_root")"
 # shellcheck source=/dev/null
 source "$env_file"
 lab_load_target "$target"
+local_source="$(target_cfg "$target" LOCAL_SOURCE)"
+local_vmlinux="$(target_cfg "$target" LOCAL_VMLINUX)"
+# Custom kernels can supply exact host-side source and symbols instead of
+# Ubuntu dbgsym packages. Still provision headers/boot arguments in the guest.
+if [[ -n "$local_source" && -n "$local_vmlinux" ]]; then
+	[[ -f "$local_source/init/main.c" && -f "$local_vmlinux" ]] || die "local SOURCE/VMLINUX paths are missing"
+	symbols=""
+fi
 
 target_os="$(target_cfg "$target" OS)"
 kgdb_tty="$(target_cfg "$target" KGDB_TTY)"
@@ -85,6 +93,7 @@ DEBUG_METHOD='$debug_method'
 KGDB_TTY='$kgdb_tty'
 KGDB_BAUD='$kgdb_baud'
 INSTALL_DEBUG_SYMBOLS='$symbols'
+LOCAL_KERNEL_SOURCE='${local_source:+1}'
 DEBUG_MAXCPUS='${DEBUG_MAXCPUS:-}'
 REMOTE_ENV
 	cat <<'REMOTE_SCRIPT'
@@ -108,23 +117,29 @@ codename="${VERSION_CODENAME:-noble}"
 	{ echo "target is not Ubuntu (os-release ID=$ID); only ubuntu targets are implemented" >&2; exit 1; }
 
 grub_file=/etc/default/grub
+grub_dropin=/etc/default/grub.d/99-mapple-debug.cfg
 # Lab-managed args, stripped on every run so reruns replace, not append.
 grub_managed_keys='kgdboc=|maxcpus=|sysrq_always_enabled=|nokaslr'
 
 read_current_cmdline() {
 	local raw stripped
-	raw="$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\{0,1\}\([^"]*\)"\{0,1\}/\1/p' "$grub_file" | head -1)"
+	# Ubuntu cloud images override the base file in grub.d; read the final
+	# effective value before stripping/replacing only our managed arguments.
+	raw="$(
+		source "$grub_file"
+		for override in /etc/default/grub.d/*.cfg; do
+			[[ ! -f "$override" ]] || source "$override"
+		done
+		printf '%s' "${GRUB_CMDLINE_LINUX_DEFAULT:-}"
+	)"
 	stripped="$(printf '%s' "$raw" | sed -E "s/(^| )($grub_managed_keys)([^ ]*)?/ /g; s/  */ /g; s/^ +//; s/ +$//")"
 	printf '%s' "$stripped"
 }
 
 write_cmdline() {
 	cp "$grub_file" "$grub_file.kmod-debug-lab.$(date +%Y%m%d%H%M%S).bak"
-	if grep -q '^GRUB_CMDLINE_LINUX_DEFAULT=' "$grub_file"; then
-		sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$1\"|" "$grub_file"
-	else
-		printf 'GRUB_CMDLINE_LINUX_DEFAULT="%s"\n' "$1" >> "$grub_file"
-	fi
+	mkdir -p /etc/default/grub.d
+	printf 'GRUB_CMDLINE_LINUX_DEFAULT=%q\n' "$1" > "$grub_dropin"
 	update-grub
 }
 
@@ -140,8 +155,11 @@ fi
 
 echo "[1/3] installing kernel headers for running kernel $kernel"
 apt_retry update
-apt_retry install -y "linux-headers-$kernel" rsync
-[[ -d "/lib/modules/$kernel/build" ]] ||
+apt_retry install -y rsync
+if [[ -z "$LOCAL_KERNEL_SOURCE" && ! -f "/lib/modules/$kernel/build/Makefile" ]]; then
+	apt_retry install -y "linux-headers-$kernel"
+fi
+[[ -n "$LOCAL_KERNEL_SOURCE" || -d "/lib/modules/$kernel/build" ]] ||
 	{ echo "missing /lib/modules/$kernel/build after installing headers; check apt output above" >&2; exit 1; }
 
 if [[ "$INSTALL_DEBUG_SYMBOLS" == "--debug-symbols" ]]; then

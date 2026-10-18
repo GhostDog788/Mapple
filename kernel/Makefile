@@ -51,6 +51,10 @@ modules: prepare-build
 	@if [ -n "$(KERNEL_SOURCE)" ]; then \
 		python3 "$(KERNEL_DB_TOOL)" -d "$(KERNEL_SOURCE)" \
 			-o "$(LINUX_COMPILE_COMMANDS)" "$(KERNEL_SOURCE)"; \
+		python3 "$(COMPILE_DB_TOOL)" kernel-source "$(LINUX_COMPILE_COMMANDS)" \
+			"$(MODULE_COMPILE_COMMANDS)" "$(KERNEL_SOURCE)"; \
+	else \
+		rm -f "$(LINUX_COMPILE_COMMANDS)"; \
 	fi
 	@python3 "$(COMPILE_DB_TOOL)" merge --clangd-compatible "$(COMPILE_COMMANDS)" \
 		"$(MODULE_COMPILE_COMMANDS)" "$(LINUX_COMPILE_COMMANDS)"
@@ -68,7 +72,7 @@ modules: prepare-build
 	fi; \
 	for ko in $$kos; do \
 		name=$$(basename "$$ko"); \
-		mv "$$ko" "$(ARTIFACT_DIR)/$$name"; \
+		cp -p "$$ko" "$(ARTIFACT_DIR)/$$name"; \
 		echo "built $(ARTIFACT_DIR)/$$name"; \
 	done
 

@@ -1,5 +1,7 @@
-# Per-machine config (lab.example.env is the tracked template).
+# Legacy local config; make setup imports it into .lab/slots/.
 lab.local.env
+.lab/
+__pycache__/
 
 # Synced per-target kernel trees + generated GDB/build outputs.
 kernel/kernel-cache/
@@ -33,5 +35,3 @@ todo.md
 docs/personal
 user/dev/
 user/bin/
-
-*.json

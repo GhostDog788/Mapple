@@ -6,16 +6,21 @@
 set -euo pipefail
 
 usage() {
-	echo "usage: $0 <target> <kgdb|qemu> [module-params...]" >&2
+	echo "usage: $0 <target> <none|kgdb|qemu> [module-params...]" >&2
 	exit 2
 }
 
 target="${1:-}"
 debug_method="${2:-}"
-case "$debug_method" in kgdb|qemu) ;; *) usage ;; esac
+case "$debug_method" in none|kgdb|qemu) ;; *) usage ;; esac
 shift 2
 # Everything after <kgdb|qemu> is passed verbatim to insmod (key=value ...).
-module_params="$*"
+module_params=""
+for param in "$@"; do
+	[[ "$param" =~ ^[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_,.:/+%-]*$ ]] ||
+		{ echo "invalid module parameter: use key=value with no shell syntax" >&2; exit 2; }
+	module_params+=" $param"
+done
 
 kernel_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repo_root="$(cd "$kernel_root/.." && pwd)"
@@ -28,7 +33,10 @@ env_file="$(lab_env_file "$repo_root")"
 source "$env_file"
 lab_load_target "$target"
 
-debug_endpoint="$(target_require_cfg "$target" "DEBUG_ENDPOINT_${debug_method^^}")"
+debug_endpoint=""
+if [[ "$debug_method" != none ]]; then
+	debug_endpoint="$(target_require_cfg "$target" "DEBUG_ENDPOINT_${debug_method^^}")"
+fi
 insmod_wait_secs="${INSMOD_WAIT_SECS:-30}"
 
 cache_dir="$kernel_root/kernel-cache/$target"
@@ -37,11 +45,16 @@ vmlinux="$cache_dir/vmlinux"
 
 [[ -f "$kernel_file" ]] ||
 	die "missing kernel cache for $target; run: kernel/scripts/02-setup-host-build.sh $target"
-[[ -f "$vmlinux" ]] ||
-	die "missing $vmlinux — source debugging needs the matching vmlinux from the target.
+if [[ "$debug_method" != none ]]; then
+	[[ -f "$vmlinux" && -f "$cache_dir/source/init/main.c" ]] ||
+	die "missing matching kernel source or vmlinux for source debugging.
 - install + sync it with:
     kernel/scripts/01-provision-target.sh $target $debug_method --debug-symbols
     kernel/scripts/02-setup-host-build.sh $target"
+	debug_sections="$(readelf -S "$vmlinux")"
+	[[ "$debug_sections" == *".debug_info"* || "$debug_sections" == *".zdebug_info"* ]] ||
+		die "vmlinux has no DWARF debug information; supply a matching unstripped image with make vm-add VMLINUX=..."
+fi
 
 kernel="$(<"$kernel_file")"
 
@@ -53,6 +66,11 @@ if [[ "$live_kernel" != "$kernel" ]]; then
     kernel/scripts/01-provision-target.sh $target $debug_method --debug-symbols   # for a new vmlinux
     kernel/scripts/02-setup-host-build.sh $target
 - or reboot the target back into $kernel"
+fi
+if [[ "$debug_method" != none ]]; then
+	cmdline="$(lab_ssh 'cat /proc/cmdline')"
+	[[ " $cmdline " == *" nokaslr "* ]] ||
+		die "debugging requires nokaslr. Run make vm-setup (which reboots the guest)."
 fi
 
 artifact_dir="$kernel_root/build/artifacts/$target/$kernel"
@@ -81,9 +99,9 @@ loader_log="$gdb_dir/$target-$debug_method-loader.log"
 
 rm -f "$symbols_file" "$loader_log"
 
-# Best-effort kill of stale gdb clients holding the endpoint (stubs serve
-# one client); never fails the deploy.
+# Do not kill a debugger owned by another terminal or VS Code.
 free_debug_endpoint() {
+	[[ "$debug_method" != none ]] || return 0
 	command -v lsof >/dev/null 2>&1 || return 0
 	local host="${debug_endpoint%:*}" port="${debug_endpoint##*:}"
 	local pids
@@ -93,13 +111,12 @@ free_debug_endpoint() {
 		[[ "$(ps -p "$pid" -o comm= 2>/dev/null || true)" == "gdb" ]] && gdb_pids+=("$pid")
 	done
 	if [[ ${#gdb_pids[@]} -gt 0 ]]; then
-		echo "killing leftover gdb clients on $debug_endpoint:"
+		echo "a GDB client already holds $debug_endpoint:"
 		ps -p "${gdb_pids[@]}" -o pid,cmd 2>/dev/null | tail -n +2 | sed 's/^/  /' || true
-		kill -9 "${gdb_pids[@]}" 2>/dev/null || true
-		sleep 0.3
+		die "disconnect the existing debugger before starting another debug run"
 	fi
 }
-free_debug_endpoint || true
+free_debug_endpoint
 
 remote_module="$LAB_REMOTE_DIR/$module_name.ko"
 
@@ -117,7 +134,7 @@ remote_size="$(lab_ssh "stat -c %s '$remote_module' 2>/dev/null" | tr -d '[:spac
 # `& sleep 1` holds the session open for sudo auth, `nohup` outlives it.
 load_and_discover_symbols() {
 	echo "loading $module_name on $target${module_params:+ (params: $module_params)}"
-	lab_ssh_sudo "rmmod '$module_name' >/dev/null 2>&1 || true"
+	lab_ssh_sudo "sh -c 'if [ -d /sys/module/$module_name ]; then rmmod $module_name; fi'"
 	lab_ssh_sudo "nohup sh -c 'insmod \"$remote_module\" $module_params' > '$LAB_REMOTE_DIR/insmod.log' 2>&1 <&0 & sleep 1"
 
 	echo "polling /sys/module/$module_name/sections/ (timeout ${insmod_wait_secs}s)"
@@ -137,6 +154,11 @@ load_and_discover_symbols() {
 			local text_addr
 			text_addr="$(awk '$1 == ".text" { print $2 }' "$tmp")"
 			if [[ -n "$text_addr" ]]; then
+				if [[ "$debug_method" == none ]]; then
+					rm -f "$tmp"
+					echo "loaded $module_name on $target (without debugger preparation)"
+					return 0
+				fi
 				# Write runtime addresses into the .ko's sh_addr so DWARF
 				# addresses come out correct.
 				local relocated="$gdb_dir/$target-$debug_method-$module_name-relocated.ko"
@@ -153,7 +175,7 @@ load_and_discover_symbols() {
 					"$artifact" "$relocated" \
 					|| die "objcopy failed to produce $relocated"
 				{
-					printf 'add-symbol-file %s %s\n' "$relocated" "$text_addr"
+					printf 'add-symbol-file "%s" %s\n' "$relocated" "$text_addr"
 					printf 'echo loaded %s module symbols for %s\\n\n' "$module_name" "$target"
 				} > "$symbols_file"
 				rm -f "$tmp"
@@ -182,6 +204,11 @@ else
 	exit 1
 fi
 
+if [[ "$debug_method" == none ]]; then
+	rm -f "$gdb_dir/current-debug.gdb" "$gdb_dir/current-vmlinux"
+	exit 0
+fi
+
 # GDB init files. If kernel source is synced, discover Ubuntu's build-time
 # source prefix (addr2line on start_kernel) so GDB remaps DWARF paths to the
 # local copy.
@@ -190,7 +217,7 @@ kernel_directory_line=""
 kernel_src_link="$cache_dir/source"
 if [[ -L "$kernel_src_link" || -d "$kernel_src_link" ]]; then
 	kernel_src_root="$(readlink -f "$kernel_src_link")"
-	kernel_directory_line="directory $kernel_src_root"
+	kernel_directory_line="directory \"$kernel_src_root\""
 	if command -v nm >/dev/null 2>&1 && command -v addr2line >/dev/null 2>&1; then
 		# `|| true`: awk's exit SIGPIPEs nm under pipefail.
 		sym_addr="$(nm "$vmlinux" 2>/dev/null | awk 'NF==3 && $3=="start_kernel" {print $1; exit}' || true)"
@@ -198,7 +225,7 @@ if [[ -L "$kernel_src_link" || -d "$kernel_src_link" ]]; then
 			sym_loc="$(addr2line -e "$vmlinux" "$sym_addr" 2>/dev/null | head -1 | cut -d: -f1 || true)"
 			build_prefix="${sym_loc%/init/main.c}"
 			if [[ -n "$build_prefix" && "$build_prefix" != "$sym_loc" ]]; then
-				kernel_substitute_line="set substitute-path $build_prefix $kernel_src_root"
+				kernel_substitute_line="set substitute-path \"$build_prefix\" \"$kernel_src_root\""
 				echo "kernel source mapping: $build_prefix -> $kernel_src_root"
 			else
 				echo "warning: addr2line returned unexpected location for start_kernel: $sym_loc"
@@ -224,13 +251,14 @@ set disassemble-next-line on
 set tcp connect-timeout 60
 set remotetimeout 60
 set architecture i386:x86-64
-set substitute-path $intermediate_dir $module_dir
-directory $module_dir
+set schedule-multiple on
+set substitute-path "$intermediate_dir" "$module_dir"
+directory "$module_dir"
 EOF
 	[[ -n "$kernel_substitute_line" ]] && printf '%s\n' "$kernel_substitute_line"
 	[[ -n "$kernel_directory_line" ]] && printf '%s\n' "$kernel_directory_line"
 	cat <<EOF
-symbol-file $vmlinux
+symbol-file "$vmlinux"
 target remote $debug_endpoint
 source $symbols_file
 EOF

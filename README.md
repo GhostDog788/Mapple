@@ -25,49 +25,70 @@ The kernel side never touches a network or a terminal on its own.
 | `user/` | The Go control plane: `user/server/internal/moduleclient` (the private wire-protocol client), `user/api` (OpenAPI contract + generated server/client), `user/server` (the `mappled` implementation), `user/tui` (the `mapple` TUI), `user/cmd/{mappled,mapple}` (the two binaries). |
 | `user/packaging/systemd/` | The `mappled.service` unit. |
 | `docs/` | Architecture and protocol docs — see below. |
-| `lab.example.env` / `lab.local.env` | Per-machine target config (IPs, SSH creds, debug endpoints) for the kernel build/deploy/debug scripts. Copy the example to `lab.local.env` (gitignored) and fill in your machines. |
+| `scripts/lab.py` / `.lab/` | Development commands and private local VM slots, active selection, credentials, and QEMU disks. Existing `lab.local.env` targets are imported by setup. |
 
-## Building
+## Development
 
-```
-make            # kernel module (default target's kernel-cache) + user/ (build, vet, test, binaries)
-make kernel     # kernel module only
-make user       # Go side only: OpenAPI regen-check, build, vet, test, and
-                #   CGO_ENABLED=0 static binaries at user/bin/{mappled,mapple}
-```
+Develop on an Ubuntu host with an Ubuntu QEMU guest. Start with:
 
-Kernel module builds are cross-compiled against a specific target's exact
-running kernel, driven by `lab.local.env` and `kernel/scripts/0*.sh`
-(`00-check-target.sh`, `02-setup-host-build.sh`, `03-build-module.sh`,
-`04-deploy-and-prep-gdb.sh`) — see their own header comments and
-`docs/session-lifecycle.md` / `docs/pslist-snapshot.md` for what the module
-itself is doing.
-
-## Running the control plane
-
-```
-cd user
-bash scripts/dev-setup.sh                     # local self-signed cert + bearer token + dev/mappled.json
-go run ./cmd/mappled -config dev/mappled.json # in one terminal
-
-# in another: fill in the server_url/bearer_token dev-setup.sh printed
-go run ./cmd/mapple -init && $EDITOR ~/.config/mapple/config.json
-go run ./cmd/mapple
+```bash
+make setup
+make vm-create NAME=dev          # create a new Ubuntu QEMU VM
+make vm-use NAME=dev             # persistent selection, shared with VS Code
+make vm-up
+make vm-setup                    # provision debug prerequisites, reboot, sync, build
 ```
 
-`docs/mapple-install.md` covers the production path: real TLS provisioning,
-bearer-token generation/hashing, the systemd unit, firewall rules for the
-kernel module's TCP port, and per-operator TUI profiles.
+The module currently targets the Linux 6.6 API. VM setup builds and installs a
+compatible 6.6.6 debug kernel in the Ubuntu guest, keeping application C unchanged.
+Reuse an existing built kernel with `SOURCE=... VMLINUX=...` on `vm-create` or
+`vm-add`; otherwise allow 10 GiB free and time for the first kernel build.
+
+For an existing VM instead:
+
+```bash
+make vm-add NAME=server HOST=192.168.122.76 SSH_USER=ubuntu \
+  GDB_ENDPOINT=127.0.0.1:6722
+make vm-use NAME=server
+make vm-setup
+```
+
+Add `SSH_KEY=/path/to/key` or `ASK_PASS=1` for private password prompts.
+The existing VM's QEMU launcher must expose the configured GDB stub.
+Custom kernels can supply `SOURCE=/path/to/linux VMLINUX=/path/to/vmlinux`.
+Setup imports existing lab targets without changing their custom kernel inputs.
+
+```bash
+make kernel                     # selected guest's module, incremental
+make server                     # Go HTTPS daemon
+make tui                        # Go terminal UI
+make                            # all three
+make check                      # generation, tooling checks, Go build/vet/tests
+
+make run-kernel                 # build + upload + reload, no debugger required
+make run-server                 # daemon in this terminal
+make run-tui                    # TUI in a new terminal; matching credentials prefilled
+
+make run-kernel-debug           # build + upload + relocated symbols/source paths
+make gdb                        # GDB TUI in a new terminal, or use VS Code F5
+```
+
+`make vm-list`, `make vm-use NAME=...`, and `make doctor` manage the lab.
+Kernel source Ctrl+click navigation, VS Code source breakpoints/stepping, and GDB
+TUI use the selected guest's source, headers, and symbols. Go apps use Make.
+Run `make help` for commands; [development guide](docs/development.md) covers
+setup, slots, debugging, terminals, and troubleshooting.
+
+[Production installation](docs/mapple-install.md) covers TLS, systemd, and operator profiles.
 
 ## Commands
 
 Every command below runs against a session (`$ID`), which you get by
-creating one first — `n` in the `mapple` TUI, or
+creating one first — `session create <slot>` in the `mapple` TUI, or
 `POST /v1/sessions` with `{"type":"tcp","host":"...","port":4444}`
-(see `docs/mapple-install.md` for the full request). In the TUI, each
-command is a single key once you're viewing a session's detail screen.
+(see `docs/mapple-install.md` for the full request). In the TUI, use `command info`, `command echo <text>`, or `command pslist` after connecting.
 
-### `info` — sanity-check a session (TUI: `i`)
+### `info` — sanity-check a session (TUI: `command info`)
 
 Returns the kernel-side session ID, the module's max concurrent sessions,
 and a bitmap of which commands this module build supports. Cheap, useful
@@ -78,7 +99,7 @@ curl -sk -H "Authorization: Bearer $TOKEN" -X POST \
   https://$HOST/v1/sessions/$ID/commands/info
 ```
 
-### `echo` — round-trip check (TUI: `e`)
+### `echo` — round-trip check (TUI: `command echo <text>`)
 
 Sends a payload through the kernel module and back unchanged. A liveness
 check for the wire protocol itself, not a real capability.
@@ -89,7 +110,7 @@ curl -sk -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   https://$HOST/v1/sessions/$ID/commands/echo
 ```
 
-### `pslist` — process/thread snapshot (TUI: `p`)
+### `pslist` — process/thread snapshot (TUI: `command pslist`)
 
 A point-in-time snapshot of every process and thread: identity
 (executable, command line), security context (uid/gid, capabilities,
@@ -104,6 +125,7 @@ curl -sk -H "Authorization: Bearer $TOKEN" -X POST \
 
 ## Docs
 
+- `docs/development.md` — setup, VM slots, builds, runs, navigation, and kernel debugging.
 - `docs/usermode-architecture-plan.md` — the Go control-plane design (wire
   protocol v3, the module-client library, the HTTPS API, the TUI).
 - `docs/mapple-install.md` — production installation.

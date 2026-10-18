@@ -17,6 +17,8 @@ env_file="$(lab_env_file "$repo_root")"
 # shellcheck source=/dev/null
 source "$env_file"
 lab_load_target "$target"
+local_source="$(target_cfg "$target" LOCAL_SOURCE)"
+local_vmlinux="$(target_cfg "$target" LOCAL_VMLINUX)"
 
 target_os="$(target_cfg "$target" OS)"
 target_os="${target_os:-ubuntu}"
@@ -25,24 +27,36 @@ case "$target_os" in
 	*) die "unsupported TARGET_OS[$target]='$target_os'; only ubuntu targets are implemented" ;;
 esac
 
-apt_get() {
-	sudo apt-get \
-		-o Acquire::Retries=3 \
-		-o Acquire::http::Timeout=20 \
-		-o Acquire::https::Timeout=20 \
-		"$@"
-}
-
-echo "[1/5] installing host build prerequisites"
-apt_get update
-apt_get install -y \
-	bc bison build-essential clangd-18 dwarves flex gdb \
-	libelf-dev libssl-dev openssh-client rsync sshpass
+echo "[1/5] checking host build prerequisites (install with make setup)"
+for tool in make gcc python3 rsync ssh; do
+	command -v "$tool" >/dev/null 2>&1 || die "missing $tool; run make setup"
+done
 
 echo "[2/5] discovering target kernel"
 lab_check_connection
 kernel="$(lab_ssh 'uname -r')"
 echo "       target $target is running $kernel"
+
+# A configured host-built kernel is already the exact build tree. Avoid
+# duplicating gigabytes of headers/source or requiring them inside the guest.
+if [[ -n "$local_source" && -f "$local_source/Module.symvers" && -n "$local_vmlinux" ]]; then
+	host_release="$(cat "$local_source/include/config/kernel.release")"
+	[[ "$host_release" == "$kernel" ]] || die "host source kernel $host_release differs from guest $kernel"
+	cache_dir="$kernel_root/kernel-cache/$target"
+	mkdir -p "$cache_dir"
+	for pair in "build:$local_source" "source:$local_source" "vmlinux:$local_vmlinux"; do
+		name="${pair%%:*}"
+		path="${pair#*:}"
+		if [[ "$(realpath -m "$cache_dir/$name")" != "$(realpath "$path")" ]]; then
+			rm -f "$cache_dir/$name"
+			ln -s "$path" "$cache_dir/$name"
+		fi
+	done
+	printf '%s\n' "$kernel" > "$cache_dir/kernel.release"
+	ln -sfn "$target" "$kernel_root/kernel-cache/current"
+	echo "using matching host kernel build, source, and symbols at $local_source"
+	exit 0
+fi
 
 cache_dir="$kernel_root/kernel-cache/$target"
 usr_src_dir="$cache_dir/usr-src"
@@ -131,10 +145,19 @@ ln -s "usr-src/$build_name" "$build_dir"
 [[ -f "$build_dir/Makefile" ]] || die "synced build tree is missing Makefile: $build_dir"
 
 echo "[4/5] checking vmlinux debug image"
-if lab_ssh_sudo "test -r '$remote_vmlinux'"; then
-	# rsync-over-sudo: unlike cat-over-ssh, survives sudo banners and drops.
-	echo "       rsync $remote_vmlinux -> ${cache_dir#"$repo_root"/}/vmlinux"
-	lab_rsync_from "$remote_vmlinux" "$cache_dir/vmlinux" --rsync-path='sudo rsync'
+if [[ -n "$local_vmlinux" ]]; then
+	[[ -f "$local_vmlinux" ]] || die "local VMLINUX not found: $local_vmlinux"
+	if [[ "$(realpath -m "$cache_dir/vmlinux")" != "$(realpath "$local_vmlinux")" ]]; then
+		rm -f "$cache_dir/vmlinux"
+		ln -s "$local_vmlinux" "$cache_dir/vmlinux"
+	fi
+elif lab_ssh_sudo "test -r '$remote_vmlinux'"; then
+	# sudo reads its password before cat runs, so NOPASSWD is not required.
+	echo "       syncing $remote_vmlinux -> ${cache_dir#"$repo_root"/}/vmlinux"
+	lab_ssh_sudo "cat '$remote_vmlinux'" > "$cache_dir/vmlinux.tmp"
+	readelf -h "$cache_dir/vmlinux.tmp" >/dev/null || die "downloaded vmlinux is not an ELF image"
+	rm -f "$cache_dir/vmlinux"
+	mv "$cache_dir/vmlinux.tmp" "$cache_dir/vmlinux"
 else
 	rm -f "$cache_dir/vmlinux"
 	echo "       no vmlinux on target ($remote_vmlinux is missing)"
@@ -149,55 +172,64 @@ fi
 echo "[5/5] resolving kernel source for step-into-kernel"
 source_link="$cache_dir/source"
 source_tree="$cache_dir/source-tree"
-rm -f "$source_link"
 
-is_kernel_source_root() {
-	[[ -f "$1/Makefile" && -d "$1/init" && -f "$1/init/main.c" ]]
-}
-
-# Prefer the version matching the live kernel, else the highest installed.
-short_kver="$(printf '%s' "$kernel" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+' || true)"
-found_root=""
-matching_root=""
-while IFS= read -r mf; do
-	candidate="$(dirname "$mf")"
-	if is_kernel_source_root "$candidate"; then
-		[[ -z "$found_root" ]] && found_root="$candidate"
-		if [[ -n "$short_kver" && "$candidate" == *"linux-source-$short_kver"* ]]; then
-			matching_root="$candidate"
-			break
-		fi
+if [[ -n "$local_source" ]]; then
+	[[ -f "$local_source/init/main.c" ]] || die "local SOURCE is not a kernel tree: $local_source"
+	if [[ "$(realpath -m "$source_link")" != "$(realpath "$local_source")" ]]; then
+		rm -f "$source_link"
+		ln -s "$local_source" "$source_link"
 	fi
-done < <(find "$usr_src_dir" -mindepth 1 -maxdepth 3 -name Makefile -path '*linux-source-*' 2>/dev/null | sort -Vr)
-found_root="${matching_root:-$found_root}"
-
-if [[ -n "$found_root" ]]; then
-	rm -rf "$source_tree"
-	rel="${found_root#"$cache_dir"/}"
-	ln -s "$rel" "$source_link"
-	echo "       kernel source: $source_link -> $rel"
 else
-	shopt -s nullglob
-	tarballs=("$usr_src_dir"/linux-source-*.tar.* "$usr_src_dir"/linux-source-*/linux-source-*.tar.*)
-	shopt -u nullglob
-	if [[ ${#tarballs[@]} -gt 0 ]]; then
-		tarball="${tarballs[0]}"
-		if is_kernel_source_root "$source_tree"; then
-			echo "       kernel source already extracted at $source_tree"
-		else
-			echo "       extracting $(basename "$tarball") -> source-tree/ (one-time, ~30s)"
-			rm -rf "$source_tree"
-			mkdir -p "$source_tree"
-			tar -C "$source_tree" --strip-components=1 -xf "$tarball"
+	rm -f "$source_link"
+
+	is_kernel_source_root() {
+		[[ -f "$1/Makefile" && -d "$1/init" && -f "$1/init/main.c" ]]
+	}
+
+	# Prefer the version matching the live kernel, else the highest installed.
+	short_kver="$(printf '%s' "$kernel" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+' || true)"
+	found_root=""
+	matching_root=""
+	while IFS= read -r mf; do
+		candidate="$(dirname "$mf")"
+		if is_kernel_source_root "$candidate"; then
+			[[ -z "$found_root" ]] && found_root="$candidate"
+			if [[ -n "$short_kver" && "$candidate" == *"linux-source-$short_kver"* ]]; then
+				matching_root="$candidate"
+				break
+			fi
 		fi
-		ln -s source-tree "$source_link"
-		echo "       kernel source: $source_link -> source-tree"
-	else
+	done < <(find "$usr_src_dir" -mindepth 1 -maxdepth 3 -name Makefile -path '*linux-source-*' 2>/dev/null | sort -Vr)
+	found_root="${matching_root:-$found_root}"
+
+	if [[ -n "$found_root" ]]; then
 		rm -rf "$source_tree"
-		echo "       no kernel source on target; kernel step-into will show disassembly only"
-		echo "       to enable: kernel/scripts/01-provision-target.sh $target <method> --debug-symbols"
+		rel="${found_root#"$cache_dir"/}"
+		ln -s "$rel" "$source_link"
+		echo "       kernel source: $source_link -> $rel"
+	else
+		shopt -s nullglob
+		tarballs=("$usr_src_dir"/linux-source-*.tar.* "$usr_src_dir"/linux-source-*/linux-source-*.tar.*)
+		shopt -u nullglob
+		if [[ ${#tarballs[@]} -gt 0 ]]; then
+			tarball="${tarballs[0]}"
+			if is_kernel_source_root "$source_tree"; then
+				echo "       kernel source already extracted at $source_tree"
+			else
+				echo "       extracting $(basename "$tarball") -> source-tree/ (one-time, ~30s)"
+				rm -rf "$source_tree"
+				mkdir -p "$source_tree"
+				tar -C "$source_tree" --strip-components=1 -xf "$tarball"
+			fi
+			ln -s source-tree "$source_link"
+			echo "       kernel source: $source_link -> source-tree"
+		else
+			rm -rf "$source_tree"
+			echo "       no kernel source on target; kernel step-into will show disassembly only"
+			echo "       to enable: kernel/scripts/01-provision-target.sh $target <method> --debug-symbols"
+		fi
 	fi
-fi
+fi # no explicit local source
 
 printf '%s\n' "$kernel" > "$cache_dir/kernel.release"
 ln -sfn "$target" "$kernel_root/kernel-cache/current"
@@ -207,4 +239,4 @@ echo "synced $target kernel $kernel"
 echo "  build  -> $build_dir"
 [[ -L "$source_link" ]] && echo "  source -> $(readlink -f "$source_link")"
 [[ -f "$cache_dir/vmlinux" ]] && echo "  vmlinux: $cache_dir/vmlinux"
-echo "next: kernel/scripts/03-build-module.sh $target"
+echo "next: make kernel"

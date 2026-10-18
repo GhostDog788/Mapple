@@ -46,8 +46,8 @@ require_debian_host() {
 # Callers `source` the returned path directly so TARGET_* assignments land
 # in script-global scope.
 lab_env_file() {
-	local env_file="$1/lab.local.env"
-	[[ -f "$env_file" ]] || die "missing $env_file; copy lab.example.env to lab.local.env and edit it"
+	local env_file="${MAPPLE_LAB_ENV:-$1/lab.local.env}"
+	[[ -f "$env_file" ]] || die "missing lab configuration; run make setup, then make vm-add or make vm-create"
 	printf '%s' "$env_file"
 }
 
@@ -65,6 +65,10 @@ lab_load_target() {
 	LAB_SSH_PASS="$(target_cfg "$target" SSH_PASS)"
 	LAB_SUDO_PASS="$(target_cfg "$target" SUDO_PASS)"
 	LAB_REMOTE_DIR="$(target_cfg "$target" REMOTE_DIR)"
+	local ssh_key
+	ssh_key="$(target_cfg "$target" SSH_KEY)"
+	local known_hosts
+	known_hosts="$(target_cfg "$target" KNOWN_HOSTS)"
 
 	LAB_SSH_PORT="${LAB_SSH_PORT:-22}"
 	LAB_SUDO_PASS="${LAB_SUDO_PASS:-$LAB_SSH_PASS}"
@@ -86,9 +90,18 @@ lab_load_target() {
 		-o ConnectTimeout=10
 		-o ServerAliveInterval=15
 	)
+	if [[ -n "$ssh_key" ]]; then
+		ssh_opts+=(-i "$ssh_key" -o IdentitiesOnly=yes)
+	fi
+	if [[ -n "$known_hosts" ]]; then
+		ssh_opts+=(-o "UserKnownHostsFile=$known_hosts")
+	fi
+	if [[ -z "$LAB_SSH_PASS" ]]; then
+		ssh_opts+=(-o BatchMode=yes)
+	fi
 	LAB_SSH_CMD=("$ssh_bin" "${ssh_opts[@]}" -p "$LAB_SSH_PORT")
 	LAB_SCP_CMD=("$scp_bin" "${ssh_opts[@]}" -P "$LAB_SSH_PORT")
-	LAB_RSYNC_RSH="$ssh_bin ${ssh_opts[*]} -p $LAB_SSH_PORT"
+	printf -v LAB_RSYNC_RSH '%q ' "$ssh_bin" "${ssh_opts[@]}" -p "$LAB_SSH_PORT"
 	if [[ -n "$LAB_SSH_PASS" ]]; then
 		LAB_SSH_CMD=("$sshpass_bin" -e "${LAB_SSH_CMD[@]}")
 		LAB_SCP_CMD=("$sshpass_bin" -e "${LAB_SCP_CMD[@]}")

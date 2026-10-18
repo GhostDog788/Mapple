@@ -22,6 +22,8 @@ env_file="$(lab_env_file "$repo_root")"
 # shellcheck source=/dev/null
 source "$env_file"
 lab_load_target "$target"
+local_source="$(target_cfg "$target" LOCAL_SOURCE)"
+local_vmlinux="$(target_cfg "$target" LOCAL_VMLINUX)"
 
 if [[ -t 1 ]]; then
 	GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[0;33m'; RESET='\033[0m'
@@ -42,9 +44,9 @@ else
 	fail "ssh: cannot reach $LAB_SSH_TARGET on port $LAB_SSH_PORT"
 	echo
 	echo "fix one of:"
-	echo "  - TARGET_IP / TARGET_SSH_PORT / TARGET_SSH_USER for '$target' in lab.local.env"
+	echo "  - check host / ssh_port / user in .lab/slots/$target.json"
 	echo "  - the target VM is up and openssh-server is running"
-	echo "  - if password auth: TARGET_SSH_PASS[$target] is set"
+	echo "  - verify the slot's SSH key or password"
 	exit 1
 fi
 
@@ -85,7 +87,9 @@ else
 fi
 
 # --- vmlinux (debug image) ---
-if lab_ssh_sudo "test -r /usr/lib/debug/boot/vmlinux-$live_kernel" 2>/dev/null; then
+if [[ -n "$local_vmlinux" && -f "$local_vmlinux" ]]; then
+	ok "vmlinux: matching local image configured"
+elif lab_ssh_sudo "test -r /usr/lib/debug/boot/vmlinux-$live_kernel" 2>/dev/null; then
 	ok "vmlinux: /usr/lib/debug/boot/vmlinux-$live_kernel readable (debug symbols installed)"
 else
 	warn "vmlinux: missing on target; for source debugging, re-run kernel/scripts/01-... with --debug-symbols"
@@ -93,7 +97,9 @@ fi
 
 # --- kernel source ---
 src_found="$(lab_ssh 'ls -1d /usr/src/linux-source-*/ 2>/dev/null | head -1 || true' 2>/dev/null)"
-if [[ -n "$src_found" ]]; then
+if [[ -n "$local_source" && -f "$local_source/init/main.c" ]]; then
+	ok "kernel-source: matching local tree configured"
+elif [[ -n "$src_found" ]]; then
 	ok "kernel-source: ${src_found%/} present (step-into-kernel will resolve source)"
 else
 	warn "kernel-source: missing on target; for step-into-kernel, re-run kernel/scripts/01-... with --debug-symbols"
@@ -132,7 +138,7 @@ esac
 echo
 if [[ $failures -eq 0 ]]; then
 	echo "all checks passed."
-	echo "next: kernel/scripts/01-provision-target.sh $target <method> [--debug-symbols]"
+	echo "next: make vm-setup (provision), or make run-kernel-debug (already prepared)"
 else
 	echo "$failures check(s) FAILED; resolve before running kernel/scripts/01."
 	exit 1

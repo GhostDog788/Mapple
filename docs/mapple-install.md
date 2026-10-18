@@ -14,8 +14,8 @@ CGO_ENABLED=0 go build -o bin/mappled ./cmd/mappled
 CGO_ENABLED=0 go build -o bin/mapple ./cmd/mapple
 ```
 
-(`make user` from the repo root does this, plus `go vet`/`go test`/the
-OpenAPI regeneration check, and drops the binaries in the same place.)
+(`make user` from the repo root builds both binaries in the same place;
+`make check` runs Go vet/tests and the OpenAPI generation check.)
 `CGO_ENABLED=0` matters here, not as a style preference: it's what makes both
 binaries statically linked, so they run on a minimal server image without
 matching libc, and can be dropped straight into a container `FROM scratch`
@@ -66,9 +66,9 @@ that will run `mapple` or otherwise call the API, for use as `ca_file`.
 step-ca, your org's internal CA) issues, and skip `ca_file` on clients
 entirely since the system trust store already covers it.
 
-`user/scripts/dev-setup.sh` automates the self-signed path for local
-development only -- it writes into a gitignored `user/dev/` and is not
-meant for production paths like `/etc/mapple`.
+For local development, `make setup` creates matching server and TUI configurations
+under gitignored `.lab/dev/`. Run `make run-server` and `make run-tui` from the
+repository root. See [development](development.md) for the Ubuntu/QEMU workflow.
 
 ## 4. Bearer tokens
 
@@ -190,6 +190,6 @@ Fill in the identity's token from step 4, the daemon's URL, and either
 
 Multiple profiles can coexist in the same file (e.g. one per environment);
 `mapple -profile <name>` selects one, otherwise `active_profile` is used.
-Run `mapple` and you're in the TUI: `n` to create a session against a
-module's `host:port` or chardev path, `enter` for detail, `i`/`e`/`p` for
-info/echo/pslist, `/` to filter a list, `s` to cycle pslist sort order.
+Run `mapple` and use `session create` to connect to a module by TCP or character
+device. Use `command info`, `command echo <text>`, and `command pslist` after
+connecting. `help` and `session help` list the current commands.
