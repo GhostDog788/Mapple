@@ -252,6 +252,11 @@ set tcp connect-timeout 60
 set remotetimeout 60
 set architecture i386:x86-64
 set schedule-multiple on
+# A kernel debug session must leave the VM running when VS Code sends kill
+# on Stop. Override GDB's console command to detach from the remote target.
+define kill
+  detach
+end
 set substitute-path "$intermediate_dir" "$module_dir"
 directory "$module_dir"
 EOF

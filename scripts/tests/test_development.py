@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,29 @@ import debug_kernel
 import kernel_compat
 
 REPO = Path(__file__).resolve().parents[2]
+
+
+class DoctorTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('ss'), 'ss required')
+    def test_debug_check_never_connects_to_or_pauses_guest(self):
+        script = (REPO / 'kernel/scripts/00-check-target.sh').read_text()
+        function = script[script.index('check_endpoint() {'):script.index('\ncase "$debug_method" in', script.index('check_endpoint() {'))]
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            commands = f'''target=dev
+target_cfg() {{ echo 127.0.0.1:{port}; }}
+ok() {{ echo "$1"; }}
+warn() {{ echo "$1"; }}
+{function}
+check_endpoint debug-qemu DEBUG_ENDPOINT_QEMU
+'''
+            result = subprocess.run(['bash', '-eu', '-c', commands], capture_output=True, text=True, check=True)
+            self.assertIn('local listener', result.stdout)
+            listener.settimeout(0.05)
+            with self.assertRaises(socket.timeout):
+                listener.accept()
 
 
 class LabTests(unittest.TestCase):
@@ -282,11 +306,16 @@ class DeploymentTests(unittest.TestCase):
         # quotes as literal filename characters, unlike add-symbol-file.
         offline = self.kernel / '.gdb/offline.gdb'
         offline.write_text('\n'.join(line for line in text.splitlines()
-                                     if not line.startswith(('target remote ', 'symbol-file '))) + '\n')
+                                     if not line.startswith(('target remote ', 'symbol-file '))) +
+                           '\ndefine detach\n  echo REMOTE_DETACH_ONLY\\n\nend\n')
         check = subprocess.run(['gdb', '-q', '-batch', '-ex', f'source {offline}',
-                                '-ex', 'info line mapple_fixture'], capture_output=True, text=True, check=True)
+                                '-ex', 'info line mapple_fixture',
+                                '-ex', 'kill'], capture_output=True, text=True, check=True)
         self.assertIn('starts at address 0xffffffffc010', check.stdout)
         self.assertIn('main.c', check.stdout)
+        # VS Code Stop issues `kill`; execute it in real GDB and verify it
+        # dispatches to detach rather than sending a kill packet to QEMU.
+        self.assertIn('REMOTE_DETACH_ONLY', check.stdout)
         self.assertTrue((self.kernel / '.gdb/current-vmlinux').exists())
 
     def test_normal_upload_needs_no_symbols_and_invalidates_old_debug_run(self):

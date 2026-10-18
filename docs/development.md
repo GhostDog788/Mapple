@@ -192,6 +192,13 @@ The generated `.gdb/current-debug.gdb` and `current-vmlinux` links are used by b
 VS Code and terminal GDB. Kernel source paths are derived from the matching
 `vmlinux` DWARF information. QEMU multicore scheduling is enabled in GDB.
 
+VS Code uses custom launch commands to load this script. The fixed
+`miDebuggerServerAddress` value is only a remote-mode marker: custom launch
+commands replace the adapter's connection command, and the script supplies the
+active slot's actual endpoint. This makes Pause interrupt the guest through GDB
+instead of trying to signal a host process. The generated script maps GDB's
+`kill` command to `detach`, so VS Code Stop leaves the VM running.
+
 Building also refreshes root `compile_commands.json` with module and kernel source
 commands. clangd uses the configured guest headers and source tree, so Ctrl+click
 can navigate from module calls into kernel definitions. Built kernel trees retain

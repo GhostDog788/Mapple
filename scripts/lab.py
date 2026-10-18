@@ -545,7 +545,7 @@ def main():
         if cmd == "gdb":
             terminal("Mapple kernel GDB", [sys.executable, Path(__file__), "gdb-here"])
         else:
-            os.execvp("gdb", ["gdb", "-tui", "-x", str(script)])
+            os.execvp("gdb", ["gdb", "-q", "-tui", "-x", str(script)])
 
 
 if __name__ == "__main__":

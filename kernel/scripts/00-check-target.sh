@@ -105,7 +105,8 @@ else
 	warn "kernel-source: missing on target; for step-into-kernel, re-run kernel/scripts/01-... with --debug-symbols"
 fi
 
-# --- debug endpoint(s) reachable from this host ---
+# Connecting even briefly to QEMU's GDB stub stops the guest. Inspect local
+# listeners without opening a connection; remote endpoints remain unprobed.
 check_endpoint() {
 	local label="$1" key="$2"
 	local endpoint
@@ -115,14 +116,14 @@ check_endpoint() {
 		return
 	fi
 	local host="${endpoint%:*}" port="${endpoint##*:}"
-	if command -v nc >/dev/null 2>&1; then
-		if nc -z -w 3 "$host" "$port" 2>/dev/null; then
-			ok "$label: $endpoint reachable from this host"
+	if [[ "$host" =~ ^(localhost|127\.[0-9]+\.[0-9]+\.[0-9]+|\[?::1\]?)$ ]] && command -v ss >/dev/null 2>&1; then
+		if [[ -n "$(ss -H -ltn "sport = :$port" 2>/dev/null)" ]]; then
+			ok "$label: local listener on $endpoint (guest left running)"
 		else
-			warn "$label: $endpoint NOT reachable from this host (start your GDB stub / serial bridge)"
+			warn "$label: no local listener on $endpoint (start your GDB stub / serial bridge)"
 		fi
 	else
-		warn "$label: cannot test (nc not installed); endpoint configured as $endpoint"
+		warn "$label: configured as $endpoint; not probed because connecting can pause the guest"
 	fi
 }
 
