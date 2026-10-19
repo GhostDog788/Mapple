@@ -1,4 +1,6 @@
-# Session lifecycle
+# Kernel session lifecycle
+
+[Documentation](../README.md) / Architecture
 
 Mapple has one module-wide session manager shared by every transport. A session
 owns one stream and one parser kthread. Transports provide the stream operations

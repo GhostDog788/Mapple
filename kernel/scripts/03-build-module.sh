@@ -15,7 +15,7 @@ kernel_file="$cache_dir/kernel.release"
 kdir="$cache_dir/build"
 
 [[ -f "$kernel_file" && -d "$kdir" ]] ||
-	die "missing kernel cache for $target; run: kernel/scripts/02-setup-host-build.sh $target"
+	die "missing kernel cache for $target; run make vm-setup"
 python3 "$repo_root/scripts/kernel_compat.py" "$kdir"
 
 module_dir="$kernel_root"

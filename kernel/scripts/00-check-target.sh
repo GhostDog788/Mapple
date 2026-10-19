@@ -57,7 +57,7 @@ else
 	fail "sudo: configured password rejected or sudo not installed"
 	echo
 	echo "fix one of:"
-	echo "  - TARGET_SUDO_PASS[$target] in lab.local.env (defaults to TARGET_SSH_PASS)"
+	echo "  - sudo_password in .lab/slots/$target.json (defaults to ssh_password)"
 	echo "  - configure NOPASSWD for the lab user on the target"
 fi
 
@@ -76,7 +76,7 @@ ok "kernel: $live_kernel"
 cache_dir="$kernel_root/kernel-cache/$target"
 cached_kernel="$(cat "$cache_dir/kernel.release" 2>/dev/null || echo)"
 if [[ -n "$cached_kernel" && "$cached_kernel" != "$live_kernel" ]]; then
-	warn "cached kernel ($cached_kernel) differs from live; re-run kernel/scripts/02-setup-host-build.sh $target"
+	warn "cached kernel ($cached_kernel) differs from live; run make vm-sync"
 fi
 
 # --- headers ---
@@ -87,7 +87,7 @@ if [[ -n "$local_source" && -f "$local_source/include/generated/autoconf.h" &&
 elif lab_ssh "test -d /lib/modules/$live_kernel/build" 2>/dev/null; then
 	ok "headers: /lib/modules/$live_kernel/build present"
 else
-	warn "headers: missing on target; run kernel/scripts/01-provision-target.sh $target <method>"
+	warn "headers: missing on target; run make vm-setup"
 fi
 
 # --- vmlinux (debug image) ---
@@ -96,7 +96,7 @@ if [[ -n "$local_vmlinux" && -f "$local_vmlinux" ]]; then
 elif lab_ssh_sudo "test -r /usr/lib/debug/boot/vmlinux-$live_kernel" 2>/dev/null; then
 	ok "vmlinux: /usr/lib/debug/boot/vmlinux-$live_kernel readable (debug symbols installed)"
 else
-	warn "vmlinux: missing on target; for source debugging, re-run kernel/scripts/01-... with --debug-symbols"
+	warn "vmlinux: missing on target; for source debugging, run make vm-setup"
 fi
 
 # --- kernel source ---
@@ -106,7 +106,7 @@ if [[ -n "$local_source" && -f "$local_source/init/main.c" ]]; then
 elif [[ -n "$src_found" ]]; then
 	ok "kernel-source: ${src_found%/} present (step-into-kernel will resolve source)"
 else
-	warn "kernel-source: missing on target; for step-into-kernel, re-run kernel/scripts/01-... with --debug-symbols"
+	warn "kernel-source: missing on target; for step-into-kernel, run make vm-setup"
 fi
 
 # Connecting even briefly to QEMU's GDB stub stops the guest. Inspect local
@@ -145,6 +145,6 @@ if [[ $failures -eq 0 ]]; then
 	echo "all checks passed."
 	echo "next: make vm-setup (provision), or make run-kernel-debug (already prepared)"
 else
-	echo "$failures check(s) FAILED; resolve before running kernel/scripts/01."
+	echo "$failures check(s) FAILED; resolve before running make vm-setup."
 	exit 1
 fi

@@ -69,7 +69,7 @@ build_real="$(lab_ssh "readlink -f '/lib/modules/$kernel/build'")"
 if ! lab_ssh "test -d '$build_real'"; then
 	die "missing target build directory $build_real;
 - on the target, check: ls -la /lib/modules/$kernel/build
-- if it's missing, re-run: kernel/scripts/01-provision-target.sh $target <method>"
+- if it's missing, run make vm-setup"
 fi
 
 mapfile -t remote_header_dirs < <(lab_ssh "bash -s" <<REMOTE
@@ -162,7 +162,7 @@ else
 	rm -f "$cache_dir/vmlinux"
 	echo "       no vmlinux on target ($remote_vmlinux is missing)"
 	echo "       module debugging will work; kernel source debugging will not"
-	echo "       to enable: kernel/scripts/01-provision-target.sh $target <method> --debug-symbols"
+	echo "       to enable: make vm-setup"
 fi
 
 # Ubuntu ships several linux-source layouts (bare tarball, extracted dir,
@@ -226,7 +226,7 @@ else
 		else
 			rm -rf "$source_tree"
 			echo "       no kernel source on target; kernel step-into will show disassembly only"
-			echo "       to enable: kernel/scripts/01-provision-target.sh $target <method> --debug-symbols"
+			echo "       to enable: make vm-setup"
 		fi
 	fi
 fi # no explicit local source

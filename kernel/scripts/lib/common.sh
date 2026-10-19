@@ -17,11 +17,11 @@ validate_target() {
 target_is_configured() {
 	local target="$1" known
 	declare -p TARGETS >/dev/null 2>&1 ||
-		die "missing TARGETS array in lab.local.env"
+		die "missing target list in generated lab configuration; run through the top-level Makefile"
 	for known in "${TARGETS[@]}"; do
 		[[ "$known" == "$target" ]] && return 0
 	done
-	die "unknown target '$target'; add it to TARGETS in lab.local.env"
+	die "unknown target '$target' in generated configuration; select it with make vm-use NAME=$target"
 }
 
 target_cfg() {
@@ -34,7 +34,7 @@ target_cfg() {
 target_require_cfg() {
 	local value
 	value="$(target_cfg "$1" "$2")"
-	[[ -n "$value" ]] || die "missing TARGET_$2[$1] in lab.local.env"
+	[[ -n "$value" ]] || die "missing target field $2 for $1; check .lab/slots/$1.json"
 	printf '%s' "$value"
 }
 
@@ -46,8 +46,8 @@ require_debian_host() {
 # Callers `source` the returned path directly so TARGET_* assignments land
 # in script-global scope.
 lab_env_file() {
-	local env_file="${MAPPLE_LAB_ENV:-$1/lab.local.env}"
-	[[ -f "$env_file" ]] || die "missing lab configuration; run make setup, then make vm-add or make vm-create"
+	local env_file="${MAPPLE_LAB_ENV:-}"
+	[[ -f "$env_file" ]] || die "missing generated lab configuration; use commands from the top-level Makefile"
 	printf '%s' "$env_file"
 }
 
@@ -80,7 +80,7 @@ lab_load_target() {
 	sshpass_bin="${SSHPASS_BIN:-sshpass}"
 
 	if [[ -n "$LAB_SSH_PASS" ]] && ! command -v "$sshpass_bin" >/dev/null 2>&1; then
-		die "TARGET_SSH_PASS[$target] is set but '$sshpass_bin' isn't installed; install with: sudo apt-get install -y sshpass"
+		die "An SSH password for $target is set but '$sshpass_bin' isn't installed; install with: sudo apt-get install -y sshpass"
 	fi
 
 	LAB_SSH_TARGET="$LAB_SSH_USER@$LAB_TARGET_IP"
@@ -144,13 +144,13 @@ lab_check_connection() {
 
 	if ! lab_ssh 'true' 2>/dev/null; then
 		die "cannot reach $LAB_SSH_TARGET over ssh (port $LAB_SSH_PORT).
-- check TARGET_IP / TARGET_SSH_PORT / TARGET_SSH_USER for '$LAB_TARGET' in lab.local.env
+- check host / ssh_port / user in .lab/slots/$LAB_TARGET.json
 - try by hand: ssh -p $LAB_SSH_PORT $LAB_SSH_TARGET
-- if using passwords, confirm TARGET_SSH_PASS[$LAB_TARGET] is set"
+- if using passwords, check ssh_password in the slot"
 	fi
 	if (( check_sudo )) && ! lab_ssh_sudo 'true' 2>/dev/null; then
 		die "ssh reaches $LAB_SSH_TARGET but sudo doesn't work there.
-- check TARGET_SUDO_PASS[$LAB_TARGET] in lab.local.env (defaults to TARGET_SSH_PASS)
+- check sudo_password in .lab/slots/$LAB_TARGET.json (defaults to ssh_password)
 - on the target, confirm: sudo -n -v"
 	fi
 }

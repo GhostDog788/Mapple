@@ -94,4 +94,6 @@ help:
 	@echo 'Kernel debugger: make gdb (new terminal), make gdb-here, or VS Code F5'
 	@echo 'Validate:        make doctor | check | test | api-verify'
 	@echo 'Terminal:        FOREGROUND=1 uses this terminal; TERMINAL="xterm -e" overrides the launcher'
-	@echo 'Details:         docs/development.md'
+	@echo 'Documentation:   docs/README.md'
+	@echo 'Setup guide:     docs/guides/setup.md'
+	@echo 'Usage reference: docs/guides/usage.md'

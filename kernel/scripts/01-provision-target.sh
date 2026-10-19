@@ -219,6 +219,5 @@ echo
 if (( uninstall )); then
 	echo "uninstall complete. reboot the $target VM to drop the lab boot args."
 else
-	echo "provisioning complete. reboot the $target VM, then:"
-	echo "next: kernel/scripts/02-setup-host-build.sh $target"
-fi
+	echo "provisioning complete. make vm-setup will reboot $target and sync host inputs."
+	fi

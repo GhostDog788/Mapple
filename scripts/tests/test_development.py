@@ -1,7 +1,6 @@
 """Development workflow regressions; all VM/SSH mutations use isolated fixtures."""
 import argparse
 import base64
-import contextlib
 import io
 import json
 import os
@@ -128,19 +127,6 @@ class LabTests(unittest.TestCase):
         self.assertEqual(lab.load_slot()[0], 'first')
         self.assertEqual(lab.load_slot('second')[1]['host'], 'localhost')
 
-    def test_legacy_import_preserves_selection_and_does_not_print_secrets(self):
-        (self.root / 'lab.local.env').write_text("TARGETS=(old)\ndeclare -A TARGET_IP=([old]=localhost)\n"
-            "declare -A TARGET_SSH_USER=([old]=ubuntu)\ndeclare -A TARGET_SSH_PASS=([old]='secret value')\n")
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output):
-            lab.import_legacy()
-        self.assertNotIn('secret value', output.getvalue())
-        self.assertEqual(lab.load_slot()[1]['ssh_password'], 'secret value')
-        self.slot('other')
-        lab.select('other')
-        lab.import_legacy()
-        self.assertEqual(lab.load_slot()[0], 'other')
-
     @unittest.skipUnless(shutil.which('openssl'), 'openssl required')
     def test_dev_setup_is_idempotent_and_server_tui_credentials_match(self):
         self.slot('dev', module_port=14444)
@@ -198,7 +184,7 @@ class LabTests(unittest.TestCase):
                  patch.object(lab, 'kvm_group_member', return_value=member), \
                  patch.object(lab.shutil, 'which', return_value='/available'), \
                  patch.object(lab, 'run') as run, \
-                 patch.object(lab, 'import_legacy'), patch.object(lab, 'dev_config'):
+                 patch.object(lab, 'dev_config'):
                 lab.setup()
                 grants = [call.args[0] for call in run.call_args_list if 'usermod' in call.args[0]]
                 self.assertEqual(len(grants), 0 if member else 1)
@@ -405,11 +391,12 @@ class DeploymentTests(unittest.TestCase):
         source.write_text('int start_kernel(void) { return 1; }\nint mapple_fixture(void) { return 42; }\n')
         subprocess.run(['gcc', '-g', '-c', str(source), '-o', str(self.artifact)], check=True)
         shutil.copy(self.artifact, cache / 'vmlinux')
-        (self.root / 'lab.local.env').touch()
+        (self.root / '.lab').mkdir()
+        (self.root / '.lab/dev.env').touch()
         common = r'''
 +die() { echo "$*" >&2; exit 1; }
 +validate_target() { :; }
-+lab_env_file() { printf '%s/lab.local.env' "$1"; }
++lab_env_file() { printf '%s/.lab/dev.env' "$1"; }
 +lab_load_target() { LAB_SSH_TARGET=fixture; LAB_REMOTE_DIR=/tmp/fixture; }
 +target_require_cfg() { printf 127.0.0.1:9; }
 +lab_check_connection() { :; }

@@ -100,54 +100,8 @@ def select(name):
     print(f"Active VM: {name}")
 
 
-def import_legacy():
-    """Read the old Bash config once; never print credentials or overwrite slots."""
-    legacy = ROOT / "lab.local.env"
-    if not legacy.exists():
-        return
-    script = r'''
-source "$1"
-for name in "${TARGETS[@]}"; do
-    printf '%s\0' "$name"
-    for key in IP SSH_USER SSH_PORT SSH_PASS SUDO_PASS DEBUG_ENDPOINT_QEMU DEBUG_ENDPOINT_KGDB REMOTE_DIR SSH_KEY; do
-        map="TARGET_$key"
-        if declare -p "$map" &>/dev/null; then
-            declare -n value="$map"
-            printf '%s\0' "${value[$name]:-}"
-            unset -n value
-        else
-            printf '\0'
-        fi
-    done
-done
-'''
-    fields = run(["bash", "-c", script, "bash", legacy], capture_output=True).stdout.decode().split("\0")[:-1]
-    keys = ("host", "user", "ssh_port", "ssh_password", "sudo_password", "gdb", "kgdb", "remote_dir", "ssh_key")
-    names = []
-    for i in range(0, len(fields), len(keys) + 1):
-        name = validate_name(fields[i])
-        names.append(name)
-        if not slot_path(name).exists():
-            config = dict(zip(keys, fields[i + 1:i + 1 + len(keys)]))
-            config["ssh_port"] = int(config["ssh_port"] or 22)
-            config["module_port"] = 4444
-            config["method"] = "qemu"
-            cache = ROOT / "kernel/kernel-cache" / name
-            # Preserve locally built kernels and their exact source/symbols.
-            for key, filename in (("source", "source"), ("vmlinux", "vmlinux")):
-                p = cache / filename
-                if p.exists():
-                    config[key] = str(p.resolve())
-            save(slot_path(name), config)
-            print(f"Imported VM slot: {name}")
-    if names and not (STATE / "active").exists():
-        current = ROOT / "kernel/kernel-cache/current"
-        name = current.resolve().name if current.exists() else names[0]
-        (STATE / "active").write_text((name if name in names else names[0]) + "\n")
-
-
 def bridge(name, config):
-    """Use the existing proven build/debug scripts with a private generated config."""
+    """Generate the private target configuration consumed by kernel scripts."""
     mappings = {
         "OS": "ubuntu", "IP": config["host"], "SSH_USER": config["user"],
         "SSH_PORT": config.get("ssh_port", 22), "SSH_KEY": config.get("ssh_key", ""),
@@ -287,9 +241,8 @@ def setup(install=True):
     if not shutil.which("go"):
         fail("Go is missing. Run make setup without NO_INSTALL=1.")
     run(["go", "mod", "download"], cwd=ROOT / "user", env=go_toolchain.environment())
-    import_legacy()
     dev_config()
-    print("Setup complete. Run make vm-create, or make vm-list to use an imported VM.")
+    print("Setup complete. Create a VM with make vm-create, or register one with make vm-add.")
 
 
 def add_slot():

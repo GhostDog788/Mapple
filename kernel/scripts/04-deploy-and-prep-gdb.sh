@@ -44,13 +44,11 @@ kernel_file="$cache_dir/kernel.release"
 vmlinux="$cache_dir/vmlinux"
 
 [[ -f "$kernel_file" ]] ||
-	die "missing kernel cache for $target; run: kernel/scripts/02-setup-host-build.sh $target"
+	die "missing kernel cache for $target; run make vm-setup"
 if [[ "$debug_method" != none ]]; then
 	[[ -f "$vmlinux" && -f "$cache_dir/source/init/main.c" ]] ||
 	die "missing matching kernel source or vmlinux for source debugging.
-- install + sync it with:
-    kernel/scripts/01-provision-target.sh $target $debug_method --debug-symbols
-    kernel/scripts/02-setup-host-build.sh $target"
+- prepare matching kernel inputs with make vm-setup"
 	debug_sections="$(readelf -S "$vmlinux")"
 	[[ "$debug_sections" == *".debug_info"* || "$debug_sections" == *".zdebug_info"* ]] ||
 		die "vmlinux has no DWARF debug information; supply a matching unstripped image with make vm-add VMLINUX=..."
@@ -62,9 +60,7 @@ lab_check_connection
 live_kernel="$(lab_ssh 'uname -r')"
 if [[ "$live_kernel" != "$kernel" ]]; then
 	die "kernel mismatch: target now runs '$live_kernel' but cache has '$kernel'.
-- if the target rebooted into a new kernel, re-sync:
-    kernel/scripts/01-provision-target.sh $target $debug_method --debug-symbols   # for a new vmlinux
-    kernel/scripts/02-setup-host-build.sh $target
+- provision and sync the selected kernel with make vm-setup
 - or reboot the target back into $kernel"
 fi
 if [[ "$debug_method" != none ]]; then
@@ -79,7 +75,7 @@ module_dir="$kernel_root"
 
 mapfile -t artifacts < <(find "$artifact_dir" -maxdepth 1 -name '*.ko' -type f | sort)
 case ${#artifacts[@]} in
-	0) die "no .ko under $artifact_dir; run: kernel/scripts/03-build-module.sh $target" ;;
+	0) die "no .ko under $artifact_dir; run make kernel" ;;
 	1) ;;
 	*)
 		echo "expected one .ko under $artifact_dir; found:" >&2
@@ -127,7 +123,7 @@ lab_scp_to "$artifact" "$remote_module"
 local_size="$(stat -c %s "$artifact")"
 remote_size="$(lab_ssh "stat -c %s '$remote_module' 2>/dev/null" | tr -d '[:space:]')"
 [[ "$remote_size" == "$local_size" ]] ||
-	die "upload size mismatch: local $local_size bytes, remote ${remote_size:-missing} bytes; retry kernel/scripts/04 or check disk space on the target"
+	die "upload size mismatch: local $local_size bytes, remote ${remote_size:-missing} bytes; retry the Make upload command or check disk space on the target"
 
 # Background insmod so section polling runs while init does. Load-bearing:
 # `<&0` keeps sudo's stdin on the SSH pipe (async bash would /dev/null it),
@@ -236,7 +232,7 @@ if [[ -L "$kernel_src_link" || -d "$kernel_src_link" ]]; then
 	fi
 else
 	echo "note: no kernel source synced; kernel step-into will show disassembly"
-	echo "      to enable: kernel/scripts/01-... --debug-symbols && kernel/scripts/02-... $target"
+	echo "      to enable: make vm-setup"
 fi
 
 {

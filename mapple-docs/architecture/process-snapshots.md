@@ -1,0 +1,161 @@
+# Process snapshot architecture
+
+[Documentation](../README.md) / Architecture
+
+PSLIST is an observational, request-scoped snapshot. Every request starts with an
+empty collection context, walks the kernel task list once, writes the response,
+and releases every reference and allocation. The module does not install hooks,
+keep accounting data, or retain object IDs between requests.
+
+The server's [JSON representation](../reference/process-snapshot-json.md)
+describes how these snapshots appear in the HTTPS API.
+
+## Collection groups
+
+Core task data is always returned. The request's 64-bit group mask selects
+optional collectors:
+
+| Bit | Name | Contents |
+| ---: | --- | --- |
+| 0 | `identity` | argv and executable identity |
+| 1 | `environment` | environment entries |
+| 2 | `security` | credentials, capabilities, securebits, seccomp, dumpability and LSM context |
+| 3 | `context` | CWD, root, namespaces and cgroups |
+| 4 | `resources` | CPU, memory and I/O counters |
+| 5 | `fds` | generic FD inventory |
+| 6 | `fds-details` | generic file metadata and raw type-specific fdinfo |
+| 7 | `network` | socket-specific state and counters |
+| 8 | `memory-maps` | VMA and mapped-file metadata |
+| 9 | `elf` | static metadata for mapped ELF files |
+
+All listed groups are implemented. `elf` implies
+`memory-maps`, just as `fds-details` and `network` imply `fds`.
+The streamed response reports both the requested and effective masks.
+
+## One-pass object model
+
+The outer traversal is one forward pass over task IDs. A task is never revisited.
+The runtime is therefore linear in visited tasks plus the selected subordinate
+records, such as FDs, VMAs, and ELF symbols.
+
+Linux tasks frequently share objects such as `mm_struct` and `files_struct`.
+A request-local hash table maps the first observed object to an opaque 64-bit ID
+inside each output group. Every group's IDs independently begin at one. The object
+is captured once; later tasks emit only PID-based links. IDs are meaningful only
+inside that group and response and must never be compared across groups or
+snapshots.
+
+The FD table is snapshotted once on first encounter. One pass over its pinned file
+references conditionally produces the generic FD, `fds-details`, and network records.
+Socket-specific fields belong only to the network group. If a task replaces its
+FD table between discovery and capture, that object is marked raced rather than
+capturing the replacement under the original object ID.
+
+Linux 6.6 does not export the `files_struct` reference-acquisition and release
+helpers to loadable modules. The collector therefore validates the task's table
+pointer under `task_lock()` immediately before capture instead of owning an
+independent table reference. A detected replacement is reported as `raced`.
+Undetected replacement during capture remains a documented limitation of this
+best-effort snapshot model; request-local sharing IDs must not be interpreted as
+stable kernel object identities.
+
+Userspace renders `identity`, `environment`, `security`, `context`, `resources`,
+`fds`, `network`, and `memory_maps` as sibling object sections.
+`fds-details` is an enrichment of `fds`, so it adds details to FD entries under
+the base FDS object's lifecycle instead of creating a separate object, section,
+status, or task reference. The network section contains only sockets; ordinary
+FDs do not receive `network: null` placeholders.
+
+Security is a sibling section with one object per task. Although credentials are
+often shared, `no_new_privs`, seccomp state, dumpability and objective LSM state
+can differ per task, so deduplicating only by `cred` would associate the wrong
+security state. Each record includes init-user-namespace credential values,
+supplementary groups, all five capability sets, the credential user namespace,
+securebits, seccomp mode and filter count, dumpability, and the LSM secid/context.
+Userspace groups real, effective, saved and filesystem IDs under `uids` and
+`gids`. `ids_mapped_to` identifies the namespace view used for those numeric
+IDs, while `credential_user_namespace.inode` identifies the namespace attached
+to the credential. Capability, securebit and dumpability names use canonical
+Linux symbols. Optional values use `collection_status`; failures include a
+numeric errno and its symbolic name. Seccomp reports a `filter_program_count`,
+not a count of individual syscall rules. A task without an `mm_struct`, such as
+a kernel thread, reports dumpability with the reason `no_memory_descriptor`.
+
+The objective LSM context includes its major provider. Linux 6.6 does not export
+the internal LSM-name registry to modules, so the collector performs read-only
+lookups of the kernel-created AppArmor, SELinux and Smack filesystem entries once
+per request. If none is visible, provider collection is reported as unavailable;
+the label text is never used to guess its provider.
+
+Context is a sibling section with one object per task because filesystem and
+namespace context can differ between threads. It reports CWD and root in the
+module's global path view, namespace inode identities, and the default-hierarchy
+cgroup identity with both global and task-cgroup-namespace paths. Linux 6.6 does
+not export the mount-namespace inode accessor to modules, so mount namespace
+identity is explicitly reported as unsupported rather than replaced by an
+unstable or pointer-derived identifier.
+
+Resources is also a per-task section. It reports task CPU time, faults, context
+switches, scheduler state, task I/O accounting, and the current shared address
+space's memory counters. Memory units stay in pages and include the kernel page
+size; I/O and CPU units are named in bytes and nanoseconds. Per-task network byte
+accounting is explicitly unsupported: obtaining it would require retained
+history or hooks, which this request-scoped snapshot intentionally forbids.
+
+Environment is an `mm_struct`-scoped section and is captured once for all tasks
+sharing an address space. The module returns the raw bounded environment block,
+including NUL delimiters, duplicate keys, empty entries, and whether the last
+entry is terminated. Userspace validates that framing and renders an ordered
+entry array; entries without `=` remain visible as raw values instead of being
+dropped or guessed.
+
+Memory maps are also `mm_struct`-scoped and captured once for all tasks sharing
+an address space. The collector copies the VMA ranges, page offsets, protection
+keys, raw VMA flags, mapping page sizes, kernel-provided VMA names, and pinned
+mapped-file references while holding the address-space read lock. It releases
+that lock before resolving paths, collecting file metadata, or writing the
+response. Userspace decodes known generic VMA flags while preserving any
+architecture-specific bits in an `unknown_mask`. If the VMA count changes while
+the collector allocates its bounded snapshot, the object is retried and then
+reported as raced; address spaces beyond the explicit mapping limit are reported
+as too large rather than partially emitted.
+
+ELF collection extends memory maps without rescanning the task list. While each
+address space is captured, file-backed mappings are checked through their pinned
+kernel file objects. A request-local inode registry assigns one ELF object ID to
+each mapped ELF image, so shared libraries mapped by many processes are parsed
+and emitted only once. Memory-map entries reference those objects; non-ELF
+mappings have no reference. The ELF section is therefore a sibling object catalog,
+not a task-linked group or a copy of every mapped file.
+
+The collector uses `kernel_read` with private offsets, so it never advances the
+target file's position. It normalizes the ELF identification and header fields,
+interpreter, dynamic dependencies, SONAME, RPATH/RUNPATH, GNU build ID, and
+visible dynamic imports and exports into bounded wire records. Both ELF32 and
+ELF64 and either byte order are decoded. Images are checked before and after
+collection for identity, size, and timestamp changes; detected mutation is
+reported as a raced object. Userspace only validates, groups, and renders the
+kernel-supplied records and never opens an image itself.
+
+## Stream framing and races
+
+The response is a flat sequence of size-delimited records: snapshot begin, task,
+task/object link, object begin, group records, object end, and snapshot end.
+Unknown future record types can be skipped using their size. Object-end records
+carry completion status and counts, so a raced or inaccessible object does not
+make absence ambiguous.
+
+The snapshot does not freeze the system. Tasks and descriptors can appear, exit,
+or change while collection runs. The collector takes short-lived references and
+locks, reports detected partial/raced data, and never holds the task-list lock
+across data collection or a blocking stream write.
+
+## Non-mutation and retained state
+
+Collectors use read-only kernel interfaces and do not advance target file offsets
+or intentionally change process, file, socket, or namespace state. Observation can
+still cause incidental kernel activity such as allocation, cache fills, page faults,
+or lock contention. All module-owned state is released at the end of the request.
+
+CPU, I/O, and TCP counters come from existing kernel-maintained counters. Rates and deltas are calculated by remote userspace from two independent
+snapshots; the module never maintains history.
