@@ -31,7 +31,21 @@ def make_clangd_compatible(entry: dict) -> dict:
 	if not isinstance(arguments, list):
 		command = entry.pop("command", "")
 		arguments = shlex.split(command)
-	entry["arguments"] = [argument for argument in arguments if clangd_supports(argument)]
+	# Navigation must survive cleaning object/dependency output directories.
+	filtered = []
+	skip = False
+	for argument in arguments:
+		if skip:
+			skip = False
+			continue
+		if argument in ("-o", "-MF", "-MT", "-MQ"):
+			skip = True
+			continue
+		if argument in ("-MD", "-MMD", "-MP") or argument.startswith(("-Wp,-MMD,", "-Wp,-MD,")):
+			continue
+		if clangd_supports(argument):
+			filtered.append(argument)
+	entry["arguments"] = filtered
 	return entry
 
 
@@ -129,6 +143,7 @@ def kernel_source(args: argparse.Namespace) -> None:
 	if entries:
 		# A built kernel already has commands for the actual target config.
 		write_database(args.database, entries)
+		args.database.with_suffix('.origin.json').write_text(json.dumps({'kind': 'recorded'}) + '\n')
 		return
 	module = json.loads(args.module_database.read_text())
 	module = [e for e in module if Path(e["file"]).is_file() and "/src/" in e["file"]]
@@ -162,6 +177,7 @@ def kernel_source(args: argparse.Namespace) -> None:
 			entries.append({"directory": template["directory"], "file": str(source),
 						"arguments": [*flags, "-c", str(source)]})
 	write_database(args.database, entries)
+	args.database.with_suffix('.origin.json').write_text(json.dumps({'kind': 'derived'}) + '\n')
 
 
 def main() -> None:

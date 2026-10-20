@@ -437,7 +437,8 @@ def retire(m):
         selected = c.STATE / 'active-machine'
         if selected.exists() and selected.read_text().strip() == m['name']:
             selected.unlink()
-            (c.ROOT / 'compile_commands.json').unlink(missing_ok=True)
+            from . import navigation
+            navigation.selection()
     print('Removed machine record; preserved VM assets: ' + m['name'])
 
 

@@ -31,8 +31,8 @@ Build/reload with `module-run`; keep `server-run` in one terminal and open
 Mapple, close application sessions (`session delete <id-prefix>` in the TUI).
 A reload invalidates previous module addresses, so prepare a new debug run.
 
-`clean` removes application build outputs only. Frozen run files, Linux builds,
-downloads, machine records and disks are preserved. Run `check` for repository
+`clean` removes application build outputs only. Navigation databases and indexes,
+frozen run files, Linux builds, downloads, machine records and disks are preserved. Run `check` for repository
 checks and `doctor` for the selected machine's live blockers. Checks do not
 attach to a QEMU debug stub or pause a machine.
 
@@ -94,10 +94,76 @@ breakpoint so its handshake does not time out. You can step into Linux functions
 such as `kernel_sendmsg` when the kernel slot has source and DWARF.
 Pausing kernel execution also pauses that machine's networking.
 
-`module-build` generates compilation databases per kernel. Selection publishes
-the active kernel's database at the repository root for clangd. If no database
-exists, build the module first. Full Linux navigation needs matching source;
-it is separate from live debug access. Restart clangd if it retains an old index.
+## Source navigation
+
+Ctrl+click / Go to Definition uses clangd independently of GDB. It works with the
+VM powered off and without `vmlinux` or debug symbols. The active machine's kernel
+controls static navigation; existing GDB sessions retain their original targets.
+
+```bash
+make navigation-setup                       # Install/update the local VS Code integration
+make navigation-prepare KERNEL=baseline      # Build compiler context and index locally
+make navigation-status KERNEL=baseline       # Inspect this kernel's preparation receipt
+make machine-use NAME=dev                    # Editor follows dev's assigned kernel
+make navigation-status                      # Active context and live editor states
+```
+
+`setup` installs the editor integration when `code` is present, unless
+`NO_INSTALL=1`. After installing/updating it, reload an already-open VS Code
+window once. The recommended clangd extension provides the language engine;
+the local **Mapple Navigation** extension manages selection and status. It does
+not replace the engine or control GDB. In a trusted checkout, opening the normal
+repository folder is sufficient; a debug workspace is optional.
+
+`navigation-prepare` uses the active machine's kernel unless `KERNEL` or `MACHINE`
+is supplied. It refreshes the compiler commands, indexes the sources, and checks
+jumps into unopened implementations. It does not contact a machine, upload Mapple,
+or change the active selection. The status command also works offline.
+
+The status bar identifies the machine and exact kernel slot and shows:
+
+| State | Meaning |
+| --- | --- |
+| Switching kernel / Loading index | The language server is being replaced or restoring its index |
+| Indexing | Background indexing is still running |
+| Ready | Indexing completed and Mapple/matching Linux implementation checks passed |
+| Limited navigation | Mapple/header navigation is available, or Linux commands were derived rather than recorded; full Linux coverage is not established |
+| Select a machine / Assign a kernel / Prepare navigation | The required selection or compilation database is absent |
+| Navigation error | A startup or destination check failed; click the status bar for details/output |
+
+Click the status bar or run **Mapple: Prepare source navigation** from the Command
+Palette to start preparation. Preparing the index moves the initial Linux indexing
+cost out of the edit loop. A cached index still takes time to load, and opening a
+new file can require parsing; readiness does not promise zero latency for every jump.
+
+Switching to a different kernel stops the old language server and starts a new
+one against that kernel's database. Switching between machines assigned to the
+same kernel keeps the server. Old Linux source tabs remain viewable, but inactive
+kernel files are excluded from this session's dynamic definition index. Make
+commands publish selection asynchronously to open editors; wait for their status
+to show the new kernel and become ready before relying on implementation jumps.
+
+Each kernel owns `.lab/navigation/<kernel-id>/compile_commands.json`, its clangd
+cache, preparation log and receipt. Module builds refresh these inputs; unchanged
+compiler context retains its index. `clean` preserves them. Compiler or context
+changes invalidate the preparation receipt. Kernel removal also removes that
+kernel's navigation data. The root `compile_commands.json` remains available to
+other tools, while VS Code's launcher uses the per-kernel directory directly.
+
+For SDKs, compiler paths are resolved in the kernel's toolchain environment.
+Clangd may query only the explicitly recorded compiler paths, rather than an
+unrestricted driver pattern. `CLANGD` overrides the native engine for preparation;
+the prepared context records it. Generated debug workspaces also carry a custom
+`MAPPLE_LAB_DIR` when used. For a plain folder using alternate state, set
+`mapple.navigation.labDirectory` and pass the same absolute path through the
+clangd argument `--mapple-state-dir=/absolute/lab` in workspace settings.
+
+The [source navigation review](../reference/source-navigation-review.md) records
+the measurements and the kernel-switching reproduction behind this design.
+`make test-navigation` exercises real VS Code switching, open old-kernel tabs,
+cache reuse, and reopening after clean in a disposable checkout. It requires the
+`code` CLI, clangd extension, and `xvfb-run` on a headless host; it leaves the
+developer's selection and normal VS Code profile alone.
 
 ## Command reference
 
@@ -131,6 +197,9 @@ with a letter or digit and contain letters, digits, dots, underscores and hyphen
 | `machine-remove` | Retire the record; preserve VM disks and saved connection details in `retired.json` |
 | `machine-destroy` | Stop and delete the disk/seed of an owned QEMU VM, then retire its record |
 | `module-build` | Incrementally build Mapple against `KERNEL` or the selected machine's assignment; no live target needed |
+| `navigation-setup` | Package/install the local Mapple Navigation VS Code extension; no npm tooling required |
+| `navigation-prepare` | Build the selected kernel's compiler context and persistent index offline, then verify implementation jumps |
+| `navigation-status` | Show active navigation context and live editor states, or a named `KERNEL`'s preparation data; no SSH |
 | `module-run` | Build, verify available identity evidence, upload, unload/reload; no debugger preparation |
 | `module-debug` | Build/upload and prepare the best available debug mode, subject to `MIN_DEBUG` |
 | `server-build` | Build the Go server into `.lab/builds/go/mappled` |
@@ -145,6 +214,7 @@ with a letter or digit and contain letters, digits, dots, underscores and hyphen
 | `clean` | Remove application build outputs, preserving preparation data and frozen runs |
 | `test` | Run Go unit tests |
 | `test-tools` | Run development-tool regression tests |
+| `test-navigation` | Run native clangd and real VS Code lifecycle tests in a disposable checkout |
 | `check` | Verify generated API, run tool tests, build/vet/test Go, and compile-check Python |
 | `api` | Regenerate Go API bindings |
 | `api-verify` | Verify bindings match the API without modifying source files |
@@ -168,18 +238,20 @@ with a letter or digit and contain letters, digits, dots, underscores and hyphen
 | `BUILD`, `SOURCE`, `VMLINUX`, `SYSTEM_MAP` | Prepared build tree, Linux source, debug ELF, or text symbol map to copy during import/enrichment |
 | `IMAGE`, `MODULES` | Boot image and module archive (release directory at archive root) for installation |
 | `DEBUG_INFO`, `BUILD_ID` | Separate matching Linux debug ELF, or expected GNU build ID on import when no symbol ELF is available |
-| `JOBS` | Linux build parallelism, default CPU count capped at 4 |
+| `JOBS` | Linux build parallelism (default CPU count capped at 4); navigation preparation workers (default 4) |
 | `MEMORY`, `CPUS`, `DISK` | Managed VM RAM in MiB, CPU count, and capacity; defaults 4096, 2, and 30G |
 | `MIN_DEBUG` | Minimum debug mode; default `module`, highest available mode is selected |
 | `MODULE_PARAMS` | Space-separated `key=value` module arguments; Mapple currently declares none |
 | `TERMINAL`, `FOREGROUND` | Terminal launcher prefix, or `FOREGROUND=1` to use this terminal |
-| `NO_INSTALL`, `TOOLCHAIN_PACKAGES` | Skip host package installation or explicitly add known Ubuntu toolchain packages during setup |
+| `NO_INSTALL`, `TOOLCHAIN_PACKAGES` | Skip host/editor-extension installation or explicitly add known Ubuntu toolchain packages during setup |
 | `OFFLINE` | Prevent built-in adoption downloads; custom fetchers must honor the inherited option |
 | `INSTALLER`, `FETCHER` | Local executable integration hooks described below |
 | `SIGNER` | Optional local executable to sign a frozen module copy before upload; may be persisted during kernel creation/import |
 | `CASCADE` | Explicitly retire machine records referencing a removed kernel |
 | `NO_OPEN` | Generate a VS Code workspace without opening a window |
 | `GDB` | Override the GDB executable; otherwise use native GDB or gdb-multiarch for foreign targets |
+| `CLANGD` | Native clangd executable for navigation preparation; default `clangd-18`; distinct from the repository's editor launcher |
+| `NAV_TIMEOUT` | Navigation indexing timeout in seconds; default 1800; partial index shards remain reusable after interruption/failure |
 | `MAPPLE_LAB_DIR` | Optional isolated state directory; default is this checkout's `.lab` |
 
 ## Integration hooks

@@ -8,7 +8,7 @@ import shutil
 import shlex
 import subprocess
 import sys
-from mapple_dev import core as c, kernels, machines, installers, runs, ui
+from mapple_dev import core as c, kernels, machines, installers, runs, ui, navigation
 
 COMMANDS = ('setup', 'kernel-create', 'kernel-import', 'kernel-enrich', 'kernel-build',
     'kernel-list', 'kernel-show', 'kernel-remove', 'machine-create', 'machine-add',
@@ -16,7 +16,7 @@ COMMANDS = ('setup', 'kernel-create', 'kernel-import', 'kernel-enrich', 'kernel-
     'machine-prepare', 'machine-start', 'machine-stop', 'machine-ssh', 'machine-remove',
     'machine-destroy', 'module-build', 'module-run', 'module-debug', 'server-build',
     'server-run', 'tui-build', 'tui-run', 'gdb-open', 'gdb-attach', 'vscode-open',
-    'vscode-prepare', 'debug-list', 'doctor', 'clean')
+    'vscode-prepare', 'debug-list', 'doctor', 'clean', 'navigation-prepare', 'navigation-status', 'navigation-setup')
 
 
 def public(value):
@@ -47,6 +47,12 @@ def main(argv=None):
     cmd = args.command
     if cmd == 'setup':
         return ui.setup()
+    if cmd == 'navigation-setup':
+        return navigation.install_extension()
+    if cmd == 'navigation-prepare':
+        return navigation.prepare(kernels.selected())
+    if cmd == 'navigation-status':
+        return print(json.dumps(navigation.status(kernels.selected() if c.option('KERNEL') else None), indent=2))
     if cmd == 'kernel-create':
         return kernels.create()
     if cmd == 'kernel-import':
@@ -118,8 +124,7 @@ def main(argv=None):
         for component in ('server', 'tui'):
             with c.lock('go-build-' + component):
                 (c.STATE / 'builds/go' / ('mappled' if component == 'server' else 'mapple')).unlink(missing_ok=True)
-        (c.ROOT / 'compile_commands.json').unlink(missing_ok=True)
-        print('Cleaned application builds; preserved kernels, machines, disks and frozen runs.')
+        print('Cleaned application builds; preserved navigation databases/indexes, kernels, machines, disks and frozen runs.')
         return
     m = c.machine()
     if cmd == 'machine-configure':

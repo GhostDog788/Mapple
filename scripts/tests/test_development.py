@@ -19,7 +19,7 @@ import compile_commands
 import go_toolchain
 import kernel_compat
 import lab
-from mapple_dev import core as c, kernels, machines, installers, runs, ui
+from mapple_dev import core as c, kernels, machines, installers, runs, ui, navigation
 
 class UtilityTests(unittest.TestCase):
         def test_go_selection_handles_ubuntu_bootstrap_and_preserves_newer_toolchains(self):
@@ -112,7 +112,10 @@ class ModelTests(unittest.TestCase):
         a, b = self.machine('a'), self.machine('b', kernel='variant')
         for kernel in (first, second):
             database = c.directory(c.STATE / 'builds/module' / kernel['id']) / 'compile_commands.json'
-            database.write_text(json.dumps([{'file': str(kernels.path(kernel, 'build') / 'include/linux/fs.h')}]))
+            source = kernels.path(kernel, 'build') / 'include/linux/fs.h'
+            database.write_text(json.dumps([{'file': str(source), 'directory': str(source.parent),
+                                            'arguments': ['gcc', '-c', str(source)]}]))
+            navigation.capture(kernel, database)
         r = runs.new(a, first)
         before = c.load(c.record('runs', r['name']))
         with patch.object(c, 'ssh', side_effect=AssertionError('selection must be offline')), patch.object(runs, 'build', side_effect=AssertionError('no build')):
@@ -277,6 +280,7 @@ class ModelTests(unittest.TestCase):
         machines.select(m['name'])
         database = c.directory(c.STATE / 'builds/module' / k['id']) / 'compile_commands.json'
         database.write_text('[]')
+        navigation.capture(k, database)
         with patch.object(machines, 'inspect', return_value={'arch': 'x86_64', 'release': k['release'], 'build_id': 'exact-build', 'cmdline': 'nokaslr'}), patch.object(installers, 'install') as install:
             installers.prepare(m, k)
             install.assert_not_called()
@@ -284,7 +288,7 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(saved['kernel'], k['name'])
         self.assertEqual(saved['transition']['status'], 'complete')
         self.assertTrue(saved['transition']['recovered'])
-        self.assertEqual((c.ROOT / 'compile_commands.json').read_text(), '[]')
+        self.assertEqual(c.load(c.ROOT / 'compile_commands.json'), [])
 
     def test_gnu_notes_extract_exact_kernel_identity(self):
         import struct

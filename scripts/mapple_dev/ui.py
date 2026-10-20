@@ -30,6 +30,9 @@ def setup():
     c.executable('go')
     c.run(['go', 'mod', 'download'], cwd=c.ROOT / 'user', env=go_toolchain.environment())
     c.directory(c.STATE).chmod(0o700)
+    if c.option('NO_INSTALL') != '1' and shutil.which('code'):
+        from . import navigation
+        navigation.install_extension()
     print('Setup complete. Define a kernel with kernel-create or kernel-import, then register/create a machine.')
 
 
@@ -182,6 +185,10 @@ def vscode(m):
     if arch in ('x64', 'x86', 'arm', 'arm64'):
         launch['targetArchitecture'] = arch
     workspace = {'folders': [{'path': str(c.ROOT)}],
+                 'settings': {'mapple.navigation.labDirectory': str(c.STATE),
+                              'clangd.path': str(c.ROOT / 'scripts/clangd.py'),
+                              'C_Cpp.intelliSenseEngine': 'disabled',
+                              'clangd.arguments': ['--mapple-state-dir=' + str(c.STATE)]},
                  'launch': {'version': '0.2.0', 'configurations': [launch]},
                  'tasks': {'version': '2.0.0', 'tasks': [{'label': 'Prepare ' + r['name'], 'type': 'process',
                      'command': sys.executable, 'args': [str(c.ROOT / 'scripts/lab.py'), 'vscode-prepare', '--run', r['name']],

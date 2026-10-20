@@ -23,9 +23,14 @@ make setup
 ```
 
 Setup installs build, SSH, QEMU, GDB, clangd and terminal tools, then downloads Go
-dependencies. If it adds your account to the KVM group, the next `machine-start`
+dependencies. When the `code` CLI is available, it also installs this repository's
+Mapple Navigation extension and its clangd extension dependency. Reload any
+already-open VS Code window once after installation. If you install VS Code
+later, run `make navigation-setup`.
+
+If setup adds your account to the KVM group, the next `machine-start`
 can use that membership without another login. `NO_INSTALL=1` skips host package
-installation. Additional known toolchains can be requested explicitly:
+and editor-extension installation. Additional known toolchains can be requested explicitly:
 
 ```bash
 make setup TOOLCHAIN_PACKAGES="gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu"
@@ -134,6 +139,25 @@ Existing artifacts cannot be replaced. Kernel input changes are detected before
 building/deploying. A release string alone does not establish an exact match;
 use build IDs and retain provenance. See [kernel support tiers](../architecture/kernel-support-tiers.md).
 
+## Prepare source navigation
+
+```bash
+make navigation-prepare KERNEL=baseline
+make navigation-status KERNEL=baseline
+```
+
+This builds Mapple locally to obtain its real compiler commands and prepares a
+persistent clangd index for the kernel. No running VM, SSH connection, GDB endpoint,
+or debug symbols are needed. A first Linux index can take several minutes;
+subsequent preparation reuses it. Linux implementation navigation requires the
+matching source. Slots without that source still support Mapple/header navigation.
+
+Preparing a named kernel does not select a machine or retarget an open editor.
+When ready to work, run `make machine-use NAME=dev` and open this checkout in
+VS Code. The **Mapple Navigation** status bar shows the selected machine/kernel
+and its live indexing state. The editor automatically refreshes clangd when the
+selected kernel changes. See [source navigation](usage.md#source-navigation).
+
 ## Run the stack
 
 ```bash
@@ -167,7 +191,8 @@ per machine and remain attached to that destination when selection changes.
 make vscode-open MIN_DEBUG=kernel-source
 ```
 
-Install the recommended Microsoft C/C++ and clangd extensions. In the generated
+Install the recommended Microsoft C/C++ extension for debugging; clangd and the
+local Mapple Navigation extension provide static navigation. In the generated
 machine workspace, press F5, set a breakpoint in `kernel/src/`, and trigger a TUI
 command. F5 reloads Mapple: close old sessions first, then create a new TUI
 session before enabling the info breakpoint. Ctrl+click follows definitions in

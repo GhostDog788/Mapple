@@ -38,11 +38,12 @@ Explanations of how the system works and the invariants its components maintain.
 
 ## Reference
 
-Contracts for consumers and implementers.
+Contracts, formats, and recorded investigations.
 
 | Reference | Covers |
 | --- | --- |
 | [Process snapshot JSON](reference/process-snapshot-json.md) | Schema v1 shape, scalar types, raw bytes, statuses, and collection bounds |
+| [Source navigation review](reference/source-navigation-review.md) | Measured Ctrl+click performance, compile-database checks, kernel-switching correctness, and recommended improvements |
 | [HTTPS API](../user/api/openapi.yaml) | Endpoint definitions, request/response types, authentication, and errors; maintained with the generated API bindings |
 
 ## Documentation layout
@@ -60,7 +61,8 @@ docs/
 │   ├── sessions.md
 │   └── process-snapshots.md
 ├── reference/
-│   └── process-snapshot-json.md
+│   ├── process-snapshot-json.md
+│   └── source-navigation-review.md
 └── assets/                           # README and documentation images
 ```
 

@@ -450,7 +450,7 @@ def remove(k):
         refs = [m for m in c.records('machines') if k['name'] in (m.get('kernel'), m.get('requested_kernel'))]
         if refs and c.option('CASCADE') != '1':
             c.fail('Kernel is referenced by: ' + ', '.join(m['name'] for m in refs) + '. Reassign them or use CASCADE=1.')
-        from . import machines
+        from . import machines, navigation
         if any(r.get('kernel') == k['name'] and r.get('status') == 'debugging' for r in c.records('runs')):
             c.fail('Detach active debug runs before removing this kernel.')
         with ExitStack() as locks:
@@ -461,4 +461,5 @@ def remove(k):
             for m in refs:
                 machines.retire(m)
             shutil.rmtree(root(k))
+            shutil.rmtree(navigation.root(k), ignore_errors=True)
     print('Removed kernel ' + k['name'])

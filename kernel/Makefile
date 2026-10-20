@@ -18,7 +18,7 @@ modules: prepare-build
 		LAB_ROOT_DIR="$(PROJECT_ROOT)" LAB_SHARED_DIR="$(PROJECT_ROOT)/shared" modules
 	python3 "$(COMPILE_DB_TOOL)" collect "$(MODULE_COMPILE_COMMANDS)" "$(KDIR)" "$(INTERMEDIATE_DIR)"
 	python3 "$(COMPILE_DB_TOOL)" remap "$(MODULE_COMPILE_COMMANDS)" "$(INTERMEDIATE_DIR)" "$(MODULE_DIR)"
-	@if [ -n "$(KERNEL_SOURCE)" ] && [ ! -f "$(LINUX_COMPILE_COMMANDS)" ]; then \
+	@if [ -n "$(KERNEL_SOURCE)" ] && { [ ! -f "$(LINUX_COMPILE_COMMANDS)" ] || [ ! -f "$(patsubst %.json,%.origin.json,$(LINUX_COMPILE_COMMANDS))" ]; }; then \
 		python3 "$(COMPILE_DB_TOOL)" collect "$(LINUX_COMPILE_COMMANDS)" "$(KDIR)" "$(KERNEL_SOURCE)"; \
 		python3 "$(COMPILE_DB_TOOL)" kernel-source "$(LINUX_COMPILE_COMMANDS)" "$(MODULE_COMPILE_COMMANDS)" "$(KERNEL_SOURCE)" --arch "$(ARCH)"; \
 	elif [ -z "$(KERNEL_SOURCE)" ]; then rm -f "$(LINUX_COMPILE_COMMANDS)"; fi

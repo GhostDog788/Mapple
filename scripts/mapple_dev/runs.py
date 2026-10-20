@@ -24,23 +24,13 @@ def publish_navigation(m):
 
 def publish_navigation_unlocked(m):
     m = c.get('machines', m['name'])
-    destination = c.ROOT / 'compile_commands.json'
     try:
         if c.active() != m['name']:
             return
     except RuntimeError:
         return
-    if m.get('kernel'):
-        database = c.STATE / 'builds/module' / c.get('kernels', m['kernel'])['id'] / 'compile_commands.json'
-        if database.is_file():
-            temporary = destination.with_name('compile_commands.' + uuid.uuid4().hex + '.tmp')
-            shutil.copyfile(database, temporary)
-            # Selection may have changed while copying a large database.
-            if c.active() == m['name']:
-                temporary.replace(destination)
-            temporary.unlink(missing_ok=True)
-            return
-    destination.unlink(missing_ok=True)
+    from . import navigation
+    navigation.selection(m)
 
 
 def build(k, publish=True, freeze=None):
@@ -70,6 +60,8 @@ def build(k, publish=True, freeze=None):
         expected = {'x86_64': 'X86-64', 'aarch64': 'AArch64', 'arm': 'ARM', 'riscv64': 'RISC-V'}.get(k['arch'])
         if expected and expected not in kernels.elf_info(artifact).get('machine', ''):
             c.fail('Compiler produced a module for another architecture. Review the kernel toolchain.')
+        from . import navigation
+        navigation.capture(k, directory / 'compile_commands.json')
         if freeze is not None:
             # Freeze under the build lock: a second machine may rebuild the
             # same kernel slot as soon as this lock is released.

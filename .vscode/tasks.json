@@ -1,6 +1,7 @@
 {
   "version": "2.0.0",
   "tasks": [
+    {"label": "Mapple: Prepare source navigation", "type": "process", "command": "make", "args": ["navigation-prepare"], "problemMatcher": []},
     {"label": "Mapple: Build module", "type": "process", "command": "make", "args": ["module-build"], "group": "build", "problemMatcher": ["$gcc"]},
     {"label": "Mapple: Open active machine debug workspace", "type": "process", "command": "make", "args": ["vscode-open"], "problemMatcher": []},
     {"label": "Mapple: Doctor", "type": "process", "command": "make", "args": ["doctor"], "problemMatcher": []}

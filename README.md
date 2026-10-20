@@ -80,6 +80,9 @@ with `make tui-run FOREGROUND=1`.
 Use `make module-build`, `make server-build`, or `make tui-build`. Reload Mapple
 with `make module-run`, and run repository checks with `make check`.
 
+Run `make navigation-prepare` once per kernel for Ctrl+click into Mapple and Linux
+source. The VS Code status bar shows readiness and follows the selected machine.
+
 For VS Code, install the recommended C/C++ and clangd extensions, run
 `make vscode-open`, and press **F5** in the generated machine workspace. Set
 breakpoints in `kernel/src/` and trigger requests from the TUI. For GDB TUI, run
@@ -106,7 +109,8 @@ reference material.
 
 The application lives in [`kernel/src/`](kernel/src), [`shared/`](shared), and
 [`user/`](user). Development tooling lives in [`scripts/`](scripts) and
-[`scripts/mapple_dev/`](scripts/mapple_dev). Private lab state and VM disks stay in the
+[`scripts/mapple_dev/`](scripts/mapple_dev); the editor integration is in
+[`tools/vscode-navigation/`](tools/vscode-navigation). Private lab state and VM disks stay in the
 gitignored `.lab/` directory.
 
 ## Meet Mapple

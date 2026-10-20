@@ -1,0 +1,25 @@
+{
+  "name": "navigation",
+  "displayName": "Mapple Navigation",
+  "description": "Keep C source navigation on the active machine's exact kernel.",
+  "publisher": "mapple",
+  "version": "0.1.0",
+  "engines": {"vscode": "^1.90.0"},
+  "main": "./extension.js",
+  "extensionKind": ["workspace"],
+  "extensionDependencies": ["llvm-vs-code-extensions.vscode-clangd"],
+  "activationEvents": ["workspaceContains:scripts/lab.py"],
+  "capabilities": {"untrustedWorkspaces": {"supported": false}},
+  "contributes": {
+    "commands": [
+      {"command": "mapple.navigation.prepare", "title": "Mapple: Prepare source navigation"},
+      {"command": "mapple.navigation.status", "title": "Mapple: Show navigation status"}
+    ],
+    "configuration": {
+      "title": "Mapple",
+      "properties": {
+        "mapple.navigation.labDirectory": {"type": "string", "default": ".lab", "scope": "resource", "description": "Local lab directory, relative to this checkout or absolute."}
+      }
+    }
+  }
+}
