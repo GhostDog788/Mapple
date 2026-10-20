@@ -37,26 +37,28 @@ sudo apt-get install -y git make python3
 git clone https://github.com/GhostDog788/Mapple.git
 cd Mapple
 make setup
-make vm-create NAME=dev
-make vm-up
-make vm-setup
-make run-kernel
+make kernel-create NAME=baseline VERSION=6.6.6 PROFILE=debug
+make kernel-build KERNEL=baseline
+make machine-create NAME=dev KERNEL=baseline
+make machine-start
+make machine-prepare
+make module-run
 ```
 
-`make setup` installs the remaining host tools. The first VM is selected automatically.
-`vm-setup` builds a Linux 6.6.6 debug kernel, installs it in the guest, and reboots
-the guest. This first build takes several minutes; subsequent setups reuse it.
+`make setup` installs the remaining host tools. The first machine is selected
+automatically. `kernel-build` compiles Linux once; `machine-prepare` installs it,
+reboots, and verifies the guest. Other machines can reuse the same kernel slot.
 
 Start the server in one terminal:
 
 ```bash
-make run-server
+make server-run
 ```
 
 From the repository root in another terminal, launch the TUI:
 
 ```bash
-make run-tui
+make tui-run
 ```
 
 Inside the TUI:
@@ -71,19 +73,24 @@ command pslist
 You now have a session to the module running in the guest. `command pslist`
 opens a process and thread snapshot; press Esc to return to the command prompt.
 For a terminal-only host, launch the TUI
-with `make run-tui FOREGROUND=1`.
+with `make tui-run FOREGROUND=1`.
 
 ## Develop and debug
 
-Build any component with `make kernel`, `make server`, or `make tui`. Reload the
-module with `make run-kernel`. Run the repository checks with `make check`.
+Use `make module-build`, `make server-build`, or `make tui-build`. Reload Mapple
+with `make module-run`, and run repository checks with `make check`.
 
-For source debugging, open the repository in VS Code, install the recommended
-C/C++ and clangd extensions, select **Kernel: cppdbg (full GDB MI)**, and press
-**F5**. Set breakpoints in `kernel/src/` and trigger requests from the TUI. To use
-GDB TUI instead, run `make run-kernel-debug`, then `make gdb`.
-The [usage guide](docs/guides/usage.md#kernel-debugging) covers both workflows and
-Ctrl+click navigation into the matching Linux source.
+For VS Code, install the recommended C/C++ and clangd extensions, run
+`make vscode-open`, and press **F5** in the generated machine workspace. Set
+breakpoints in `kernel/src/` and trigger requests from the TUI. For GDB TUI, run
+`make module-debug`, create a fresh TUI session, then run `make gdb-open`.
+The [debugging guide](docs/guides/usage.md#kernel-debugging) walks through both flows.
+
+Manage machines with `make machine-list` and `make machine-use NAME=...`.
+`MACHINE=...` overrides the destination for one command. `make kernel-list`
+shows reusable kernel slots and their development tiers. The
+[usage guide](docs/guides/usage.md) covers kernel switching, source navigation,
+and simultaneous development on multiple machines.
 
 ## Documentation
 
@@ -99,7 +106,7 @@ reference material.
 
 The application lives in [`kernel/src/`](kernel/src), [`shared/`](shared), and
 [`user/`](user). Development tooling lives in [`scripts/`](scripts) and
-[`kernel/scripts/`](kernel/scripts). Private lab state and VM disks stay in the
+[`scripts/mapple_dev/`](scripts/mapple_dev). Private lab state and VM disks stay in the
 gitignored `.lab/` directory.
 
 ## Meet Mapple

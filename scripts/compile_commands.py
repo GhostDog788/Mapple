@@ -4,6 +4,7 @@
 import argparse
 import json
 import shlex
+import re
 from pathlib import Path
 
 
@@ -93,10 +94,33 @@ def merge(args: argparse.Namespace) -> None:
 	write_database(args.output, list(entries_by_file.values()))
 
 
+def collect(args):
+    """Read Kbuild command records without requiring kernel-owned helper scripts."""
+    entries = []
+    for file in sorted(args.scan.rglob('.*.cmd')):
+        for line in file.read_text(errors='replace').splitlines():
+            if not re.match(r'(?:saved)?cmd_.*?:=', line) or ' -c ' not in line:
+                continue
+            command = line.split(':=', 1)[1].strip().split(';', 1)[0]
+            try:
+                arguments = shlex.split(command)
+            except ValueError:
+                continue
+            sources = [a for a in arguments if a.endswith(('.c', '.S')) and not a.startswith('-')]
+            if not sources:
+                continue
+            source = Path(sources[-1])
+            if not source.is_absolute():
+                source = args.directory / source
+            entries.append({'directory': str(args.directory.resolve()), 'file': str(source.absolute()),
+                            'arguments': arguments})
+    write_database(args.output, entries)
+
+
 def kernel_source(args: argparse.Namespace) -> None:
 	"""Index source-only distro trees as well as already-built kernel trees.
 
-	Keep real kernel compiler commands when available. For other x86 source
+	Keep real kernel compiler commands when available. For other target source
 	files, derive the target's include paths/config from a module compiler
 	command. These fallback entries are for navigation, never for building.
 	"""
@@ -124,15 +148,15 @@ def kernel_source(args: argparse.Namespace) -> None:
 		if flag == template["file"] or flag.startswith(("-Wp,-MMD,", "-DMODULE", "-DKBUILD_", "-D__KBUILD_")):
 			continue
 		flags.append(flag)
-	flags += ["-I" + str(args.source / "include"), "-I" + str(args.source / "arch/x86/include"),
+	flags += ["-I" + str(args.source / "include"), "-I" + str(args.source / ("arch/" + getattr(args, "arch", "x86") + "/include")),
 			  '-DKBUILD_MODNAME="kernel"', '-DKBUILD_BASENAME="kernel"']
 	known = {e["file"] for e in entries}
 	for source in sorted(args.source.rglob("*.c")):
 		relative = source.relative_to(args.source)
-		# Other architectures and host tools do not share x86 kernel flags.
+		# Other architectures and host tools do not share target kernel flags.
 		if relative.parts[0] in ("tools", "scripts", "samples", "Documentation", "usr"):
 			continue
-		if relative.parts[0] == "arch" and relative.parts[1] != "x86":
+		if relative.parts[0] == "arch" and relative.parts[1] != getattr(args, "arch", "x86"):
 			continue
 		if str(source) not in known:
 			entries.append({"directory": template["directory"], "file": str(source),
@@ -167,7 +191,14 @@ def main() -> None:
 	kernel_parser.add_argument("database", type=Path)
 	kernel_parser.add_argument("module_database", type=Path)
 	kernel_parser.add_argument("source", type=Path)
+	kernel_parser.add_argument("--arch", default="x86")
 	kernel_parser.set_defaults(handler=kernel_source)
+
+	collect_parser = subparsers.add_parser("collect")
+	collect_parser.add_argument("output", type=Path)
+	collect_parser.add_argument("directory", type=Path)
+	collect_parser.add_argument("scan", type=Path)
+	collect_parser.set_defaults(handler=collect)
 
 	args = parser.parse_args()
 	args.handler(args)

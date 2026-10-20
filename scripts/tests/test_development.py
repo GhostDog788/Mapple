@@ -1,4 +1,4 @@
-"""Development workflow regressions; all VM/SSH mutations use isolated fixtures."""
+"""Development tool unit and contract tests; real VM coverage is in fresh_clone.py."""
 import argparse
 import base64
 import io
@@ -6,460 +6,566 @@ import json
 import os
 from pathlib import Path
 import shutil
-import shlex
 import socket
 import subprocess
 import sys
 import tempfile
-import threading
 import unittest
 from unittest.mock import patch
 import zlib
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import api_verify
 import compile_commands
-import lab
-import debug_kernel
 import go_toolchain
 import kernel_compat
+import lab
+from mapple_dev import core as c, kernels, machines, installers, runs, ui
 
-REPO = Path(__file__).resolve().parents[2]
+class UtilityTests(unittest.TestCase):
+        def test_go_selection_handles_ubuntu_bootstrap_and_preserves_newer_toolchains(self):
+            with tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                (root / 'user').mkdir()
+                (root / 'user/go.mod').write_text('module example.test/mapple\n\ngo 1.26\n')
+                go = root / 'go'
+                for installed, expected in (('1.22.2', 'go1.26.0+auto'), ('1.26.2', 'auto')):
+                    go.write_text('#!/bin/sh\n[ "$GOTOOLCHAIN" = local ] || exit 1\n'
+                                  f'echo "go version go{installed} linux/amd64"\n')
+                    go.chmod(0o755)
+                    with self.subTest(installed=installed), \
+                         patch.object(go_toolchain, 'ROOT', root), \
+                         patch.dict(os.environ, {'PATH': str(root)}):
+                        self.assertEqual(go_toolchain.select(), expected)
+                        with patch.dict(os.environ, {'GOTOOLCHAIN': 'local'}):
+                            self.assertEqual(go_toolchain.environment()['GOTOOLCHAIN'], 'local')
 
+        def test_api_ignores_compression_only_and_detects_actual_drift(self):
+            def source(raw, level, code='same code'):
+                compressor = zlib.compressobj(level, wbits=-15)
+                blob = base64.b64encode(compressor.compress(raw) + compressor.flush()).decode()
+                return f'{code}\nvar swaggerSpec = []string{{\n"{blob}",\n}}\n'
+            raw = b'{"openapi":"3.0.3","paths":{}}' * 100
+            self.assertEqual(api_verify.canonical(source(raw, 1)), api_verify.canonical(source(raw, 9)))
+            self.assertNotEqual(api_verify.canonical(source(raw, 1)), api_verify.canonical(source(raw+b' ', 1)))
+            self.assertNotEqual(api_verify.canonical(source(raw, 1)), api_verify.canonical(source(raw, 1, 'changed code')))
 
-class DoctorTests(unittest.TestCase):
-    def test_local_built_kernel_needs_no_guest_header_package(self):
-        script = (REPO / 'kernel/scripts/00-check-target.sh').read_text()
-        header_check = script[script.index('# --- headers ---'):script.index('# --- vmlinux')]
-        with tempfile.TemporaryDirectory() as d:
-            source = Path(d)
-            for name in ('include/generated/autoconf.h', 'include/config/kernel.release'):
-                path = source / name
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text('6.6.6-mapple\n')
-            for release in ('6.6.6-mapple', 'different-kernel'):
-                commands = f'''local_source={shlex.quote(d)}
-live_kernel={release}
-target=dev
-ok() {{ echo "OK $1"; }}
-warn() {{ echo "WARN $1"; }}
-lab_ssh() {{ return 1; }}
-{header_check}
-'''
-                result = subprocess.run(['bash', '-eu', '-c', commands], capture_output=True, text=True, check=True)
-                if release == '6.6.6-mapple':
-                    self.assertIn('OK headers: matching local configured build', result.stdout)
-                    self.assertNotIn('WARN', result.stdout)
-                else:
-                    self.assertIn('WARN headers: missing', result.stdout)
+        def test_source_only_kernel_gets_navigation_without_stale_or_other_arch_entries(self):
+            with tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                for name in ('module/src/main.c', 'source/kernel/fork.c', 'source/arch/x86/kernel/setup.c',
+                             'source/arch/arm/kernel/setup.c', 'source/tools/tool.c'):
+                    p = root / name
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.touch()
+                module = root / 'module.json'
+                source = root / 'module/src/main.c'
+                module.write_text(json.dumps([{'directory': str(root), 'file': str(source),
+                    'arguments': ['gcc', '-D__KERNEL__', '-DMODULE', '-fconserve-stack', '-c', '-o', 'module.o', str(source)]}]))
+                database = root / 'kernel.json'
+                compile_commands.kernel_source(argparse.Namespace(database=database, module_database=module, source=root/'source'))
+                result = json.loads(database.read_text())
+                self.assertEqual({Path(e['file']).name for e in result}, {'fork.c', 'setup.c'})
+                self.assertEqual(len(result), 2)
+                self.assertNotIn('-DMODULE', result[0]['arguments'])
+                self.assertNotIn('-fconserve-stack', result[0]['arguments'])
+                self.assertIn('-D__KERNEL__', result[0]['arguments'])
 
-    @unittest.skipUnless(shutil.which('ss'), 'ss required')
-    def test_debug_check_never_connects_to_or_pauses_guest(self):
-        script = (REPO / 'kernel/scripts/00-check-target.sh').read_text()
-        function = script[script.index('check_endpoint() {'):script.index('\ncase "$debug_method" in', script.index('check_endpoint() {'))]
-        with socket.socket() as listener:
-            listener.bind(('127.0.0.1', 0))
-            listener.listen()
-            port = listener.getsockname()[1]
-            commands = f'''target=dev
-target_cfg() {{ echo 127.0.0.1:{port}; }}
-ok() {{ echo "$1"; }}
-warn() {{ echo "$1"; }}
-{function}
-check_endpoint debug-qemu DEBUG_ENDPOINT_QEMU
-'''
-            result = subprocess.run(['bash', '-eu', '-c', commands], capture_output=True, text=True, check=True)
-            self.assertIn('local listener', result.stdout)
-            listener.settimeout(0.05)
-            with self.assertRaises(socket.timeout):
-                listener.accept()
-
-
-class LabTests(unittest.TestCase):
+class ModelTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
-        self.state = self.root / '.lab'
-        self.patches = [patch.object(lab, 'ROOT', self.root), patch.object(lab, 'STATE', self.state)]
-        for p in self.patches:
-            p.start()
         self.addCleanup(self.temp.cleanup)
-        for p in self.patches:
-            self.addCleanup(p.stop)
+        self.root = Path(self.temp.name)
+        for obj, key, value in ((c, 'STATE', self.root / '.lab'), (c, 'ROOT', self.root)):
+            patcher = patch.object(obj, key, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        clean_env = patch.dict(os.environ, {}, clear=True)
+        clean_env.start()
+        self.addCleanup(clean_env.stop)
+        os.environ['PATH'] = '/usr/bin:/bin'
 
-    def slot(self, name, **extra):
-        config = dict(host='127.0.0.1', user='mapple', ssh_port=2222, **extra)
-        lab.save(lab.slot_path(name), config)
-        return config
+    def kernel(self, name='base', config='#define CONFIG_MODULES 1\n'):
+        k = {'name': name, 'id': name + '-identity', 'arch': 'x86_64', 'linux_arch': 'x86',
+             'release': '6.6-test', 'origin': 'imported', 'toolchain': {'cc': 'gcc'}, 'artifacts': {'build': 'build'}}
+        tree = kernels.root(k) / 'build'
+        for file, text in [('Makefile', ''), ('scripts/Makefile.build', ''), ('include/config/kernel.release', k['release']),
+                           ('include/generated/autoconf.h', config), ('include/linux/fs.h', 'int test;')]:
+            p = tree / file
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text)
+        return kernels.seal(k)
 
-    def test_selection_persists_and_invalidates_previous_debug_symbols(self):
-        self.slot('first')
-        self.slot('second')
-        lab.select('first')
-        stale = self.root / 'kernel/.gdb/current-debug.gdb'
-        stale.parent.mkdir(parents=True)
-        stale.write_text('wrong VM symbols')
-        lab.select('second')
-        self.assertEqual(lab.load_slot()[0], 'second')
-        self.assertEqual((self.root / 'kernel/kernel-cache/current').readlink(), Path('second'))
-        self.assertFalse(stale.exists())
-        with self.assertRaises(RuntimeError):
-            lab.select('../escape')
-        self.assertEqual(lab.load_slot()[0], 'second')
+    def machine(self, name='dev', kernel='base'):
+        m = {'name': name, 'id': name + '-id', 'host': 'localhost', 'user': 'test',
+             'kernel': kernel, 'gdb': '127.0.0.1:1234', 'module_port': 4444}
+        c.save(machines.slot_path(name), m)
+        return m
 
-    def test_credentials_are_private_and_roundtrip_without_shell_execution(self):
-        password = "a' b;$(touch never-created)\nsecond line"
-        config = self.slot('dev', ssh_password=password, ssh_key='/tmp/key with spaces')
-        env = lab.bridge('dev', config)
-        path = Path(env['MAPPLE_LAB_ENV'])
-        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-        result = subprocess.check_output(['bash', '-c', 'source "$1"; printf "%s" "${TARGET_SSH_PASS[dev]}"',
-                                          'bash', str(path)], cwd=self.root)
-        self.assertEqual(result.decode(), password)
+    def test_version_named_slots_remain_safe_filesystem_identifiers(self):
+        self.assertEqual(c.name('6.6.6-debug-v1'), '6.6.6-debug-v1')
+        for unsafe in ('.', '..', '../escape', '/absolute', 'slot/name', '-option'):
+            with self.assertRaises(RuntimeError):
+                c.name(unsafe)
+
+    def test_selection_does_not_build_contact_or_change_existing_runs(self):
+        first, second = self.kernel(), self.kernel('variant')
+        a, b = self.machine('a'), self.machine('b', kernel='variant')
+        for kernel in (first, second):
+            database = c.directory(c.STATE / 'builds/module' / kernel['id']) / 'compile_commands.json'
+            database.write_text(json.dumps([{'file': str(kernels.path(kernel, 'build') / 'include/linux/fs.h')}]))
+        r = runs.new(a, first)
+        before = c.load(c.record('runs', r['name']))
+        with patch.object(c, 'ssh', side_effect=AssertionError('selection must be offline')), patch.object(runs, 'build', side_effect=AssertionError('no build')):
+            machines.select('a')
+            self.assertEqual(c.load(c.ROOT / 'compile_commands.json')[0]['file'], str(kernels.path(first, 'build') / 'include/linux/fs.h'))
+            os.environ['MACHINE'] = 'b'
+            self.assertEqual(c.machine()['name'], 'b')
+            self.assertEqual(c.active(), 'a')
+            self.assertEqual(kernels.selected()['id'], second['id'])
+            machines.select('b')
+            self.assertEqual(c.load(c.ROOT / 'compile_commands.json')[0]['file'], str(kernels.path(second, 'build') / 'include/linux/fs.h'))
+        self.assertEqual(before, c.load(c.record('runs', r['name'])))
+        with self.assertRaises(RuntimeError): machines.select('../escape')
+        self.assertEqual(c.active(), 'b')
+
+    def test_explicit_kernel_build_needs_no_machine(self):
+        self.kernel()
+        os.environ['KERNEL'] = 'base'
+        self.assertEqual(kernels.selected()['name'], 'base')
+        with self.assertRaisesRegex(RuntimeError, 'No active'): c.active()
+
+    def test_incomplete_import_does_not_claim_a_successful_kernel_build(self):
+        k = self.kernel(config='#define CONFIG_MODVERSIONS 1\n')
+        self.assertEqual(k['capabilities']['tier'], 0)
+        with self.assertRaisesRegex(RuntimeError, 'Tier 0'):
+            kernels.build(k)
+
+    def test_tiers_and_module_versions_are_separate_from_machine_policy(self):
+        k = self.kernel(config='#define CONFIG_MODVERSIONS 1\n')
+        self.assertEqual(k['capabilities']['tier'], 0)
+        (kernels.path(k, 'build') / 'Module.symvers').write_text('0x1234\tfunction\tvmlinux\n')
+        k = kernels.seal(k)
+        self.assertEqual(k['capabilities']['tier'], 1)
+        observed = {'arch': 'x86_64', 'release': k['release'], 'modules_disabled': '1'}
+        self.assertEqual(machines.match(k, observed), 'release-only')
+        k['expected_build_id'] = 'abc'
+        self.assertEqual(machines.match(k, dict(observed, build_id='abc')), 'verified')
+        self.assertEqual(machines.match(k, dict(observed, build_id='bad')), 'mismatch')
+        self.assertEqual(k['capabilities']['tier'], 1)
+
+    def test_sealed_inputs_detect_header_changes_and_deletions(self):
+        k = self.kernel()
+        kernels.validate(k)
+        header = kernels.path(k, 'build') / 'include/linux/fs.h'
+        header.write_text('different layout')
+        with self.assertRaisesRegex(RuntimeError, 'changed'): kernels.validate(k)
+        header.unlink()
+        with self.assertRaisesRegex(RuntimeError, 'changed'): kernels.validate(k)
+
+    def test_import_closes_header_symlinks_and_is_independent(self):
+        source = self.root / 'external'
+        (source / 'include').mkdir(parents=True)
+        outside = self.root / 'common.h'
+        outside.write_text('original ABI')
+        (source / 'include/test.h').symlink_to(outside)
+        (source / 'optional-rust').symlink_to(self.root / 'not-installed')
+        destination = self.root / 'snapshot'
+        c.copy_tree(source, destination)
+        outside.write_text('changed ABI')
+        self.assertFalse((destination / 'optional-rust').is_symlink())
+        self.assertFalse((destination / 'include/test.h').is_symlink())
+        self.assertEqual((destination / 'include/test.h').read_text(), 'original ABI')
+
+    def test_catalog_refuses_replacement_and_cascade_removes_only_records(self):
+        k = self.kernel()
+        m = self.machine()
+        machines.select('dev')
+        disk = machines.slot_path('dev').parent / 'vm/disk.qcow2'
+        disk.parent.mkdir()
+        disk.write_bytes(b'precious disk')
+        with self.assertRaisesRegex(RuntimeError, 'referenced'): kernels.remove(k)
+        os.environ['CASCADE'] = '1'
+        kernels.remove(k)
+        self.assertFalse(machines.slot_path('dev').exists())
+        self.assertFalse(c.record('kernels', 'base').exists())
+        self.assertEqual(disk.read_bytes(), b'precious disk')
+        self.assertFalse((c.STATE / 'active-machine').exists())
+
+    def test_cascade_does_not_partially_remove_active_debug_machine(self):
+        k = self.kernel()
+        m = self.machine()
+        r = runs.new(m, k)
+        r['status'] = 'debugging'
+        c.save(c.record('runs', r['name']), r)
+        os.environ['CASCADE'] = '1'
+        with self.assertRaisesRegex(RuntimeError, 'Detach'): kernels.remove(k)
+        self.assertTrue(machines.slot_path('dev').exists())
+        self.assertTrue(c.record('kernels', 'base').exists())
+
+    def test_enrich_checks_build_id_and_release_without_replacing_old_artifacts(self):
+        k = self.kernel()
+        wrong = self.root / 'wrong'
+        (wrong / 'include/config').mkdir(parents=True)
+        (wrong / 'include/config/kernel.release').write_text('wrong')
+        os.environ['BUILD'] = str(wrong)
+        with self.assertRaisesRegex(RuntimeError, 'already present'): kernels.enrich(k)
+        self.assertEqual(c.get('kernels', 'base')['release'], '6.6-test')
+
+    def test_locks_reject_overlapping_mutation_and_release_on_failure(self):
+        with c.lock('machine-dev'):
+            with self.assertRaisesRegex(RuntimeError, 'busy'):
+                with c.lock('machine-dev'): pass
+        with c.lock('machine-dev'): pass
+
+    def test_credentials_are_private_and_show_redacts_them(self):
+        m = self.machine()
+        m['ssh_password'] = "a' b;$(touch never-created)\nsecond line"
+        c.save(machines.slot_path('dev'), m)
+        self.assertEqual(machines.slot_path('dev').stat().st_mode & 0o777, 0o600)
+        self.assertEqual(lab.public(m)['ssh_password'], '<redacted>')
+        with patch.object(c, 'run') as run:
+            c.ssh(m, 'uname -r')
+        args = run.call_args.args
+        self.assertNotIn(m['ssh_password'], str(args))
+        self.assertEqual(run.call_args.kwargs['env']['SSHPASS'], m['ssh_password'])
         self.assertFalse((self.root / 'never-created').exists())
 
-    def test_new_slot_does_not_change_active_vm(self):
-        self.slot('first')
-        lab.select('first')
-        with patch.dict(os.environ, {'NAME': 'second', 'HOST': 'localhost', 'SSH_USER': 'mapple', 'ASK_PASS': ''}), \
-             patch.object(lab, 'dev_config'):
-            lab.add_slot()
-        self.assertEqual(lab.load_slot()[0], 'first')
-        self.assertEqual(lab.load_slot('second')[1]['host'], 'localhost')
+    def test_prepare_failure_preserves_association_and_records_transition(self):
+        k = self.kernel('new')
+        k['capabilities']['installable'] = True
+        m = self.machine(kernel='old')
+        observed = {'arch': 'x86_64', 'release': 'old', 'boot_id': 'boot', 'cmdline': '', 'os_release': 'ID=ubuntu'}
+        with patch.object(kernels, 'validate'), patch.object(kernels, 'characteristics', return_value={'installable': True, 'build_id': 'new-build'}), \
+             patch.object(machines, 'inspect', return_value=observed), \
+             patch.object(installers, 'install', side_effect=RuntimeError('installation failed')):
+            with self.assertRaisesRegex(RuntimeError, 'installation failed'): installers.prepare(m, k)
+        saved = c.get('machines', 'dev')
+        self.assertEqual(saved['kernel'], 'old')
+        self.assertEqual(saved['transition']['status'], 'failed')
 
-    @unittest.skipUnless(shutil.which('openssl'), 'openssl required')
-    def test_dev_setup_is_idempotent_and_server_tui_credentials_match(self):
-        self.slot('dev', module_port=14444)
-        server, tui = lab.dev_config()
-        before = {p.name: p.read_bytes() for p in server.parent.iterdir()}
-        lab.dev_config()
-        self.assertEqual(before, {p.name: p.read_bytes() for p in server.parent.iterdir()})
-        s, t = json.loads(server.read_text()), json.loads(tui.read_text())
-        import hashlib
-        self.assertEqual(s['identities'][0]['token_sha256'], hashlib.sha256(t['profiles']['dev']['bearer_token'].encode()).hexdigest())
-        self.assertEqual(t['module_profiles']['dev']['port'], 14444)
-        self.assertTrue(all(p.stat().st_mode & 0o077 == 0 for p in server.parent.iterdir() if p.suffix != '.crt'))
+    def test_clean_preserves_snapshots_records_disks_and_frozen_runs(self):
+        k = self.kernel()
+        m = self.machine()
+        r = runs.new(m, k)
+        frozen = runs.root(r) / 'mapple.ko'
+        frozen.write_text('frozen artifact')
+        output = c.directory(c.STATE / 'builds/module' / k['id']) / 'test.o'
+        output.touch()
+        orphan = c.directory(c.STATE / 'builds/module/removed-kernel-id') / 'mapple.ko'
+        orphan.write_bytes(b'orphaned build output')
+        lab.main(['clean'])
+        self.assertFalse(output.exists())
+        self.assertFalse(orphan.parent.exists())
+        self.assertTrue(frozen.exists())
+        kernels.validate(k)
+        self.assertTrue(machines.slot_path('dev').exists())
 
-    @unittest.skipUnless(all(shutil.which(t) for t in ('cloud-localds', 'qemu-img', 'qemu-system-x86_64', 'ssh-keygen')), 'VM creation tools required')
-    def test_vm_creation_verifies_image_and_creates_real_overlay_and_seed(self):
-        import hashlib
-        base = self.root / 'base.qcow2'
-        subprocess.run(['qemu-img', 'create', '-f', 'qcow2', str(base), '64M'], check=True, stdout=subprocess.DEVNULL)
-        payload = base.read_bytes()
-        checksum = hashlib.sha256(payload).hexdigest()
-        def download(url, **_):
-            data = f'{checksum} *{lab.IMAGE_NAME}\n'.encode() if url.endswith('SHA256SUMS') else payload
-            return io.BytesIO(data)
-        with patch.object(lab.urllib.request, 'urlopen', side_effect=download), \
-             patch.dict(os.environ, {'NAME': 'created', 'MEMORY': '128', 'CPUS': '1', 'DISK': '128M'}):
-            lab.create_vm()
-        name, slot = lab.load_slot()
-        self.assertEqual(name, 'created')
-        self.assertEqual(slot['image_sha256'], checksum)
-        self.assertNotEqual(slot['ssh_port'], slot['module_port'])
-        vm = self.state / 'vms/created'
-        chain = json.loads(subprocess.check_output(['qemu-img', 'info', '--backing-chain', '--output=json', str(vm/'disk.qcow2')]))
-        self.assertEqual(len(chain), 2)
-        self.assertEqual(Path(chain[1]['filename']).name, checksum + '.qcow2')
-        self.assertTrue((vm/'seed.img').stat().st_size > 0)
-        user = json.loads((vm/'user-data').read_text().split('\n', 1)[1])['users'][0]
-        self.assertEqual(user['ssh_authorized_keys'], [(vm/'id_ed25519.pub').read_text().strip()])
-
-    def test_vm_image_checksum_failure_does_not_register_a_slot(self):
-        def download(url, **_):
-            return io.BytesIO((b'0'*64 + b' *' + lab.IMAGE_NAME.encode() + b'\n') if url.endswith('SHA256SUMS') else b'corrupt image')
-        with patch.object(lab.urllib.request, 'urlopen', side_effect=download), \
-             patch.object(lab.shutil, 'which', return_value='/available'), \
-             patch.dict(os.environ, {'NAME': 'bad'}):
-            with self.assertRaisesRegex(RuntimeError, 'checksum mismatch'):
-                lab.create_vm()
-        self.assertFalse(lab.slot_path('bad').exists())
-
-    def test_setup_grants_kvm_membership_once_for_new_user(self):
-        exists = Path.exists
-        for member in (False, True):
-            with self.subTest(member=member), \
-                 patch.object(Path, 'exists', lambda p: str(p) == '/dev/kvm' or exists(p)), \
-                 patch.object(lab.os, 'access', return_value=False), \
-                 patch.object(lab, 'kvm_group_member', return_value=member), \
-                 patch.object(lab.shutil, 'which', return_value='/available'), \
-                 patch.object(lab, 'run') as run, \
-                 patch.object(lab, 'dev_config'):
-                lab.setup()
-                grants = [call.args[0] for call in run.call_args_list if 'usermod' in call.args[0]]
-                self.assertEqual(len(grants), 0 if member else 1)
-                if grants:
-                    self.assertEqual(grants[0][:4], ['sudo', 'usermod', '-aG', 'kvm'])
-
-    def test_vm_start_uses_new_kvm_membership_before_login_and_keeps_tcg_fallback(self):
-        config = self.slot('dev', managed=True, module_port=4444, gdb='127.0.0.1:1234', memory=1024, cpus=2)
-        exists = Path.exists
-        for member in (True, False):
-            with self.subTest(member=member), \
-                 patch.object(Path, 'exists', lambda p: str(p) == '/dev/kvm' or exists(p)), \
-                 patch.object(lab.os, 'access', return_value=False), \
-                 patch.object(lab, 'kvm_group_member', return_value=member), \
-                 patch.object(lab.shutil, 'which', return_value='/usr/bin/sg'), \
-                 patch.object(lab, 'wait_ssh'), patch.object(lab, 'ssh'), \
-                 patch.object(lab, 'run') as run:
-                lab.vm_command('dev', config, 'vm-up')
-                args = run.call_args_list[0].args[0]
-                if member:
-                    self.assertEqual(args[:3], ['sg', 'kvm', '-c'])
-                    args = shlex.split(args[3])
-                else:
-                    self.assertEqual(args[0], 'qemu-system-x86_64')
-                self.assertEqual(args[args.index('-accel') + 1], 'kvm' if member else 'tcg')
-
-    def test_vm_power_events_acknowledge_monitor_and_invalidate_prepared_debugger(self):
-        config = self.slot('dev', managed=True, module_port=4444, gdb='127.0.0.1:1234', memory=1024, cpus=2)
-        monitor = self.state / 'vms/dev/monitor.sock'
-        monitor.parent.mkdir(parents=True)
-        prepared = [self.root / 'kernel/.gdb' / name for name in ('current-debug.gdb', 'current-vmlinux')]
-        def prepare():
-            for path in prepared:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text('prepared for the current boot')
-        prepare()
-        errors = []
-        with socket.socket(socket.AF_UNIX) as server:
-            server.bind(str(monitor))
-            server.listen()
-            server.settimeout(3)
-            def serve():
-                try:
-                    conn, _ = server.accept()
-                    with conn:
-                        conn.settimeout(3)
-                        conn.sendall(b'QEMU test monitor\r\n')
-                        threading.Event().wait(0.01)
-                        conn.sendall(b'(qemu) ')
-                        request = b''
-                        while not request.endswith(b'\n'):
-                            data = conn.recv(4096)
-                            self.assertTrue(data, 'Client closed before sending the request')
-                            request += data
-                        self.assertEqual(request, b'system_powerdown\n')
-                        conn.sendall(b'system_powerdown\r\n')
-                        # The client must stay connected until QEMU's next prompt.
-                        conn.settimeout(0.05)
-                        with self.assertRaises(socket.timeout):
-                            conn.recv(1)
-                        conn.sendall(b'(qemu) ')
-                        conn.settimeout(3)
-                        self.assertEqual(conn.recv(1), b'')
-                except BaseException as error:
-                    errors.append(error)
-            thread = threading.Thread(target=serve, daemon=True)
-            thread.start()
-            try:
-                lab.vm_command('dev', config, 'vm-down')
-            finally:
-                thread.join(4)
-            self.assertFalse(thread.is_alive())
-            self.assertEqual(errors, [])
-        self.assertTrue(all(not path.exists() for path in prepared))
-        # A new boot clears old addresses; an already-running VM preserves them.
-        prepare()
-        with patch.object(lab, 'run'), patch.object(lab, 'wait_ssh'), patch.object(lab, 'ssh'):
-            lab.vm_command('dev', config, 'vm-up')
-        self.assertTrue(all(not path.exists() for path in prepared))
-        prepare()
-        with socket.socket(socket.AF_UNIX) as server:
-            server.bind(str(monitor))
-            server.listen()
-            with patch.object(lab, 'run') as run, patch.object(lab, 'wait_ssh'):
-                lab.vm_command('dev', config, 'vm-up')
-            run.assert_not_called()
-        self.assertTrue(all(path.exists() for path in prepared))
-
-
-class GenerationTests(unittest.TestCase):
-    def test_go_selection_handles_ubuntu_bootstrap_and_preserves_newer_toolchains(self):
-        with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
-            (root / 'user').mkdir()
-            (root / 'user/go.mod').write_text('module example.test/mapple\n\ngo 1.26\n')
-            go = root / 'go'
-            for installed, expected in (('1.22.2', 'go1.26.0+auto'), ('1.26.2', 'auto')):
-                go.write_text('#!/bin/sh\n[ "$GOTOOLCHAIN" = local ] || exit 1\n'
-                              f'echo "go version go{installed} linux/amd64"\n')
-                go.chmod(0o755)
-                with self.subTest(installed=installed), \
-                     patch.object(go_toolchain, 'ROOT', root), \
-                     patch.dict(os.environ, {'PATH': str(root)}):
-                    self.assertEqual(go_toolchain.select(), expected)
-                    with patch.dict(os.environ, {'GOTOOLCHAIN': 'local'}):
-                        self.assertEqual(go_toolchain.environment()['GOTOOLCHAIN'], 'local')
-
-    def test_kernel_api_guard_accepts_old_signature_and_rejects_new_one(self):
-        with tempfile.TemporaryDirectory() as d:
-            headers = Path(d)
-            file = headers / 'include/linux/fs.h'
-            file.parent.mkdir(parents=True)
-            file.write_text('static inline bool get_file_rcu(struct file *file);')
-            kernel_compat.check(headers)
-            file.write_text('struct file *get_file_rcu(struct file __rcu **f);')
-            with self.assertRaisesRegex(RuntimeError, 'make vm-setup'):
-                kernel_compat.check(headers)
-
-    def test_guest_kernel_selection_handles_grub_with_and_without_submenu(self):
-        entry = "menuentry 'Ubuntu, with Linux 6.6.6-mapple' --class ubuntu $menuentry_id_option 'kernel-id' {\n"
-        self.assertEqual(debug_kernel.grub_selection(entry, '6.6.6-mapple'), 'kernel-id')
+    def test_grub_fallback_and_nested_selection(self):
+        entry = "menuentry 'Ubuntu, with Linux 6.6-test' --class ubuntu $menuentry_id_option 'kernel-id' {\n"
+        self.assertEqual(installers.grub_entry(entry, '6.6-test'), 'kernel-id')
         nested = "submenu 'Advanced options for Ubuntu' $menuentry_id_option 'submenu-id' {\n\t" + entry
-        self.assertEqual(debug_kernel.grub_selection(nested, '6.6.6-mapple'), 'submenu-id>kernel-id')
-        with self.assertRaisesRegex(RuntimeError, 'missing from GRUB'):
-            debug_kernel.grub_selection(entry, 'uninstalled')
+        self.assertEqual(installers.grub_entry(nested, '6.6-test'), 'submenu-id>kernel-id')
+        with self.assertRaises(RuntimeError): installers.grub_entry(entry, 'wrong')
 
-    @unittest.skipUnless(shutil.which('make') and shutil.which('tar'), 'make/tar required')
-    def test_kernel_package_preserves_merged_usr_symlinks(self):
-        from types import SimpleNamespace
-        with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
-            source = root / 'source'
-            (source / 'include/config').mkdir(parents=True)
-            (source / 'include/config/kernel.release').write_text('fixture')
-            for name in ['.config', 'Module.symvers', 'System.map', 'arch/x86/boot/bzImage']:
-                p = source / name
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.touch()
-            (source / 'Makefile').write_text('modules_install:\n\tmkdir -p $(INSTALL_MOD_PATH)/lib/modules/fixture\n\ttouch $(INSTALL_MOD_PATH)/lib/modules/fixture/test.ko\n')
-            def execute(argv, **kwargs):
-                if argv[0] != 'rsync':
-                    subprocess.run([str(a) for a in argv], check=True, stdout=subprocess.DEVNULL)
-            fake = SimpleNamespace(STATE=root, run=execute, ssh=lambda *args, **kw: None,
-                                   ssh_args=lambda c: ['ssh', 'fixture@localhost'])
-            debug_kernel.install(fake, 'dev', {}, source)
-            archive = next((root / 'kernel-install').glob('*/modules.tar.gz'))
-            destination = root / 'guest'
-            (destination / 'usr/lib/modules').mkdir(parents=True)
-            (destination / 'lib').symlink_to('usr/lib')
-            subprocess.run(['tar', '-xzf', str(archive), '-C', str(destination/'lib/modules')], check=True)
-            self.assertTrue((destination / 'lib').is_symlink())
-            self.assertTrue((destination / 'usr/lib/modules/fixture/test.ko').exists())
+    def test_verified_recovery_updates_assignment_and_editor_without_reinstall(self):
+        k = self.kernel()
+        k['expected_build_id'] = 'exact-build'
+        k = kernels.seal(k)
+        m = self.machine(kernel=None)
+        m['transition'] = {'to': k['name'], 'status': 'failed'}
+        c.save(machines.slot_path(m['name']), m)
+        machines.select(m['name'])
+        database = c.directory(c.STATE / 'builds/module' / k['id']) / 'compile_commands.json'
+        database.write_text('[]')
+        with patch.object(machines, 'inspect', return_value={'arch': 'x86_64', 'release': k['release'], 'build_id': 'exact-build', 'cmdline': 'nokaslr'}), patch.object(installers, 'install') as install:
+            installers.prepare(m, k)
+            install.assert_not_called()
+        saved = c.get('machines', m['name'])
+        self.assertEqual(saved['kernel'], k['name'])
+        self.assertEqual(saved['transition']['status'], 'complete')
+        self.assertTrue(saved['transition']['recovered'])
+        self.assertEqual((c.ROOT / 'compile_commands.json').read_text(), '[]')
 
-    def test_api_ignores_compression_only_and_detects_actual_drift(self):
-        def source(raw, level, code='same code'):
-            compressor = zlib.compressobj(level, wbits=-15)
-            blob = base64.b64encode(compressor.compress(raw) + compressor.flush()).decode()
-            return f'{code}\nvar swaggerSpec = []string{{\n"{blob}",\n}}\n'
-        raw = b'{"openapi":"3.0.3","paths":{}}' * 100
-        self.assertEqual(api_verify.canonical(source(raw, 1)), api_verify.canonical(source(raw, 9)))
-        self.assertNotEqual(api_verify.canonical(source(raw, 1)), api_verify.canonical(source(raw+b' ', 1)))
-        self.assertNotEqual(api_verify.canonical(source(raw, 1)), api_verify.canonical(source(raw, 1, 'changed code')))
+    def test_gnu_notes_extract_exact_kernel_identity(self):
+        import struct
+        raw = struct.pack('<III', 4, 4, 3) + b'GNU\0' + bytes.fromhex('deadbeef')
+        self.assertEqual(kernels.notes_id(raw), 'deadbeef')
+        self.assertIsNone(kernels.notes_id(b'not an ELF note'))
 
-    def test_source_only_kernel_gets_navigation_without_stale_or_other_arch_entries(self):
-        with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
-            for name in ('module/src/main.c', 'source/kernel/fork.c', 'source/arch/x86/kernel/setup.c',
-                         'source/arch/arm/kernel/setup.c', 'source/tools/tool.c'):
-                p = root / name
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.touch()
-            module = root / 'module.json'
-            source = root / 'module/src/main.c'
-            module.write_text(json.dumps([{'directory': str(root), 'file': str(source),
-                'arguments': ['gcc', '-D__KERNEL__', '-DMODULE', '-fconserve-stack', '-c', '-o', 'module.o', str(source)]}]))
-            database = root / 'kernel.json'
-            compile_commands.kernel_source(argparse.Namespace(database=database, module_database=module, source=root/'source'))
-            result = json.loads(database.read_text())
-            self.assertEqual({Path(e['file']).name for e in result}, {'fork.c', 'setup.c'})
-            self.assertEqual(len(result), 2)
-            self.assertNotIn('-DMODULE', result[0]['arguments'])
-            self.assertNotIn('-fconserve-stack', result[0]['arguments'])
-            self.assertIn('-D__KERNEL__', result[0]['arguments'])
+    def test_tier0_adoption_retains_machine_without_fabricating_build_support(self):
+        m = self.machine(kernel=None)
+        observation = {'release': 'vendor', 'arch': 'aarch64', 'build_id': 'known'}
+        k = machines.observed_kernel(m, observation)
+        self.assertEqual(k['capabilities']['tier'], 0)
+        self.assertEqual(k['expected_build_id'], 'known')
+        self.assertEqual(k['arch'], 'aarch64')
 
+    def test_inspection_does_not_publish_an_unprotected_kernel_reference(self):
+        k = self.kernel()
+        k['expected_build_id'] = 'known'
+        kernels.seal(k)
+        self.machine(kernel=None)
+        os.environ['MACHINE'] = 'dev'
+        observed = {'release': k['release'], 'arch': k['arch'], 'build_id': 'known'}
+        with patch.object(machines, 'inspect', return_value=observed):
+            with c.lock('catalog'):
+                with self.assertRaisesRegex(RuntimeError, 'catalog is busy'):
+                    lab.main(['machine-inspect'])
+            self.assertIsNone(c.get('machines', 'dev')['kernel'])
+            lab.main(['machine-inspect'])
+        self.assertEqual(c.get('machines', 'dev')['kernel'], k['name'])
 
-@unittest.skipUnless(all(shutil.which(t) for t in ('gcc', 'objcopy', 'gdb', 'readelf')), 'ELF/debug tools required')
-class DeploymentTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
-        self.kernel = self.root / 'kernel'
-        self.scripts = self.kernel / 'scripts'
-        (self.scripts / 'lib').mkdir(parents=True)
-        self.script = self.scripts / '04-deploy-and-prep-gdb.sh'
-        shutil.copy(REPO / 'kernel/scripts/04-deploy-and-prep-gdb.sh', self.script)
-        cache = self.kernel / 'kernel-cache/dev'
-        cache.mkdir(parents=True)
-        (cache / 'kernel.release').write_text('fixture\n')
-        self.artifact = self.kernel / 'build/artifacts/dev/fixture/mapple.ko'
-        self.artifact.parent.mkdir(parents=True)
-        source = cache / 'source/init/main.c'
-        source.parent.mkdir(parents=True)
-        source.write_text('int start_kernel(void) { return 1; }\nint mapple_fixture(void) { return 42; }\n')
-        subprocess.run(['gcc', '-g', '-c', str(source), '-o', str(self.artifact)], check=True)
-        shutil.copy(self.artifact, cache / 'vmlinux')
-        (self.root / '.lab').mkdir()
-        (self.root / '.lab/dev.env').touch()
-        common = r'''
-+die() { echo "$*" >&2; exit 1; }
-+validate_target() { :; }
-+lab_env_file() { printf '%s/.lab/dev.env' "$1"; }
-+lab_load_target() { LAB_SSH_TARGET=fixture; LAB_REMOTE_DIR=/tmp/fixture; }
-+target_require_cfg() { printf 127.0.0.1:9; }
-+lab_check_connection() { :; }
-+lab_scp_to() { :; }
-+lab_ssh() {
-+    case "$*" in
-+        'uname -r') echo fixture ;;
-+        'cat /proc/cmdline') echo "${FIXTURE_CMDLINE:-nokaslr}" ;;
-+        'stat -c %s '*) stat -c %s "$FIXTURE_ARTIFACT" ;;
-+    esac
-+    return 0
-+}
-+lab_ssh_sudo() {
-+    case "$*" in
-+        *sections*) printf '.text 0xffffffffc0100000\n.data 0xffffffffc0200000\n' ;;
-+    esac
-+    return 0
-+}
-+'''.replace('\n+', '\n')
-        (self.scripts / 'lib/common.sh').write_text(common)
-        self.env = dict(os.environ, FIXTURE_ARTIFACT=str(self.artifact))
+    def test_minimum_debug_mode_fails_before_build_or_upload(self):
+        k = self.kernel()
+        m = self.machine()
+        observation = {'release': k['release'], 'arch': 'x86_64', 'boot_id': 'boot', 'modules_disabled': '0'}
+        os.environ['MIN_DEBUG'] = 'kernel-source'
+        with patch.object(machines, 'inspect', return_value=observation), patch.object(runs, 'check_endpoint'), patch.object(runs, 'build') as build, patch.object(c, 'send') as send:
+            with self.assertRaisesRegex(RuntimeError, 'tier 1'): runs.prepare(m, k, True)
+            build.assert_not_called()
+            send.assert_not_called()
 
-    def deploy(self, mode, **env):
-        return subprocess.run(['bash', str(self.script), 'dev', mode], env=dict(self.env, **env),
-                              capture_output=True, text=True)
+    def test_known_kernel_identity_is_reused_without_changing_target(self):
+        k = self.kernel()
+        k['expected_build_id'] = 'abc123'
+        kernels.seal(k)
+        m = self.machine(kernel=None)
+        with patch.object(c, 'ssh', side_effect=AssertionError('read-only recognition')):
+            found = machines.observed_kernel(m, {'release': k['release'], 'arch': k['arch'], 'build_id': 'abc123'})
+        self.assertEqual(found['id'], k['id'])
+        self.assertFalse(c.record('kernels', 'dev-observed').exists())
 
-    def test_debug_upload_relocates_real_elf_and_keeps_source_breakpoints(self):
-        result = self.deploy('qemu')
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        gdb = self.kernel / '.gdb/current-debug.gdb'
-        text = gdb.read_text()
-        self.assertIn('target remote 127.0.0.1:9', text)
-        self.assertIn('set substitute-path', text)
-        self.assertIn('set schedule-multiple on', text)
-        symbols = self.kernel / '.gdb/dev-qemu-module-symbols.gdb'
-        # Execute the generated init too: GDB's `source` treats surrounding
-        # quotes as literal filename characters, unlike add-symbol-file.
-        offline = self.kernel / '.gdb/offline.gdb'
-        offline.write_text('\n'.join(line for line in text.splitlines()
-                                     if not line.startswith(('target remote ', 'symbol-file '))) +
-                           '\ndefine detach\n  echo REMOTE_DETACH_ONLY\\n\nend\n')
-        check = subprocess.run(['gdb', '-q', '-batch', '-ex', f'source {offline}',
-                                '-ex', 'info line mapple_fixture',
-                                '-ex', 'kill'], capture_output=True, text=True, check=True)
-        self.assertIn('starts at address 0xffffffffc010', check.stdout)
-        self.assertIn('main.c', check.stdout)
-        # VS Code Stop issues `kill`; execute it in real GDB and verify it
-        # dispatches to detach rather than sending a kill packet to QEMU.
-        self.assertIn('REMOTE_DETACH_ONLY', check.stdout)
-        self.assertTrue((self.kernel / '.gdb/current-vmlinux').exists())
+    def test_signer_failure_prevents_upload_and_module_reload(self):
+        k = self.kernel()
+        k['signer'] = '/bin/false'
+        m = self.machine()
+        m['gdb'] = ''
+        observed = {'release': k['release'], 'arch': k['arch'], 'boot_id': 'boot', 'modules_disabled': '0'}
+        def fake_build(kernel, **kwargs):
+            Path(kwargs['freeze']).write_bytes(b'unsigned module')
+        with patch.object(machines, 'inspect', return_value=observed), patch.object(runs, 'build', side_effect=fake_build), patch.object(c, 'send') as send, patch.object(c, 'ssh') as ssh:
+            with self.assertRaises(subprocess.CalledProcessError):
+                runs.prepare(m, k)
+            send.assert_not_called()
+            ssh.assert_not_called()
+        record = c.records('runs')[0]
+        self.assertEqual(record['status'], 'failed')
 
-    def test_normal_upload_needs_no_symbols_and_invalidates_old_debug_run(self):
-        self.assertEqual(self.deploy('qemu').returncode, 0)
-        (self.kernel / 'kernel-cache/dev/vmlinux').unlink()
-        result = self.deploy('none')
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertFalse((self.kernel / '.gdb/current-debug.gdb').exists())
+    def test_text_symbols_resolve_kaslr_without_a_linux_elf(self):
+        k = self.kernel()
+        symbol_map = kernels.root(k) / 'System.map'
+        symbol_map.write_text('ffffffff81000000 T _text\nffffffff81000020 T known_function\n')
+        k['artifacts']['system_map'] = 'System.map'
+        k = kernels.seal(k)
+        self.assertIsNone(kernels.debug_elf(k))
+        runtime = b'ffffffff83000000 T _text\n'
+        with patch.object(c, 'ssh', return_value=subprocess.CompletedProcess([], 0, runtime)):
+            self.assertEqual(runs.kernel_offset(self.machine(), k, {'cmdline': ''}), 0x2000000)
 
-    def test_debug_rejects_aslr_before_upload(self):
-        result = self.deploy('qemu', FIXTURE_CMDLINE='console=ttyS0')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('nokaslr', result.stderr)
-        self.assertNotIn('uploading', result.stdout)
+    def test_detached_debug_run_rejects_a_different_load_receipt(self):
+        k = self.kernel()
+        m = self.machine()
+        r = runs.new(m, k)
+        r.update(status='detached', boot_id='boot', load_receipt='original receipt', sections={'.text': '0xffff1234'})
+        with patch.object(machines, 'inspect', return_value={'boot_id': 'boot'}), patch.object(runs, 'check_endpoint', return_value='endpoint-test'), patch.object(c, 'ssh', return_value=subprocess.CompletedProcess([], 0, b'new receipt')), patch.object(subprocess, 'Popen') as spawn:
+            with self.assertRaisesRegex(RuntimeError, 'Another run'):
+                runs.attach(r)
+            spawn.assert_not_called()
+
+    def test_machine_override_build_does_not_publish_editor_navigation(self):
+        k = self.kernel()
+        self.machine()
+        os.environ.update(MACHINE='dev', KERNEL='base')
+        with patch.object(runs, 'build') as build:
+            lab.main(['module-build'])
+        self.assertFalse(build.call_args.kwargs['publish'])
+
+    def test_cross_arch_source_navigation_does_not_index_x86(self):
+        tree = self.root / 'linux'
+        for f in ('init/main.c', 'arch/arm64/kernel/setup.c', 'arch/x86/kernel/setup.c'):
+            p = tree / f
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.touch()
+        module = self.root / 'module.json'
+        src = self.root / 'module/src/main.c'
+        src.parent.mkdir(parents=True)
+        src.touch()
+        module.write_text(json.dumps([{'file': str(src), 'directory': str(self.root), 'arguments': ['aarch64-linux-gnu-gcc', '-c', str(src)]}]))
+        database = self.root / 'linux.json'
+        compile_commands.kernel_source(argparse.Namespace(database=database, module_database=module, source=tree, arch='arm64'))
+        entries = json.loads(database.read_text())
+        self.assertTrue(any('/arch/arm64/' in e['file'] for e in entries))
+        self.assertFalse(any('/arch/x86/' in e['file'] for e in entries))
+
+    def test_vscode_workspace_freezes_machine_and_kernel_selection(self):
+        k = self.kernel()
+        m = self.machine('first')
+        self.machine('second')
+        os.environ['NO_OPEN'] = '1'
+        workspace = ui.vscode(m)
+        machines.select('second')
+        data = c.load(workspace)
+        launch = data['launch']['configurations'][0]
+        run = c.load(workspace.parent / 'record.json')
+        self.assertEqual(run['machine'], 'first')
+        self.assertEqual(run['kernel_id'], k['id'])
+        self.assertIn(run['name'], data['tasks']['tasks'][0]['args'])
+        self.assertIn('gdb-wrapper', launch['miDebuggerPath'])
+
+    @unittest.skipUnless(shutil.which('gcc') and shutil.which('gdb'), 'native ELF tools required')
+    def test_module_only_debug_uses_real_elf_source_mappings_without_vmlinux(self):
+        k = self.kernel()
+        m = self.machine()
+        r = runs.new(m, k)
+        source = self.root / 'module.c'
+        source.write_text('int mapple_fixture(void) { return 42; }\n')
+        c.run(['gcc', '-g', '-c', source, '-o', runs.root(r) / 'mapple.ko'])
+        r.update(debug_mode='module', sections={'.text': '0xffffffffc0100000'}, kernel_offset=None)
+        runs.debug_script(r, k)
+        script = (runs.root(r) / 'debug.gdb').read_text()
+        offline = runs.root(r) / 'offline.gdb'
+        offline.write_text('\n'.join(line for line in script.splitlines() if not line.startswith('target remote')) + '\n')
+        result = c.run(['gdb', '-q', '-batch', '-x', offline, '-ex', 'info line mapple_fixture', '-ex', 'break mapple_fixture', '-ex', 'info breakpoints'], capture_output=True)
+        self.assertIn(b'0xffffffffc010', result.stdout)
+        self.assertIn(b'module.c', result.stdout)
+        self.assertNotIn('vmlinux', script)
+        self.assertNotIn(b'2 locations', result.stdout)
+        self.assertIn(b'Breakpoint 1 at 0xffffffffc010', result.stdout)
+
+    def test_shared_build_lock_waits_then_succeeds(self):
+        import threading
+        entered = threading.Event()
+        def owner():
+            with c.lock('shared-build'):
+                entered.set()
+                threading.Event().wait(.15)
+        thread = threading.Thread(target=owner)
+        thread.start()
+        self.assertTrue(entered.wait(2))
+        with c.lock('shared-build', wait=2):
+            pass
+        thread.join(2)
+        self.assertFalse(thread.is_alive())
+
+    def test_busy_second_machine_does_not_partially_apply_cascade(self):
+        k = self.kernel()
+        self.machine('a')
+        self.machine('b')
+        os.environ['CASCADE'] = '1'
+        with c.lock('machine-b'):
+            with self.assertRaisesRegex(RuntimeError, 'busy'):
+                kernels.remove(k)
+        self.assertTrue(c.record('machines', 'a').exists())
+        self.assertTrue(c.record('machines', 'b').exists())
+
+    def test_imported_build_rules_are_also_immutable(self):
+        k = self.kernel()
+        (kernels.path(k, 'build') / 'scripts/Makefile.build').write_text('different compiler flags')
+        with self.assertRaisesRegex(RuntimeError, 'changed'):
+            kernels.validate(k)
+
+    def test_sdk_configuration_is_copied_and_used_to_find_compiler(self):
+        sdk = self.root / 'sdk'
+        sdk.mkdir()
+        compiler = sdk / 'vendor-cc'
+        compiler.write_text('#!/bin/sh\nexit 0\n')
+        compiler.chmod(0o700)
+        config = self.root / 'toolchain.json'
+        config.write_text(json.dumps({'cc': 'vendor-cc', 'cross_compile': 'vendor-', 'env': {'PATH': str(sdk)}}))
+        os.environ['TOOLCHAIN'] = str(config)
+        data = kernels.toolchain('aarch64')
+        self.assertEqual(c.executable(data['cc'], {'PATH': data['env']['PATH']}), str(compiler))
+        config.write_text('{}')
+        self.assertEqual(data['cc'], 'vendor-cc')
+
+    def test_unfamiliar_architecture_has_explicit_recipe(self):
+        config = self.root / 'mips.config'
+        config.write_text('CONFIG_MODULES=y\n')
+        os.environ.update(NAME='router', ARCH='mipsel', LINUX_ARCH='mips', CONFIG=str(config),
+                          IMAGE_PATH='vmlinux', CC='mipsel-linux-gnu-gcc', CROSS_COMPILE='mipsel-linux-gnu-')
+        kernels.create()
+        k = c.get('kernels', 'router')
+        self.assertEqual(k['linux_arch'], 'mips')
+        self.assertEqual(k['recipe']['image_path'], 'vmlinux')
+        config.write_text('changed')
+        self.assertEqual((kernels.root(k) / k['recipe']['config']).read_text(), 'CONFIG_MODULES=y\n')
+
+    def test_llvm_recipe_selects_clang_without_accidentally_forcing_gcc(self):
+        os.environ['LLVM'] = '1'
+        self.assertEqual(kernels.toolchain('aarch64')['cc'], 'clang')
+
+    @unittest.skipUnless(shutil.which('aarch64-linux-gnu-gcc'), 'cross compiler required')
+    def test_foreign_elf_architecture_is_detected_and_checked(self):
+        file = self.root / 'foreign.c'
+        file.write_text('int function(void) { return 42; }\n')
+        elf = self.root / 'foreign.o'
+        c.run(['aarch64-linux-gnu-gcc', '-g', '-c', file, '-o', elf])
+        info = kernels.elf_info(elf)
+        self.assertIn('AArch64', info['machine'])
+        self.assertTrue(info['dwarf'])
+        k = self.kernel()
+        destination = kernels.root(k) / 'foreign.o'
+        shutil.copyfile(elf, destination)
+        k['artifacts']['vmlinux'] = 'foreign.o'
+        with self.assertRaisesRegex(RuntimeError, 'architecture'):
+            kernels.seal(k)
+
+    def test_out_of_tree_build_import_closes_parent_source_cycle(self):
+        source = self.root / 'linux'
+        build = source / 'output'
+        build.mkdir(parents=True)
+        (source / 'Makefile').write_text('kernel source')
+        (source / 'include').mkdir()
+        (source / 'include/header.h').write_text('ABI')
+        (build / 'source').symlink_to(source)
+        (build / 'Makefile').write_text('include ' + str(source / 'Makefile'))
+        destination = self.root / 'owned'
+        mappings = c.copy_tree(build, destination)
+        mapped_source = (destination / 'source').resolve()
+        self.assertTrue(mapped_source.is_relative_to(destination))
+        self.assertEqual((mapped_source / 'include/header.h').read_text(), 'ABI')
+        self.assertEqual((mapped_source / 'output').resolve(), destination)
+        self.assertIn(str(mapped_source / 'Makefile'), (destination / 'Makefile').read_text())
+        self.assertEqual(mappings[source], mapped_source)
+        shutil.rmtree(source)
+        self.assertEqual((mapped_source / 'include/header.h').read_text(), 'ABI')
+
+    @unittest.skipUnless(shutil.which('gcc') and shutil.which('gdb'), 'ELF tools required')
+    @unittest.skipUnless(shutil.which('gcc') and shutil.which('objcopy') and shutil.which('gdb'), 'native ELF tools required')
+    def test_symbol_only_debug_initializes_architecture_before_loading_linux(self):
+        k = self.kernel()
+        symbol_map = kernels.root(k) / 'System.map'
+        symbol_map.write_text('ffffffff81000000 T named_kernel_function\n')
+        k['artifacts']['system_map'] = 'System.map'
+        k = kernels.seal(k)
+        r = runs.new(self.machine(), k)
+        source = self.root / 'module.c'
+        source.write_text('int module_function(void) { return 1; }\n')
+        subprocess.run(['gcc', '-c', '-g', str(source), '-o', str(runs.root(r) / 'mapple.ko')], check=True)
+        r.update(debug_mode='kernel-symbol', kernel_offset=0, sections={'.text': '0xffffffffa0000000'})
+        runs.debug_script(r, k)
+        setup = (runs.root(r) / 'debug.gdb').read_text().split('target remote')[0]
+        offline = self.root / 'offline.gdb'
+        offline.write_text(setup + '\nshow architecture\ninfo address named_kernel_function\n')
+        output = subprocess.run(['gdb', '-q', '-batch', '-x', str(offline)], capture_output=True, text=True, check=True).stdout
+        self.assertIn('i386:x86-64', output)
+        self.assertIn('0xffffffff81000000', output)
+
+    def test_text_map_preserves_high_kernel_addresses_and_function_ranges(self):
+        k = self.kernel()
+        table = kernels.root(k) / 'System.map'
+        table.write_text('ffffffff81012340 T kernel_sendmsg\nffffffff81012400 t other_function\n')
+        k['artifacts']['system_map'] = 'System.map'
+        directory = c.directory(self.root / 'run')
+        source = directory / 'module.c'
+        source.write_text('int own_function(void) { return 0; }\n')
+        c.run(['gcc', '-g', '-c', source, '-o', directory / 'mapple.ko'])
+        output = directory / 'symbols.elf'
+        runs.make_symbol_elf(k, output, 0)
+        result = c.run(['gdb', '-q', '-batch', '-ex', 'symbol-file ' + str(output),
+                        '-ex', 'info symbol 0xffffffff81012341', '-ex', 'break kernel_sendmsg'], capture_output=True)
+        self.assertIn(b'kernel_sendmsg + 1', result.stdout)
+        self.assertIn(b'Breakpoint 1 at 0xffffffff81012340', result.stdout)
 
 
 if __name__ == '__main__':

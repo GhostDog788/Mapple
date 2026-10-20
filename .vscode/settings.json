@@ -14,19 +14,12 @@
     "Kbuild": "makefile"
   },
   "files.exclude": {
-    "kernel/.gdb": true,
-    "kernel/build": true,
     ".cache": true,
     "compile_commands.json": true,
     "*/compile_commands.json": true,
-    "*/module_compile_commands.json": true,
-    "*/linux_compile_commands.json": true,
-    ".lab": true,
-    "kernel/kernel-cache": true
+    ".lab": true
   },
   "files.watcherExclude": {
-    "**/.lab/**": true,
-    "**/kernel/kernel-cache/**": true,
-    "**/kernel/build/**": true
+    "**/.lab/**": true
   }
 }

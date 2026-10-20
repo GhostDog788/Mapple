@@ -10,7 +10,7 @@ Loading needs compatibility and permission.
 Debugging additionally needs debugger access and the appropriate symbols/source.**
 These are separate requirements.
 
-This document describes the proposed support model. See
+This document describes the support model. See
 [current implementation](#current-implementation) for what the repository supports today.
 
 ## 1. What we need to build
@@ -163,15 +163,17 @@ adding local symbols/source does not require changing or rebooting the target.
 
 ## Current implementation
 
-The current lab provisions Ubuntu/QEMU targets with an
-[x86-64 VS Code configuration](../../.vscode/launch.json). Its full debugging
-workflow requires matching Linux source and a DWARF-bearing `vmlinux`, even
-though reduced debugging modes are technically possible.
+The development tools maintain independent machine and kernel inventories, report
+all four tiers, and prepare the best available debugger mode. Linux builds and
+imports are separate from explicit machine installation. Source debugging uses
+machine-bound VS Code workspaces or GDB TUI; Ctrl+click follows the active machine.
 
-Tier reporting, reduced debugger modes, an independent kernel catalog, and
-reconstruction workflows are proposed work, not existing Make features.
-Building Linux ourselves can provide all Tier 3 files; imported matching files
-can do the same. It is not a fifth tier.
+The host setup and managed QEMU creation target Ubuntu x86-64. Existing Linux
+machines use SSH with their architecture/compiler settings. Ubuntu/Debian GRUB
+has a built-in installer; other boot/package systems use hooks or imported files.
+API incompatibilities remain blockers. Reverse engineering build inputs is manual,
+not an automated capability. Building Linux ourselves can provide Tier 3 inputs;
+importing matching files can do the same. It is not a fifth tier.
 
 Use the [setup guide](../guides/setup.md) and [usage guide](../guides/usage.md)
 for supported commands.

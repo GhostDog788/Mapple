@@ -24,18 +24,18 @@ specified by `user/go.mod`; the destination machines only need the built binarie
 From the repository root:
 
 ```bash
-make user
+make server-build tui-build
 make check
 ```
 
-The binaries are `user/bin/mappled` and `user/bin/mapple`. Both are built with
+The binaries are `.lab/builds/go/mappled` and `.lab/builds/go/mapple`. Both are built with
 `CGO_ENABLED=0`; they do not need a Go installation on the destination machine.
 
 ## 2. Install the binaries
 
 ```
-sudo install -m 0755 user/bin/mappled /usr/local/bin/mappled
-sudo install -m 0755 user/bin/mapple  /usr/local/bin/mapple
+sudo install -m 0755 .lab/builds/go/mappled /usr/local/bin/mappled
+sudo install -m 0755 .lab/builds/go/mapple  /usr/local/bin/mapple
 ```
 
 `mapple` runs unprivileged on an operator's workstation. The installed `mappled`
@@ -68,9 +68,9 @@ that will run `mapple` or otherwise call the API, for use as `ca_file`.
 step-ca, your org's internal CA) issues, and skip `ca_file` on clients
 entirely since the system trust store already covers it.
 
-For local development, `make setup` creates matching server and TUI configurations
-under gitignored `.lab/dev/`. Run `make run-server` and `make run-tui` from the
-repository root. See [usage](usage.md) for the Ubuntu/QEMU workflow.
+For local development, follow the [setup guide](setup.md). `make server-run`
+and `make tui-run` create matching TLS/authentication configurations per machine
+under `.lab/runs/`; they do not use the production paths below.
 
 ## 4. Bearer tokens
 

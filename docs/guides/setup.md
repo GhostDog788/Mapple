@@ -2,31 +2,17 @@
 
 [Documentation](../README.md) / Guides
 
-This guide takes a fresh Ubuntu host to a running Mapple stack. The Go server
-and TUI run on the host; the kernel module runs in a local Ubuntu QEMU guest.
-Run all shell commands from the repository root unless a step says otherwise.
+The host is Ubuntu 24.04 x86-64. Targets can be Linux machines over SSH, including
+other architectures. We create Ubuntu x86-64 QEMU VMs locally; existing machines
+keep their own lifecycle. Cross-compilation requires the appropriate compiler/SDK.
+Mapple must support the target's kernel APIs; this tooling does not rewrite the
+application for incompatible APIs.
 
-After setup, use the [usage guide](usage.md) for the daily loop, command reference,
-and source debugging. Return to the [project overview](../../README.md).
+## Prepare the host
 
-## 1. Prepare the host
-
-Use **x86-64 Ubuntu 24.04**, sudo access, and an internet connection for apt,
-Go dependencies, the Ubuntu cloud image, and Linux source downloads.
-
-- **Disk:** the kernel builder requires at least 10 GiB free before starting.
-  Plan additional space for the cloud image and VM disk growth; 20 GiB or more
-  free is a useful starting point. The guest disk defaults to 30 GiB of virtual
-  capacity and grows as it is used.
-- **Memory:** the default VM uses 4 GiB; leave memory for the host and compiler.
-  On a smaller host, create the VM with `MEMORY=1024` and build with `JOBS=2`.
-- **Virtualization:** enable hardware virtualization in firmware for KVM.
-  If the host is itself a VM, enable nested virtualization in its hypervisor.
-  QEMU can use software emulation when KVM is unavailable, but it is much slower.
-- **Editor:** VS Code is optional. For its kernel debugger, install the workspace's
-  recommended **C/C++** and **clangd** extensions. GDB TUI works without VS Code.
-
-Install the initial tools and clone:
+Allow at least 10 GiB for a Linux build, plus room for copied imports and VM disks.
+The default guest uses 4 GiB RAM and two CPUs. KVM is recommended; QEMU falls back
+to software emulation if unavailable.
 
 ```bash
 sudo apt-get update
@@ -36,156 +22,134 @@ cd Mapple
 make setup
 ```
 
-`make setup` installs build tools, GCC 12, clangd 18, GDB, SSH/rsync, OpenSSL,
-QEMU, cloud-init image tools, and a terminal emulator. It downloads Go dependencies
-and creates matching local server/TUI configurations, a TLS certificate, and a
-bearer token. The Go version comes from `user/go.mod`; Make selects the required
-toolchain without changing global Go settings. You do not need to install Go
-manually.
-
-When necessary, setup adds your user to the `kvm` group. `make vm-up` can use the
-new group membership immediately. Repeat setup as needed: it preserves existing
-VM slots, their selection, tokens, certificates, and local configuration edits.
-If you already installed all host prerequisites, `make setup NO_INSTALL=1` skips
-apt and group changes; it still downloads Go dependencies and prepares local
-configuration.
-
-## 2. Choose a VM
-
-Choose **A** to create a lab VM, or **B** to use a VM you already run. A VM slot is
-a saved destination, including SSH details, module port, debugger endpoint, and
-kernel inputs. The first slot becomes active automatically. Other commands use
-that slot until you select another with `make vm-use NAME=<slot>`.
-
-### A. Create an Ubuntu QEMU VM
+Setup installs build, SSH, QEMU, GDB, clangd and terminal tools, then downloads Go
+dependencies. If it adds your account to the KVM group, the next `machine-start`
+can use that membership without another login. `NO_INSTALL=1` skips host package
+installation. Additional known toolchains can be requested explicitly:
 
 ```bash
-make vm-create NAME=dev
-make vm-up
-make vm-setup
+make setup TOOLCHAIN_PACKAGES="gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu"
 ```
 
-Creation downloads Canonical's Ubuntu 24.04 amd64 cloud image, verifies its SHA-256
-checksum, and generates a private SSH key, cloud-init seed, and qcow2 overlay.
-It does not start the VM. Defaults are **4 GiB RAM, 2 CPUs, and a 30 GiB virtual
-disk**. To choose resources, supply them when creating it:
+## Create a kernel, then a machine
 
 ```bash
-make vm-create NAME=small MEMORY=1024 CPUS=2 DISK=20G
-make vm-use NAME=small
-make vm-up
-make vm-setup JOBS=2
+make kernel-create NAME=baseline VERSION=6.6.6 PROFILE=debug
+make kernel-build KERNEL=baseline JOBS=2
+make machine-create NAME=dev KERNEL=baseline
+make machine-start
+make machine-prepare
 ```
 
-Use one creation example; each name must be unique. When another slot is already
-active, select your newly created VM before starting or preparing it.
-
-The VM runs headless in the background. SSH, module TCP, and GDB ports are
-forwarded on host loopback; available ports are selected automatically and saved
-in the slot. The guest user is `mapple` with passwordless sudo. Inspect it with
-`make vm-status` or log in with `make vm-ssh`. Console output is at
-`.lab/vms/<slot>/console.log`.
-
-### B. Register an existing Ubuntu QEMU VM
-
-Start your VM with its own QEMU launcher first. The guest needs an SSH server, a
-sudo-capable account, and network access for provisioning. It must boot with
-GRUB and permit unsigned lab modules; disable guest Secure Boot for this lab.
-
-QEMU must expose its GDB stub to the development host. Add this option to the
-VM's QEMU launch command, then restart the VM with that launcher:
-
-```text
--gdb tcp:127.0.0.1:1234
-```
-
-Register the VM, replacing the example address, username, and key path:
+`kernel-create` records a recipe; `kernel-build` downloads verified upstream
+source and builds it. The debug profile enables symbols, DWARF, module support,
+and common QEMU storage/network drivers. For other hardware, supply `CONFIG` as a starting configuration; the debug
+profile still applies its required debug/module options. The resolved configuration
+is saved in the slot’s `source/.config`. Configuration and patch changes require a new kernel slot:
 
 ```bash
-make vm-add NAME=dev HOST=192.168.122.50 SSH_USER=ubuntu \
-  SSH_KEY=~/.ssh/id_ed25519 GDB_ENDPOINT=127.0.0.1:1234
-make vm-use NAME=dev
-make vm-setup
+make kernel-create NAME=experiment VERSION=6.6.6 CONFIG=/path/to/config \
+    PATCHES=/path/to/patch-directory
+make kernel-build KERNEL=experiment
 ```
 
-Use `SSH_PORT=<port>` for a forwarded SSH port. `MODULE_PORT=<port>` is the module
-TCP port reachable **from the host server**; it defaults to 4444. If the VM uses
-NAT, forward that host port to guest port 4444. `GDB_ENDPOINT` must match the
-QEMU stub reachable from the host, not a service inside the guest. SSH access
-alone cannot enable QEMU's debugger.
-
-Omit `SSH_KEY` to use your default SSH identities or agent. Add `ASK_PASS=1` to
-enter SSH and sudo passwords privately; this also supports key-based SSH with a
-sudo password. An empty SSH password selects key authentication; an empty sudo
-password reuses the SSH password. With neither password, sudo must work without
-a password. Credentials are saved in the private slot file.
-
-`vm-up` and `vm-down` manage repo-created VMs. For a registered VM, keep using its
-own launcher to start and stop it; other lab commands use its saved SSH details.
-
-## 3. Let the kernel preparation finish
-
-`make vm-setup` installs guest prerequisites, prepares kernel boot arguments,
-**reboots the guest**, waits for SSH to return, and builds the module with matching
-host-side inputs. It does not load the module yet.
-
-The lab uses a pinned **Linux 6.6.6 debug kernel, built with GCC 12**. The module
-requires its Linux API; Ubuntu 24.04's stock 6.8 kernel is not a build target.
-The first setup builds the kernel on the host and installs it in the guest.
-Later slots reuse this build. Allow several minutes for the first compilation;
-`JOBS=2` limits parallel compilation on a smaller host (default: up to 4 jobs).
-The host continues running its own kernel. The selected guest kernel remains
-its GRUB default across boots.
-
-To build the kernel before preparing a guest:
+For cross-compilation, specify the target architecture and compiler:
 
 ```bash
-make debug-kernel JOBS=2
+make kernel-create NAME=arm-debug VERSION=6.6.6 ARCH=aarch64 \
+    CC=aarch64-linux-gnu-gcc CROSS_COMPILE=aarch64-linux-gnu-
+make kernel-build KERNEL=arm-debug
 ```
 
-To supply your own compatible debug kernel, pass `SOURCE` and `VMLINUX` when
-creating or registering a slot:
+The first machine becomes active automatically. Further machines do not change
+selection. `machine-create` only creates a disk and connection record;
+`machine-prepare` is the explicit install, reboot, verify operation. It retains
+the previous kernel and commits the association only after verifying the boot.
+Ubuntu/Debian GRUB uses a one-shot candidate with the previous entry as fallback.
+A fallback entry cannot recover every hang: inspect the console if SSH does not
+return. A failed transition is recorded without claiming recovery.
+
+## Add an existing machine without changing its kernel
 
 ```bash
-make vm-add NAME=custom HOST=192.168.122.50 SSH_USER=ubuntu \
-  GDB_ENDPOINT=127.0.0.1:1234 \
-  SOURCE=/absolute/path/to/built/linux VMLINUX=/absolute/path/to/built/linux/vmlinux
-make vm-use NAME=custom
-make vm-setup
+make machine-add NAME=client HOST=192.168.122.50 SSH_USER=ubuntu \
+    SSH_KEY=/path/to/key GDB_ENDPOINT=127.0.0.1:1234
+make machine-adopt MACHINE=client
 ```
 
-`SOURCE` must be a fully configured and built x86-64 kernel tree, with matching
-`Module.symvers`, `arch/x86/boot/bzImage`, built modules, and unstripped DWARF
-symbols. `VMLINUX` defaults to `SOURCE/vmlinux` when omitted. Supply the same
-options to `vm-create` for a new managed VM. Setup installs that build if the
-guest runs a different kernel; matching host source and symbols are reused
-directly. Guest kernel, source, build configuration, and symbols must agree.
+Registration performs read-only inspection and records the running kernel,
+reusing a known slot when its build ID matches, or creating a Tier 0 entry
+when no matching slot is known. It does not install anything
+or reboot. Omit `GDB_ENDPOINT` for build/run-only work. `ASK_PASS=1` prompts for
+SSH/sudo passwords; secrets remain private and are redacted from `machine-show`.
 
-## 4. Run the stack
+`machine-configure MACHINE=client GDB_ENDPOINT=...` adds debugger access later
+without registering another machine. It also updates SSH/installer settings.
 
-Load the module and check the selected target:
+Adoption copies existing build/debug files first. If headers are missing, it may
+download matching packages into a temporary directory using a target's configured
+APT repositories, then extract them on the host. It does not install target
+packages. `OFFLINE=1` prohibits this download step. Other package systems can use
+a custom fetcher or explicit imports; see [usage](usage.md#integration-hooks).
+Missing artifacts remain visible as blockers.
+
+To replace its kernel instead, choose a built/installable slot explicitly:
 
 ```bash
-make run-kernel
-make doctor
+make machine-prepare MACHINE=client KERNEL=baseline
 ```
 
-In terminal 1, keep the HTTPS server running:
+Unknown boot systems require an `INSTALLER` hook. Linux source debugging also
+requires working debugger access; SSH alone cannot stop kernel execution.
+
+## Import matching kernel files
 
 ```bash
-make run-server
+make kernel-import NAME=vendor ARCH=x86_64 BUILD=/path/to/prepared/build \
+    SOURCE=/path/to/linux VMLINUX=/path/to/vmlinux CC=gcc
 ```
 
-In terminal 2, from the same repository root, open the TUI:
+Artifacts are copied into `.lab`, including external header symlink targets.
+Editing or deleting the originals does not change the slot. For a fully built
+in-tree kernel, `BUILD` and `SOURCE` can identify the same directory; it is copied
+once. Source and debug ELF are optional for build/run-only support.
+
+Associate the imported slot with a machine already running that exact kernel:
 
 ```bash
-make run-tui
+make machine-adopt MACHINE=client KERNEL=vendor OFFLINE=1
 ```
 
-This opens another terminal window. On a host without a graphical desktop, use
-`make run-tui FOREGROUND=1` to run it in terminal 2 instead.
+This verifies the observed identity without installing or rebooting. A known
+mismatch fails. Without a runtime build ID, the reported match is `release-only`.
 
-Inside the TUI, connect to your slot (`dev` in this example):
+Add missing artifacts for the same exact build later:
+
+```bash
+make kernel-enrich KERNEL=client-observed BUILD=/path/to/prepared/build
+make kernel-enrich KERNEL=client-observed SOURCE=/path/to/source VMLINUX=/path/to/vmlinux
+```
+
+Existing artifacts cannot be replaced. Kernel input changes are detected before
+building/deploying. A release string alone does not establish an exact match;
+use build IDs and retain provenance. See [kernel support tiers](../architecture/kernel-support-tiers.md).
+
+## Run the stack
+
+```bash
+make machine-use NAME=dev
+make module-run
+make server-run
+```
+
+Keep the server running. In another terminal:
+
+```bash
+make tui-run
+```
+
+The TUI opens in a new terminal. On a headless host, use `FOREGROUND=1`.
+Inside the TUI:
 
 ```text
 session create dev
@@ -194,42 +158,32 @@ command echo hello
 command pslist
 ```
 
-`info` reports the kernel session and supported commands. `echo` returns `hello`.
-`pslist` opens the guest's process/thread snapshot; use the arrow keys to browse
-and Esc to return to the command prompt. A successful echo verifies
-the full TUI → HTTPS server → guest module round trip. The server listens on
-`https://127.0.0.1:8443`; the TUI trusts the generated certificate automatically.
-No token copying or system-wide configuration is needed.
+Press Esc to leave the process snapshot. Server/TUI configurations are paired
+per machine and remain attached to that destination when selection changes.
 
-## 5. Stop and resume
+## Debug and return tomorrow
 
-Delete your session in the TUI before reloading the module: use `session current`
-to get its ID, then `session delete <id-prefix>`. Exit with `quit`, and stop the
-server with Ctrl+C. Shut down a managed guest with `make vm-down`; this requests
-a graceful shutdown. Use `make vm-status` to check it has become unreachable.
+```bash
+make vscode-open MIN_DEBUG=kernel-source
+```
 
-Next time, run `make vm-up`, `make run-kernel`, `make run-server`, and
-`make run-tui` in their respective terminals. Selection persists; setup and
-provisioning are not daily steps. For a registered VM, start it using its own
-launcher. Continue with the [development loop and debugger guide](usage.md).
+Install the recommended Microsoft C/C++ and clangd extensions. In the generated
+machine workspace, press F5, set a breakpoint in `kernel/src/`, and trigger a TUI
+command. F5 reloads Mapple: close old sessions first, then create a new TUI
+session before enabling the info breakpoint. Ctrl+click follows definitions in
+the active machine's matching Linux source. Alternatively, run `make module-debug`,
+create a fresh TUI session, and run `make gdb-open`. In GDB, use
+`break mapple_handle_info` and `continue`, then trigger `command info` from the TUI.
 
-## Local files
+Close application sessions before reloading Mapple. Stop server/TUI with Ctrl+C;
+`machine-stop` requests graceful shutdown of an owned QEMU VM. Next time:
 
-| Location | Contents |
-| --- | --- |
-| `.lab/slots/<name>.json` | Private VM connection details, credentials, and kernel paths |
-| `.lab/active` | Persistently selected slot |
-| `.lab/dev/` | Server/TUI configs, development token, TLS certificate and key |
-| `.lab/vms/<name>/` | Managed VM disk, SSH key, seed, monitor, and console log |
-| `.lab/images/` | Downloaded Ubuntu base images |
-| `.lab/kernels/` | Shared host-built debug kernel |
-| `.lab/known_hosts` | SSH host keys for this lab |
-| `kernel/kernel-cache/<name>/` | Selected guest's headers, source, and symbols |
-| `kernel/build/` | Module build outputs per slot and kernel release |
-| `kernel/.gdb/` | Generated debugger scripts and relocated module symbols |
-| `compile_commands.json` | Generated module and kernel navigation database |
+```bash
+make machine-start
+make module-run
+make server-run
+# Another terminal: make tui-run
+```
 
-These paths are gitignored. Keep `.lab/` private: it contains credentials and VM
-disks. Edit slot JSON only while lab commands are idle, then run
-`make vm-use NAME=<slot>` to refresh selection and generated configuration.
-For setup failures, start with the [troubleshooting reference](usage.md#troubleshooting).
+Selection and kernels persist. Setup and kernel installation are preparation
+steps, not part of the daily rebuild loop. [Usage](usage.md) documents every command.

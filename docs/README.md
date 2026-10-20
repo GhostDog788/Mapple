@@ -9,9 +9,9 @@ internals or integrating with the API.
 ## Start here
 
 1. **[Set up a development lab](guides/setup.md)** — prepare a fresh Ubuntu host,
-   create or register a VM, and make your first request.
+   create or register a machine, and make your first request.
 2. **[Work with Mapple](guides/usage.md)** — follow the daily development loop,
-   choose a VM, build and run components, and debug the kernel in VS Code or GDB TUI.
+   choose a machine, build and run components, and debug the kernel in VS Code or GDB TUI.
 3. **[Understand the architecture](architecture/overview.md)** — see how the
    module, HTTPS server, TUI, transports, and session leases fit together.
 
@@ -22,7 +22,7 @@ Instructions for getting things done.
 | Guide | Use it to |
 | --- | --- |
 | [Setup](guides/setup.md) | Prepare the host and guest, configure VM slots, and run the stack |
-| [Usage](guides/usage.md) | Find every Make target and option, navigate Linux source, debug, and troubleshoot |
+| [Usage](guides/usage.md) | Find every Make command and option, navigate Linux source, debug, and troubleshoot |
 | [Server installation](guides/server-installation.md) | Install the server and TUI outside the local lab, including TLS, authentication, systemd, and networking |
 
 ## Architecture

@@ -1,47 +1,8 @@
 {
   "version": "2.0.0",
   "tasks": [
-    {
-      "label": "Build: Kernel Module",
-      "type": "process",
-      "command": "make",
-      "args": ["kernel"],
-      "options": {"cwd": "${workspaceFolder}"},
-      "group": "build",
-      "problemMatcher": ["$gcc"]
-    },
-    {
-      "label": "Kernel: Deploy + Prep GDB",
-      "detail": "Build and upload to the active VM slot; prepare relocated module symbols and kernel source paths.",
-      "type": "process",
-      "command": "make",
-      "args": ["run-kernel-debug"],
-      "options": {"cwd": "${workspaceFolder}"},
-      "problemMatcher": ["$gcc"]
-    },
-    {
-      "label": "Kernel: Upload without debugger",
-      "type": "process",
-      "command": "make",
-      "args": ["run-kernel"],
-      "options": {"cwd": "${workspaceFolder}"},
-      "problemMatcher": ["$gcc"]
-    },
-    {
-      "label": "Kernel: GDB TUI",
-      "type": "process",
-      "command": "make",
-      "args": ["gdb"],
-      "options": {"cwd": "${workspaceFolder}"},
-      "problemMatcher": []
-    },
-    {
-      "label": "Lab: Doctor",
-      "type": "process",
-      "command": "make",
-      "args": ["doctor"],
-      "options": {"cwd": "${workspaceFolder}"},
-      "problemMatcher": []
-    }
+    {"label": "Mapple: Build module", "type": "process", "command": "make", "args": ["module-build"], "group": "build", "problemMatcher": ["$gcc"]},
+    {"label": "Mapple: Open active machine debug workspace", "type": "process", "command": "make", "args": ["vscode-open"], "problemMatcher": []},
+    {"label": "Mapple: Doctor", "type": "process", "command": "make", "args": ["doctor"], "problemMatcher": []}
   ]
 }
