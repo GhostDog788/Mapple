@@ -3,7 +3,26 @@
 [Documentation](../README.md) / Guides
 
 Use [setup](setup.md) for the first checkout. All commands run from the repository
-root. `make` displays help.
+root.
+
+## Find command help
+
+```bash
+make                               # Browse commands and short descriptions
+make machine-create HELP=1         # Arguments, defaults, examples and effects
+make help COMMAND=kernel-remove    # Another way to explain one command
+make kernel-remove                 # Missing required KERNEL: shows usage only
+```
+
+`HELP=1` never executes the command or its prerequisites, even if you also supply
+valid arguments. It works on every public target, including `setup`, `check` and
+`clean`. Plain commands still run normally when their required inputs or saved
+selection are available. A partially specified command reports missing required
+options and shows its usage.
+
+Removal requires a named destination: `make kernel-remove KERNEL=old-kernel`,
+`make machine-remove MACHINE=old-dev`, or `make machine-destroy MACHINE=old-dev`.
+These commands never infer the object to delete from the active selection.
 
 ## Select a destination
 
@@ -86,13 +105,45 @@ builds/uploads for that frozen destination, so close existing application sessio
 before F5. F5 resumes the guest automatically. Create a fresh TUI session with
 the info breakpoint disabled, then enable the breakpoint and run `command info`.
 Stop detaches and resumes the guest; it does not kill QEMU. Reusing F5 prepares the workspace's run again after detach.
+The toolbar's Restart button detaches, rebuilds and reloads Mapple, refreshes its
+addresses and symbols, and reconnects without rebooting the machine. Existing
+application sessions belong to the previous module load; create a new TUI session
+after restarting.
+The post-debug task clears exited sessions. If VS Code or its launcher crashes,
+the next F5 also recovers stale session state after confirming its processes have
+exited. A surviving debugger retains the machine locks and prevents reloads.
 Open another machine workspace for a simultaneous session.
 
 Set a breakpoint in `kernel/src/control/commands/info/info.c` after creating a
 TUI session, then run `command info`. Create the session before enabling the
 breakpoint so its handshake does not time out. You can step into Linux functions
 such as `kernel_sendmsg` when the kernel slot has source and DWARF.
+When matching Linux DWARF and `vmlinux-gdb.py` are available in the managed kernel
+snapshot, GDB loads its helper commands, including `lx-ps` and `lx-dmesg`. In VS Code,
+use `-exec lx-ps` or `-exec lx-dmesg` in the Debug Console. Only that loader is
+added to the session's auto-load safe path; your global GDB configuration is unchanged.
+Mapple's local editor integration supplies the **Mapple kernel (GDB)** debug type
+and uses Microsoft's C/C++ adapter underneath. Debug Console execution commands
+such as `-exec continue`, `-exec next`, `-exec step`, `-exec finish` and
+`-exec interrupt` synchronize the toolbar with the same GDB session. Inspection
+commands pass through normally. `vscode-open` checks the installed integration
+version before opening a new window; after updating, generate a new workspace
+with `make vscode-open`. Old generated workspaces retain their old debug configuration.
 Pausing kernel execution also pauses that machine's networking.
+
+To verify the actual editor controls against an already prepared, disposable
+machine with full kernel-source support:
+
+```bash
+make test-debugging MACHINE=debug-test
+```
+
+This reloads Mapple repeatedly and uses an isolated VS Code profile. It checks
+toolbar and console Pause/Continue, Restart while running and paused, source
+breakpoints, Step Into/Over/Out, memory/disassembly, Stop, and F5 again.
+Results and the DAP transcript are saved under `.lab/debugging-verification`.
+The command leaves the supplied test machine registered. On a headless host it
+requires `xvfb-run`; `make check` remains independent of live machines and editors.
 
 ## Source navigation
 
@@ -111,8 +162,9 @@ make navigation-status                      # Active context and live editor sta
 `setup` installs the editor integration when `code` is present, unless
 `NO_INSTALL=1`. After installing/updating it, reload an already-open VS Code
 window once. The recommended clangd extension provides the language engine;
-the local **Mapple Navigation** extension manages selection and status. It does
-not replace the engine or control GDB. In a trusted checkout, opening the normal
+the local **Mapple Navigation** extension manages selection and status and supplies
+the debug control bridge described above. Clangd provides source navigation; GDB
+provides runtime debugging. In a trusted checkout, opening the normal
 repository folder is sufficient; a debug workspace is optional.
 
 `navigation-prepare` uses the active machine's kernel unless `KERNEL` or `MACHINE`
@@ -181,7 +233,7 @@ with a letter or digit and contain letters, digits, dots, underscores and hyphen
 | `kernel-enrich` | Add missing matching artifacts to `KERNEL`; existing artifacts cannot be replaced |
 | `kernel-list` | List release, architecture, tier, installability, state and assigned machines |
 | `kernel-show` | Show identity, artifact paths, toolchain and provenance for `KERNEL` |
-| `kernel-remove` | Refuse referenced kernels; `CASCADE=1` also removes referencing machine records, preserving VM assets |
+| `kernel-remove` | Require explicit `KERNEL`; refuse referenced kernels; `CASCADE=1` also removes referencing machine records, preserving VM assets |
 | `machine-create` | Create an Ubuntu x86-64 QEMU machine with a requested `KERNEL`; requires `NAME`; does not start/install |
 | `machine-add` | Register SSH details, inspect, and record the existing kernel; requires `NAME`; does not provision |
 | `machine-configure` | Update SSH, module port, GDB endpoint or installer settings without changing the kernel; `GDB_ENDPOINT=none` disables debugging |
@@ -194,8 +246,8 @@ with a letter or digit and contain letters, digits, dots, underscores and hyphen
 | `machine-start` | Start an owned QEMU VM and wait for SSH/cloud-init; reuse an already running VM |
 | `machine-stop` | Request graceful ACPI shutdown of an owned VM; returns before shutdown completes |
 | `machine-ssh` | Open SSH with the saved connection details |
-| `machine-remove` | Retire the record; preserve VM disks and saved connection details in `retired.json` |
-| `machine-destroy` | Stop and delete the disk/seed of an owned QEMU VM, then retire its record |
+| `machine-remove` | Require explicit `MACHINE`; retire the record; preserve VM disks and saved connection details in `retired.json` |
+| `machine-destroy` | Require explicit `MACHINE`; stop and delete the disk/seed of an owned QEMU VM, then retire its record |
 | `module-build` | Incrementally build Mapple against `KERNEL` or the selected machine's assignment; no live target needed |
 | `navigation-setup` | Package/install the local Mapple Navigation VS Code extension; no npm tooling required |
 | `navigation-prepare` | Build the selected kernel's compiler context and persistent index offline, then verify implementation jumps |
@@ -215,10 +267,11 @@ with a letter or digit and contain letters, digits, dots, underscores and hyphen
 | `test` | Run Go unit tests |
 | `test-tools` | Run development-tool regression tests |
 | `test-navigation` | Run native clangd and real VS Code lifecycle tests in a disposable checkout |
+| `test-debugging` | Exercise real VS Code debugger controls; requires explicit `MACHINE` naming a prepared, disposable Tier 3 target; reloads Mapple repeatedly |
 | `check` | Verify generated API, run tool tests, build/vet/test Go, and compile-check Python |
 | `api` | Regenerate Go API bindings |
 | `api-verify` | Verify bindings match the API without modifying source files |
-| `help` | Show command groups and common options |
+| `help` | Browse command descriptions; `COMMAND=<command>` shows its full help; `<command> HELP=1` also works |
 
 ## Options
 

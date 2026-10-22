@@ -17,6 +17,40 @@ from . import core as c, kernels, machines
 MODES = {'module': 1, 'kernel-symbol': 2, 'kernel-source': 3}
 
 
+def process_identity(pid):
+    """Identify a live Linux process without confusing a reused PID with its owner."""
+    try:
+        fields = Path(f'/proc/{int(pid)}/stat').read_text().rsplit(')', 1)[1].split()
+        if fields[0] in ('Z', 'X'):
+            return None
+        return {'pid': int(pid), 'start_time': fields[19],
+                'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+
+
+def reconcile_unlocked(r):
+    """Caller holds the machine, connection and run locks; never terminate a process."""
+    if r['status'] != 'debugging':
+        return r
+    for role in ('supervisor', 'debugger'):
+        identity = r.get(role + '_identity')
+        pid = identity['pid'] if identity else r.get(role + '_pid')
+        current = process_identity(pid) if pid else None
+        if current and (identity is None or current == identity):
+            c.fail('Run is currently attached to a live debugger or its supervisor.')
+    r.update(status='detached', detached_at=c.now())
+    c.save(c.record('runs', r['name']), r)
+    return r
+
+
+def finish_debug(r):
+    """Reconcile after Stop, including launchers killed before their finally block."""
+    m = r['machine_snapshot']
+    with c.lock('machine-' + m['name'], wait=5), c.lock(c.connection_key(m), wait=5), c.lock('run-' + r['name'], wait=5):
+        return reconcile_unlocked(c.get('runs', r['name']))
+
+
 def publish_navigation(m):
     with c.lock('editor', wait=30):
         publish_navigation_unlocked(m)
@@ -113,7 +147,12 @@ def prepare(m, k, debug=False, existing=None):
 def prepare_run(m, k, debug=False, existing=None):
     if m.get('kernel') != k['name']:
         c.fail('Deployment kernel must be the machine assignment. Use machine-prepare or machine-adopt first.')
+    r = existing or new(m, k)
     with c.lock('machine-' + m['name']), c.lock(c.connection_key(m)):
+        # Recover before SSH/building: a live or orphaned debugger must also
+        # protect the frozen ELF and a guest whose CPUs may be paused.
+        with c.lock('run-' + r['name']):
+            r = reconcile_unlocked(c.get('runs', r['name']))
         if m.get('gdb'):
             check_endpoint(m)
         observed = machines.inspect(m)
@@ -131,7 +170,6 @@ def prepare_run(m, k, debug=False, existing=None):
             tier = kernels.characteristics(k)['tier']
             if tier < MODES[minimum]:
                 c.fail(f'Requested {minimum}; kernel only has tier {tier}.')
-        r = existing or new(m, k)
         destination = root(r) / 'mapple.ko'
         build(k, publish=not c.option('MACHINE') and not c.option('KERNEL'), freeze=destination)
         if r['kernel_id'] != k['id'] or r['machine_id'] != m['id']:
@@ -171,12 +209,14 @@ def prepare_run(m, k, debug=False, existing=None):
             machines.invalidate_runs(m['name'])
             c.ssh(m, 'if [ -d /sys/module/mapple ]; then rmmod mapple; fi; insmod ' + remote + '/mapple.ko ' + shlex.join(params),
                   sudo=True, timeout=60)
-            receipt = f'{r["name"]} {r["artifact_sha256"]} {r["boot_id"]}'
+            # A workspace reuses its run ID across Restart/F5. Distinguish each
+            # load even if the ELF, boot and allocated section addresses repeat.
+            receipt = f'{r["name"]} {r["artifact_sha256"]} {r["boot_id"]} {uuid.uuid4().hex}'
             c.ssh(m, "umask 077; printf '%s\\n' " + shlex.quote(receipt) +
                   ' > /tmp/mapple-receipt-' + r['name'] + '; mv -f /tmp/mapple-receipt-' + r['name'] +
                   ' /tmp/mapple-loaded-receipt', sudo=True)
             r['load_receipt'] = receipt
-            r.update(status='loaded', debug_mode=next((n for n, t in MODES.items() if t == mode), None))
+            r.update(status='loaded', loaded_at=c.now(), debug_mode=next((n for n, t in MODES.items() if t == mode), None))
             if debug:
                 output = c.ssh(m, 'for f in /sys/module/mapple/sections/.* /sys/module/mapple/sections/*; do '
                                '[ -f "$f" ] || continue; printf "%s %s\\n" "${f##*/}" "$(cat "$f")"; done', sudo=True).stdout.decode()
@@ -269,7 +309,23 @@ def debug_script(r, k):
     if r['debug_mode'] != 'module':
         elf = kernels.debug_elf(k)
         if elf:
+            helper = None
+            if kernels.elf_info(elf).get('dwarf'):
+                candidates = [Path(str(elf) + '-gdb.py')]
+                candidates += [tree / 'vmlinux-gdb.py' for key in ('build', 'source')
+                               if (tree := kernels.path(k, key))]
+                helper = next((p for p in candidates if p.is_file() and
+                               p.resolve().is_relative_to(kernels.root(k).resolve())), None)
+            if helper:
+                # Trust only this kernel's loader, before symbol-file can auto-load it.
+                # This command takes the entire path verbatim, including spaces.
+                lines.append(f'add-auto-load-safe-path {helper.resolve()}')
             lines.append(f'symbol-file -o {r["kernel_offset"] or 0} "{elf}"')
+            if helper and helper != Path(str(elf) + '-gdb.py'):
+                # Separate debug ELFs are commonly renamed; GDB won't discover
+                # vmlinux-gdb.py beside them. Keep the loader's original path so
+                # its relative scripts/gdb imports still work.
+                lines.append(f'source {helper}')
         else:
             elf = directory / 'kernel-symbols.elf'
             make_symbol_elf(k, elf, r['kernel_offset'] or 0)
@@ -365,7 +421,13 @@ def find_run():
     if c.option('RUN'):
         return c.get('runs', c.option('RUN'))
     m = c.machine()
-    candidates = [r for r in c.records('runs') if r['kind'] == 'module' and r['machine'] == m['name'] and r['status'] in ('prepared', 'detached')]
+    candidates = []
+    for r in c.records('runs'):
+        if r['kind'] == 'module' and r['machine'] == m['name']:
+            if r['status'] == 'debugging':
+                r = finish_debug(r)
+            if r['status'] in ('prepared', 'detached'):
+                candidates.append(r)
     if len(candidates) != 1:
         c.fail('Choose a prepared run explicitly with RUN=<id>; inspect make debug-list.')
     return candidates[0]
@@ -378,7 +440,9 @@ def attach(r, args=()):
     if current_m['id'] != r['machine_id'] or current_k['id'] != r['kernel_id']:
         c.fail('Machine/kernel slot was replaced; prepare a new run.')
     kernels.validate(current_k)
-    with c.lock('machine-' + m['name']), c.lock(c.connection_key(m)), c.lock('run-' + r['name']), c.lock(check_endpoint(m)):
+    with c.lock('machine-' + m['name']) as machine_lock, c.lock(c.connection_key(m)) as connection_lock, \
+         c.lock('run-' + r['name']) as run_lock, c.lock(check_endpoint(m)) as endpoint_lock:
+        r = reconcile_unlocked(c.get('runs', r['name']))
         if r['status'] not in ('prepared', 'detached'):
             c.fail('Run is not prepared; use module-debug again.')
         observed = machines.inspect(m, save=False)
@@ -395,16 +459,22 @@ def attach(r, args=()):
         current = c.ssh(m, 'cat /sys/module/mapple/sections/.text', sudo=True).stdout.decode().strip()
         if current != r['sections']['.text']:
             c.fail('Module was reloaded; prepare fresh runtime addresses.')
-        r['status'] = 'debugging'
+        r.update(status='debugging', supervisor_identity=process_identity(os.getpid()), debugger_identity=None)
+        r.pop('debugger_pid', None)
         c.save(c.record('runs', r['name']), r)
+        process = None
         try:
             gdb = c.option('GDB', 'gdb-multiarch' if k_arch(r) != kernels.normalize(os.uname().machine) else 'gdb')
             command = [c.executable(gdb), '-q']
             if not any('--interpreter' in arg for arg in args):
                 command += ['-x', str(root(r) / 'debug.gdb')]
             command += list(args)
-            process = subprocess.Popen(command, cwd=c.ROOT)
+            # GDB retains ownership if VS Code kills this supervising process.
+            # OS locks survive until GDB also exits, even before its PID is saved.
+            process = subprocess.Popen(command, cwd=c.ROOT,
+                                       pass_fds=(machine_lock, connection_lock, run_lock, endpoint_lock))
             r['debugger_pid'] = process.pid
+            r['debugger_identity'] = process_identity(process.pid)
             c.save(c.record('runs', r['name']), r)
             previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP)}
             for sig in previous:
@@ -423,7 +493,16 @@ def attach(r, args=()):
             if code:
                 c.fail('GDB exited with status ' + str(code))
         finally:
-            r['status'] = 'detached'
+            # Setup/recording errors must not release ownership of a GDB child
+            # that is still running. Forced launcher death is covered by its FDs.
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+            r.update(status='detached', detached_at=c.now())
             c.save(c.record('runs', r['name']), r)
 
 

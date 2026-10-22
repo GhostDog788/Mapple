@@ -163,6 +163,9 @@ def tui(m):
 def vscode(m):
     if not m.get('kernel'):
         c.fail('Assign or adopt a kernel first.')
+    if c.option('NO_OPEN') != '1':
+        from . import navigation
+        navigation.ensure_extension()
     k = c.get('kernels', m['kernel'])
     if not m.get('gdb') or not kernels.characteristics(k)['build']:
         c.fail('VS Code debugging needs build support and a configured GDB endpoint.')
@@ -176,9 +179,9 @@ def vscode(m):
                        'gdb-attach', '--run', r['name'], '--']) + ' "$@"\n')
     wrapper.chmod(0o700)
     arch = kernels.ARCHES.get(k['arch'], (None, None, None, None))[3]
-    launch = {'name': 'Mapple: ' + m['name'], 'type': 'cppdbg', 'request': 'launch',
+    launch = {'name': 'Mapple: ' + m['name'], 'type': 'mapple-kernel', 'request': 'launch',
               'program': program, 'cwd': str(c.ROOT), 'MIMode': 'gdb', 'miDebuggerPath': str(wrapper),
-              'preLaunchTask': 'Prepare ' + r['name'], 'externalConsole': False,
+              'preLaunchTask': 'Prepare ' + r['name'], 'postDebugTask': 'Finish ' + r['name'], 'externalConsole': False,
               'miDebuggerServerAddress': 'serial-target:0' if m['gdb'].startswith('/') else m['gdb'], 'customLaunchSetupCommands': [
                   {'text': 'source ' + str(directory / 'debug.gdb'), 'ignoreFailures': False}],
               'launchCompleteCommand': 'exec-continue'}
@@ -193,7 +196,10 @@ def vscode(m):
                  'tasks': {'version': '2.0.0', 'tasks': [{'label': 'Prepare ' + r['name'], 'type': 'process',
                      'command': sys.executable, 'args': [str(c.ROOT / 'scripts/lab.py'), 'vscode-prepare', '--run', r['name']],
                      'options': {'cwd': str(c.ROOT), 'env': {'MAPPLE_LAB_DIR': str(c.STATE),
-                                'MIN_DEBUG': c.option('MIN_DEBUG', 'module')}}, 'problemMatcher': ['$gcc']}]}}
+                                'MIN_DEBUG': c.option('MIN_DEBUG', 'module')}}, 'problemMatcher': ['$gcc']},
+                     {'label': 'Finish ' + r['name'], 'type': 'process', 'command': sys.executable,
+                      'args': [str(c.ROOT / 'scripts/lab.py'), 'vscode-finish', '--run', r['name']],
+                      'options': {'cwd': str(c.ROOT), 'env': {'MAPPLE_LAB_DIR': str(c.STATE)}}, 'problemMatcher': []}]}}
     # Keep the script source absolute and whitespace-safe (GDB's source command
     # accepts unquoted paths including spaces as its filename).
     workspace_path = directory / (m['name'] + '.code-workspace')

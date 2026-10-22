@@ -2,7 +2,11 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 LAB := python3 scripts/lab.py
 ifeq ($(origin GOTOOLCHAIN),undefined)
+ifneq ($(HELP),1)
+ifneq ($(filter api api-verify test check,$(MAKECMDGOALS)),)
 GOTOOLCHAIN := $(shell python3 scripts/go_toolchain.py)
+endif
+endif
 endif
 export GOTOOLCHAIN
 # Explicit input data, never interpolated into shell commands.
@@ -12,6 +16,7 @@ export CROSS_COMPILE LLVM INSTALLER FETCHER SIGNER TOOLCHAIN_PACKAGES
 export JOBS MODULE_PORT MODULE_PARAMS MEMORY CPUS DISK TERMINAL FOREGROUND NO_INSTALL
 export OFFLINE CASCADE RUN MIN_DEBUG GDB NO_OPEN
 export CLANGD NAV_TIMEOUT
+export HELP COMMAND
 ifneq ($(filter command line environment environment override,$(origin CC)),)
 export CC
 else
@@ -21,10 +26,16 @@ COMMANDS := setup kernel-create kernel-import kernel-enrich kernel-build kernel-
  machine-create machine-add machine-list machine-show machine-configure machine-inspect machine-use machine-adopt machine-prepare \
  machine-start machine-stop machine-ssh machine-remove machine-destroy module-build module-run module-debug \
  server-build server-run tui-build tui-run gdb-open gdb-attach vscode-open debug-list doctor clean \
- navigation-prepare navigation-status navigation-setup
-.PHONY: $(COMMANDS) help check test test-tools test-navigation api api-verify
+ navigation-prepare navigation-status navigation-setup test-debugging
+UTILITY_COMMANDS := check test test-tools test-navigation api api-verify
+.PHONY: $(COMMANDS) help $(UTILITY_COMMANDS)
+ifeq ($(HELP),1)
+# Help must bypass prerequisites too: `make check HELP=1` never runs checks.
+$(COMMANDS) $(UTILITY_COMMANDS):
+	@$(LAB) help $@
+else
 $(COMMANDS):
-	$(LAB) $@
+	@$(LAB) $@
 api:
 	cd user/api && go generate ./...
 api-verify:
@@ -38,21 +49,6 @@ test-navigation:
 check: api-verify test-tools
 	cd user && go build ./... && go vet ./... && go test ./...
 	python3 -m compileall -q scripts
+endif
 help:
-	@echo 'Host:       make setup [NO_INSTALL=1] [TOOLCHAIN_PACKAGES="gcc-aarch64-linux-gnu"]'
-	@echo 'Kernels:    kernel-create NAME=... VERSION=...; kernel-build KERNEL=...'
-	@echo '            kernel-import NAME=... BUILD=... [SOURCE=... VMLINUX=...]'
-	@echo '            kernel-enrich KERNEL=...; kernel-list; kernel-show; kernel-remove [CASCADE=1]'
-	@echo 'Machines:   machine-create NAME=... KERNEL=... (Ubuntu QEMU); machine-start'
-	@echo '            machine-add NAME=... HOST=... SSH_USER=... [SSH_KEY=... GDB_ENDPOINT=...]'
-	@echo '            machine-inspect; machine-adopt [OFFLINE=1]; machine-prepare KERNEL=...'
-	@echo '            machine-configure [GDB_ENDPOINT=... INSTALLER=...] updates connection/debug settings'
-	@echo '            machine-list; machine-show; machine-use NAME=...; machine-stop; machine-ssh'
-	@echo '            machine-remove (record only); machine-destroy (owned QEMU disk + record)'
-	@echo 'Build/run:  module-build [KERNEL=...]; module-run; server-build; server-run; tui-build; tui-run'
-	@echo 'Debug:      module-debug [MIN_DEBUG=module|kernel-symbol|kernel-source]; gdb-open; vscode-open'
-	@echo '            debug-list; gdb-attach RUN=... (current terminal)'
-	@echo 'Selection:  MACHINE=... overrides the active machine for one command; no active kernel selection'
-	@echo 'Navigation: navigation-prepare [KERNEL=...] (offline); navigation-status; navigation-setup (VS Code extension)'
-	@echo 'Checks:     doctor; check; test; test-tools; api-verify. Cleanup: clean (application builds only)'
-	@echo 'Reference:  docs/guides/setup.md and docs/guides/usage.md'
+	@$(LAB) help

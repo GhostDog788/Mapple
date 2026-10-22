@@ -3,12 +3,22 @@ const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const {KernelDebugAdapter} = require('./debug-adapter');
 
 async function activate(context) {
     const folder = vscode.workspace.workspaceFolders?.find(f =>
         fs.existsSync(path.join(f.uri.fsPath, 'scripts/lab.py')));
     if (!folder || !vscode.workspace.isTrusted) return;
     const root = folder.uri.fsPath;
+    const debugOutput = vscode.window.createOutputChannel('Mapple Debug');
+    context.subscriptions.push(debugOutput, vscode.debug.registerDebugAdapterDescriptorFactory('mapple-kernel', {
+        createDebugAdapterDescriptor() {
+            const cpp = vscode.extensions.getExtension('ms-vscode.cpptools');
+            if (!cpp) throw new Error('Install Microsoft C/C++ (ms-vscode.cpptools) for Mapple kernel debugging.');
+            const executable = path.join(cpp.extensionPath, 'debugAdapters/bin/OpenDebugAD7');
+            return new vscode.DebugAdapterInlineImplementation(new KernelDebugAdapter(executable, debugOutput));
+        }
+    }));
     const configured = vscode.workspace.getConfiguration('mapple.navigation', folder.uri).get('labDirectory', '.lab');
     const lab = path.resolve(process.env.MAPPLE_LAB_DIR || path.resolve(root, configured));
     const manifestPath = path.join(lab, 'navigation/editor.json');

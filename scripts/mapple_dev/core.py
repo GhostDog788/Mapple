@@ -88,7 +88,7 @@ def lock(key, wait=0):
                     fail(f'{key} is busy in another command. Retry when it finishes.')
                 time.sleep(.1)
         try:
-            yield
+            yield f.fileno()
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)
 
@@ -138,6 +138,10 @@ def digest(path):
 def active():
     path = STATE / 'active-machine'
     if not path.exists():
+        if not records('machines'):
+            fail('No active machine: no machines are registered.\n'
+                 'Create a QEMU VM: make machine-create NAME=dev KERNEL=<kernel>\n'
+                 'Or register an SSH target: make machine-add NAME=client HOST=<host> SSH_USER=<user>')
         fail('No active machine. Use make machine-use NAME=<machine>.')
     return name(path.read_text().strip())
 

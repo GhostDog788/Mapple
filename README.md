@@ -49,6 +49,9 @@ make module-run
 automatically. `kernel-build` compiles Linux once; `machine-prepare` installs it,
 reboots, and verifies the guest. Other machines can reuse the same kernel slot.
 
+Run `make` to browse commands. Use `make machine-create HELP=1` (or any command
+with `HELP=1`) for its arguments, defaults, examples, and effects without running it.
+
 Start the server in one terminal:
 
 ```bash

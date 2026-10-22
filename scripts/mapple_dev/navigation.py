@@ -251,6 +251,16 @@ def launch(extra):
     os.execvpe(record['clangd'], [*arguments(record), *extra], env)
 
 
+def ensure_extension():
+    """A generated debug type must have its matching local integration installed."""
+    package = c.load(c.ROOT / 'tools/vscode-navigation/package.json')
+    installed = c.run(['code', '--list-extensions', '--show-versions'], capture_output=True).stdout.decode().splitlines()
+    if not any(line.startswith('ms-vscode.cpptools@') for line in installed):
+        c.fail('VS Code kernel debugging requires Microsoft C/C++. Install it with code --install-extension ms-vscode.cpptools.')
+    if f'mapple.navigation@{package["version"]}' not in installed:
+        install_extension()
+
+
 def install_extension():
     """Package the dependency-free local extension without npm or vsce."""
     source = c.ROOT / 'tools/vscode-navigation'
@@ -258,13 +268,13 @@ def install_extension():
     output = c.directory(c.STATE / 'tools') / 'mapple-navigation.vsix'
     manifest = f'''<?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
-<Metadata><Identity Language="en-US" Id="navigation" Version="{package['version']}" Publisher="mapple"/><DisplayName>Mapple Navigation</DisplayName><Description xml:space="preserve">Selected-kernel source navigation</Description><Tags>mapple</Tags><Categories>Other</Categories><Properties><Property Id="Microsoft.VisualStudio.Code.Engine" Value="^1.90.0"/><Property Id="Microsoft.VisualStudio.Code.ExtensionDependencies" Value="llvm-vs-code-extensions.vscode-clangd"/></Properties></Metadata>
+<Metadata><Identity Language="en-US" Id="navigation" Version="{package['version']}" Publisher="mapple"/><DisplayName>Mapple Navigation</DisplayName><Description xml:space="preserve">Selected-kernel source navigation and GDB controls</Description><Tags>mapple</Tags><Categories>Other</Categories><Properties><Property Id="Microsoft.VisualStudio.Code.Engine" Value="^1.90.0"/><Property Id="Microsoft.VisualStudio.Code.ExtensionDependencies" Value="llvm-vs-code-extensions.vscode-clangd"/></Properties></Metadata>
 <Installation><InstallationTarget Id="Microsoft.VisualStudio.Code"/></Installation><Dependencies/>
 <Assets><Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json" Addressable="true"/></Assets></PackageManifest>'''
     with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
         archive.writestr('extension.vsixmanifest', manifest)
         archive.writestr('[Content_Types].xml', '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="json" ContentType="application/json"/><Default Extension="js" ContentType="application/javascript"/><Default Extension="vsixmanifest" ContentType="text/xml"/></Types>')
-        for file in ('package.json', 'extension.js'):
+        for file in ('package.json', 'extension.js', 'debug-adapter.js'):
             archive.write(source / file, 'extension/' + file)
     c.run(['code', '--install-extension', output, '--force'])
     print('Installed Mapple Navigation. Reload any already-open VS Code window once.')

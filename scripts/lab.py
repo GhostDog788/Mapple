@@ -8,7 +8,7 @@ import shutil
 import shlex
 import subprocess
 import sys
-from mapple_dev import core as c, kernels, machines, installers, runs, ui, navigation
+from mapple_dev import core as c, kernels, machines, installers, runs, ui, navigation, command_help
 
 COMMANDS = ('setup', 'kernel-create', 'kernel-import', 'kernel-enrich', 'kernel-build',
     'kernel-list', 'kernel-show', 'kernel-remove', 'machine-create', 'machine-add',
@@ -16,7 +16,7 @@ COMMANDS = ('setup', 'kernel-create', 'kernel-import', 'kernel-enrich', 'kernel-
     'machine-prepare', 'machine-start', 'machine-stop', 'machine-ssh', 'machine-remove',
     'machine-destroy', 'module-build', 'module-run', 'module-debug', 'server-build',
     'server-run', 'tui-build', 'tui-run', 'gdb-open', 'gdb-attach', 'vscode-open',
-    'vscode-prepare', 'debug-list', 'doctor', 'clean', 'navigation-prepare', 'navigation-status', 'navigation-setup')
+    'vscode-prepare', 'vscode-finish', 'debug-list', 'doctor', 'clean', 'navigation-prepare', 'navigation-status', 'navigation-setup', 'test-debugging')
 
 
 def public(value):
@@ -29,12 +29,26 @@ def public(value):
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=COMMANDS)
+    parser.add_argument('command', nargs='?', default='help', choices=('help',) + COMMANDS)
     parser.add_argument('--run')
     parser.add_argument('debugger_args', nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     extra = args.debugger_args
+    cmd = args.command
+    if cmd == 'help':
+        return command_help.show(extra[0] if extra else c.option('COMMAND'))
+    # Do not consume debugger options after an explicit `--` separator.
+    # argparse may already strip the separator from REMAINDER, so inspect argv.
+    help_args = argv[1:argv.index('--')] if '--' in argv else argv[1:]
+    if c.option('HELP') == '1' or any(arg in ('-h', '--help') for arg in help_args):
+        return command_help.show(cmd)
+    if command_help.needs_help(cmd):
+        return
+    if cmd == 'test-debugging':
+        return c.run([sys.executable, str(c.ROOT / 'scripts/tests/debugging_integration.py'),
+                      '--machine', c.option('MACHINE')])
     # The debugger wrapper passes --run after the subcommand, followed by GDB args.
     if '--run' in extra:
         index = extra.index('--run')
@@ -44,7 +58,6 @@ def main(argv=None):
         os.environ['RUN'] = args.run
     if extra and extra[0] == '--':
         extra = extra[1:]
-    cmd = args.command
     if cmd == 'setup':
         return ui.setup()
     if cmd == 'navigation-setup':
@@ -59,11 +72,14 @@ def main(argv=None):
         return kernels.import_kernel()
     if cmd == 'kernel-list':
         print('KERNEL                ARCH       RELEASE                                TIER  INSTALL  STATE       USED BY')
-        for k in c.records('kernels'):
+        entries = c.records('kernels')
+        for k in entries:
             cap = k.get('capabilities', {})
             refs = ','.join(m['name'] for m in c.records('machines') if m.get('kernel') == k['name']) or '-'
             release = k.get('release') or k.get('recipe', {}).get('version') or 'not identified'
             print(f'{k["name"]:21} {k["arch"]:10} {release:38} {str(cap.get("tier", 0)):5} {str(cap.get("installable", False)):8} {k["state"]:11} {refs}')
+        if not entries:
+            print('No kernels registered. Create a recipe with make kernel-create, or import artifacts with make kernel-import.')
         return
     if cmd.startswith('kernel-'):
         k = kernels.selected()
@@ -80,7 +96,8 @@ def main(argv=None):
     if cmd == 'machine-list':
         print('  MACHINE              KERNEL                RUNNING                      TIER  MATCH          BLOCKERS')
         selected = (c.STATE / 'active-machine').read_text().strip() if (c.STATE / 'active-machine').exists() else ''
-        for m in c.records('machines'):
+        entries = c.records('machines')
+        for m in entries:
             k = c.get('kernels', m['kernel']) if m.get('kernel') else None
             observed = m.get('observed', {})
             cap = k.get('capabilities', {}) if k else {}
@@ -89,7 +106,11 @@ def main(argv=None):
             if match == 'mismatch': blockers.append('running kernel mismatch')
             if observed.get('modules_disabled') == '1': blockers.append('module loading disabled')
             print(f'{"*" if m["name"] == selected else " "} {m["name"]:20} {m.get("kernel") or "-":21} {observed.get("release", "not inspected"):28} {str(cap.get("tier", 0)):5} {match:14} {", ".join(blockers) or "-"}')
-        print('RUNNING is the last observation; machine-inspect refreshes it without modifying the target.')
+        if not entries:
+            print('No machines registered. Create a QEMU VM with make machine-create, or register an SSH target with make machine-add.')
+            print('Run make machine-create HELP=1 or make machine-add HELP=1 for examples.')
+        else:
+            print('RUNNING is the last observation; machine-inspect refreshes it without modifying the target.')
         return
     if cmd in ('server-build', 'tui-build'):
         print(ui.app_build(cmd.split('-')[0]))
@@ -108,6 +129,8 @@ def main(argv=None):
             return ui.terminal('Mapple GDB: ' + r['machine'],
                                [sys.executable, str(c.ROOT / 'scripts/lab.py'), 'gdb-attach', '--run', r['name'], '--', '-tui'])
         return runs.attach(r, extra)
+    if cmd == 'vscode-finish':
+        return runs.finish_debug(runs.find_run())
     if cmd == 'vscode-prepare':
         r = runs.find_run()
         # Use the frozen machine connection; validate live record identities too.
@@ -203,10 +226,18 @@ def main(argv=None):
 if __name__ == '__main__':
     try:
         main()
+    except command_help.UsageError as error:
+        print('mapple dev: ' + str(error), file=sys.stderr)
+        if len(sys.argv) > 1 and sys.argv[1] in command_help.COMMANDS:
+            print(file=sys.stderr)
+            command_help.show(sys.argv[1], stream=sys.stderr)
+        sys.exit(2)
     except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
         print('mapple dev: ' + str(error), file=sys.stderr)
         if isinstance(error, subprocess.CalledProcessError) and error.stderr:
             print(error.stderr.decode(errors='replace') if isinstance(error.stderr, bytes) else error.stderr, file=sys.stderr)
+        if len(sys.argv) > 1 and sys.argv[1] in command_help.COMMANDS:
+            print(f'Command help: make {sys.argv[1]} HELP=1', file=sys.stderr)
         sys.exit(1)
     except KeyboardInterrupt:
         sys.exit(130)

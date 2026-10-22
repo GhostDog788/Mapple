@@ -30,7 +30,7 @@ parser.add_argument('--repo', type=Path, required=True)
 parser.add_argument('--resume', action='store_true')
 parser.add_argument('--keep-machines', action='store_true')
 parser.add_argument('--skip-setup', action='store_true')
-parser.add_argument('--phase', choices=('all', 'live', 'debug', 'tiers', 'switch'), default='all')
+parser.add_argument('--phase', choices=('all', 'live', 'debug', 'vscode', 'tiers', 'switch'), default='all')
 args = parser.parse_args()
 repo = args.repo.resolve()
 # This destructive acceptance fixture must never inherit another lab's state.
@@ -143,50 +143,70 @@ def vscode_test(machine='dev', minimum='kernel-source'):
     r = latest(machine)
     workspace = c.load(next(runs.root(r).glob('*.code-workspace')))
     task = workspace['tasks']['tasks'][0]
-    command([task['command'], *task['args']], 'vscode-prelaunch-' + machine, extra=task['options']['env'])
     config = workspace['launch']['configurations'][0]
+    # This lower-level test drives the Microsoft adapter directly. The real
+    # editor suite separately exercises Mapple's DAP console-control bridge.
+    config['type'] = 'cppdbg'
     config.pop('preLaunchTask')
+    config.pop('postDebugTask')
     adapter = next((Path.home() / '.vscode/extensions').glob('ms-vscode.cpptools-*/debugAdapters/bin/OpenDebugAD7'), None)
     if not adapter:
         raise RuntimeError('Install the recommended Microsoft C/C++ extension to validate the real debug adapter.')
-    with open(logs / 'cppdbg.log', 'w') as error:
-        rpc = RPC([str(adapter)], error)
-        try:
-            rpc.dap('initialize', {'adapterID': 'cppdbg', 'clientID': 'vscode', 'linesStartAt1': True, 'columnsStartAt1': True, 'pathFormat': 'path'})
-            seq = rpc.dap('launch', config, False)
-            rpc.wait(lambda m: m.get('event') == 'initialized', 60)
-            source = repo / 'kernel/src/control/commands/info/info.c'
-            bp = rpc.dap('setBreakpoints', {'source': {'path': str(source)}, 'breakpoints': [{'line': 21}]})
-            assert bp['breakpoints'][0]['verified'], bp
-            rpc.dap('configurationDone', {})
-            rpc.response(seq)
-            m = c.get('machines', machine)
-            trigger = subprocess.Popen(['go', 'test', '-tags=integration', '-count=1', '-run', '^TestIntegration_Info$', './server/internal/moduleclient'],
-                                       cwd=repo / 'user', env=target_env(m), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            event = rpc.wait(lambda m: m.get('event') == 'stopped', 40)
-            assert event['body']['reason'] == 'breakpoint', event
-            tid = event['body']['threadId']
-            frame = rpc.dap('stackTrace', {'threadId': tid, 'levels': 1})['stackFrames'][0]
-            assert frame['source']['path'] == str(source) and frame['line'] == 21, frame
-            value = rpc.dap('evaluate', {'expression': 'context->session->id', 'frameId': frame['id'], 'context': 'watch'})
-            assert value.get('result'), value
-            rpc.dap('next', {'threadId': tid})
-            rpc.wait(lambda m: m.get('event') == 'stopped', 40)
-            next_frame = rpc.dap('stackTrace', {'threadId': tid, 'levels': 1})['stackFrames'][0]
-            assert next_frame['line'] != 21, next_frame
-            rpc.dap('setBreakpoints', {'source': {'path': str(source)}, 'breakpoints': []})
-            rpc.dap('continue', {'threadId': tid})
-            output = trigger.communicate(timeout=45)[0]
-            assert trigger.returncode == 0, output
-            rpc.dap('pause', {'threadId': tid})
-            rpc.wait(lambda m: m.get('event') == 'stopped', 20)
-            rpc.dap('continue', {'threadId': tid})
-            rpc.dap('disconnect', {'terminateDebuggee': True})
-            results['vscode-' + machine + '-breakpoint-watch-step-pause-detach'] = 'PASS'
-        finally:
-            if rpc.p.poll() is None:
-                rpc.p.terminate()
-                rpc.p.wait(timeout=10)
+    for attempt in range(2):
+        command([task['command'], *task['args']], ('vscode-prelaunch-' if attempt == 0 else 'vscode-relaunch-') + machine,
+                extra=task['options']['env'])
+        with open(logs / f'cppdbg-{machine}-{attempt}.log', 'w') as error:
+            rpc = RPC([str(adapter)], error)
+            try:
+                rpc.dap('initialize', {'adapterID': 'cppdbg', 'clientID': 'vscode', 'linesStartAt1': True, 'columnsStartAt1': True, 'pathFormat': 'path'})
+                seq = rpc.dap('launch', config, False)
+                rpc.wait(lambda m: m.get('event') == 'initialized', 60)
+                source = repo / 'kernel/src/control/commands/info/info.c'
+                bp = rpc.dap('setBreakpoints', {'source': {'path': str(source)}, 'breakpoints': [{'line': 21}]})
+                assert bp['breakpoints'][0]['verified'], bp
+                rpc.dap('configurationDone', {})
+                rpc.response(seq)
+                m = c.get('machines', machine)
+                trigger = subprocess.Popen(['go', 'test', '-tags=integration', '-count=1', '-run', '^TestIntegration_Info$', './server/internal/moduleclient'],
+                                           cwd=repo / 'user', env=target_env(m), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                event = rpc.wait(lambda m: m.get('event') == 'stopped', 40)
+                assert event['body']['reason'] == 'breakpoint', event
+                tid = event['body']['threadId']
+                frame = rpc.dap('stackTrace', {'threadId': tid, 'levels': 1})['stackFrames'][0]
+                assert frame['source']['path'] == str(source) and frame['line'] == 21, frame
+                value = rpc.dap('evaluate', {'expression': 'context->session->id', 'frameId': frame['id'], 'context': 'watch'})
+                assert value.get('result'), value
+                rpc.dap('next', {'threadId': tid})
+                rpc.wait(lambda m: m.get('event') == 'stopped', 40)
+                next_frame = rpc.dap('stackTrace', {'threadId': tid, 'levels': 1})['stackFrames'][0]
+                assert next_frame['line'] != 21, next_frame
+                rpc.dap('setBreakpoints', {'source': {'path': str(source)}, 'breakpoints': []})
+                rpc.dap('continue', {'threadId': tid})
+                output = trigger.communicate(timeout=45)[0]
+                assert trigger.returncode == 0, output
+                rpc.dap('pause', {'threadId': tid})
+                rpc.wait(lambda m: m.get('event') == 'stopped', 20)
+                rpc.dap('continue', {'threadId': tid})
+                rpc.dap('disconnect', {'terminateDebuggee': True})
+                results['vscode-' + machine + '-breakpoint-watch-step-pause-detach'] = 'PASS'
+            finally:
+                if rpc.p.poll() is None:
+                    rpc.p.terminate()
+                    rpc.p.wait(timeout=10)
+        # Deliberately omit postDebugTask on the first Stop: prelaunch must
+        # recover even when VS Code/its launcher never runs cleanup.
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            current = c.get('runs', r['name'])
+            if not runs.process_identity(current['debugger_pid']):
+                break
+            time.sleep(.05)
+        else:
+            raise AssertionError('GDB did not exit after disconnect')
+    finish = workspace['tasks']['tasks'][1]
+    command([finish['command'], *finish['args']], 'vscode-post-debug-' + machine, extra=finish['options']['env'])
+    assert c.get('runs', r['name'])['status'] == 'detached'
+    results['vscode-' + machine + '-same-workspace-restart-and-cleanup'] = 'PASS'
 
 
 def navigation_test():
@@ -544,6 +564,8 @@ try:
         vscode_test()
         terminal_gdb_test()
         navigation_test()
+    elif args.phase == 'vscode':
+        vscode_test()
     elif args.phase == 'tiers':
         tier_tests()
     elif args.phase == 'switch':

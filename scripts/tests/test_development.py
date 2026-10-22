@@ -6,10 +6,12 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 import zlib
@@ -355,6 +357,27 @@ class ModelTests(unittest.TestCase):
         record = c.records('runs')[0]
         self.assertEqual(record['status'], 'failed')
 
+    def test_reloading_same_workspace_gets_a_new_load_identity(self):
+        k, m = self.kernel(), self.machine()
+        m['gdb'] = ''
+        observed = {'release': k['release'], 'arch': k['arch'], 'boot_id': 'boot', 'modules_disabled': '0'}
+        r = runs.new(m, k)
+        def build(kernel, **kwargs):
+            Path(kwargs['freeze']).write_bytes(b'unchanged module')
+        def ssh(machine, command, **kwargs):
+            output = c.digest(runs.root(r) / 'mapple.ko').encode() + b'  mapple.ko\n' if command.startswith('sha256sum ') else b''
+            return subprocess.CompletedProcess([], 0, output)
+        with patch.object(machines, 'inspect', return_value=observed), \
+             patch.object(runs, 'build', side_effect=build), patch.object(c, 'send'), \
+             patch.object(c, 'ssh', side_effect=ssh):
+            first = dict(runs.prepare(m, k, existing=r))
+            second = runs.prepare(m, k, existing=r)
+        self.assertEqual(first['name'], second['name'])
+        self.assertEqual(first['artifact_sha256'], second['artifact_sha256'])
+        self.assertEqual(first['boot_id'], second['boot_id'])
+        self.assertNotEqual(first['load_receipt'], second['load_receipt'])
+        self.assertNotEqual(first['loaded_at'], second['loaded_at'])
+
     def test_text_symbols_resolve_kaslr_without_a_linux_elf(self):
         k = self.kernel()
         symbol_map = kernels.root(k) / 'System.map'
@@ -371,10 +394,158 @@ class ModelTests(unittest.TestCase):
         m = self.machine()
         r = runs.new(m, k)
         r.update(status='detached', boot_id='boot', load_receipt='original receipt', sections={'.text': '0xffff1234'})
+        c.save(c.record('runs', r['name']), r)
         with patch.object(machines, 'inspect', return_value={'boot_id': 'boot'}), patch.object(runs, 'check_endpoint', return_value='endpoint-test'), patch.object(c, 'ssh', return_value=subprocess.CompletedProcess([], 0, b'new receipt')), patch.object(subprocess, 'Popen') as spawn:
             with self.assertRaisesRegex(RuntimeError, 'Another run'):
                 runs.attach(r)
             spawn.assert_not_called()
+
+    def test_debug_recovery_distinguishes_live_exited_and_reused_processes(self):
+        k = self.kernel()
+        m = self.machine()
+        identity = runs.process_identity(os.getpid())
+        for role in ('debugger', 'supervisor'):
+            with self.subTest(role=role):
+                r = runs.new(m, k)
+                r.update(status='debugging', **{role + '_identity': identity})
+                c.save(c.record('runs', r['name']), r)
+                with self.assertRaisesRegex(RuntimeError, 'live debugger'):
+                    runs.finish_debug(r)
+                with patch.object(c, 'ssh', side_effect=AssertionError('active session')), \
+                     patch.object(runs, 'build', side_effect=AssertionError('active ELF')):
+                    with self.assertRaisesRegex(RuntimeError, 'live debugger'):
+                        runs.prepare(m, k, True, r)
+                self.assertEqual(c.get('runs', r['name'])['status'], 'debugging')
+                # Same PID, different process start or host boot: never signal it.
+                for field in ('start_time', 'boot_id'):
+                    r[role + '_identity'] = dict(identity, **{field: 'previous-process'})
+                    c.save(c.record('runs', r['name']), r)
+                    with patch.object(os, 'kill', side_effect=AssertionError('recovery must not kill')):
+                        self.assertEqual(runs.finish_debug(r)['status'], 'detached')
+        child = subprocess.Popen(['/bin/sleep', '60'])
+        try:
+            r = runs.new(m, k)
+            r.update(status='debugging', debugger_identity=runs.process_identity(child.pid))
+            c.save(c.record('runs', r['name']), r)
+            child.kill()
+            child.wait(timeout=5)
+            self.assertIsNone(runs.process_identity(child.pid))
+            with patch.object(c, 'ssh', side_effect=AssertionError('metadata cleanup is offline')):
+                self.assertEqual(runs.finish_debug(r)['status'], 'detached')
+                self.assertEqual(runs.finish_debug(r)['status'], 'detached')
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)
+
+    def test_debug_finish_reloads_current_record_and_does_not_clobber_a_new_prepare(self):
+        r = runs.new(self.machine(), self.kernel())
+        old = dict(r, status='debugging')
+        r.update(status='prepared', load_receipt='new load')
+        c.save(c.record('runs', r['name']), r)
+        os.environ['RUN'] = r['name']
+        lab.main(['vscode-finish'])
+        self.assertEqual(runs.finish_debug(old), r)
+
+    def test_debug_recovery_refuses_when_process_identity_cannot_be_verified(self):
+        r = runs.new(self.machine(), self.kernel())
+        r.update(status='debugging', debugger_identity=runs.process_identity(os.getpid()))
+        c.save(c.record('runs', r['name']), r)
+        with patch.object(runs, 'process_identity', side_effect=PermissionError('cannot inspect process')):
+            with self.assertRaises(PermissionError):
+                runs.finish_debug(r)
+        self.assertEqual(c.get('runs', r['name'])['status'], 'debugging')
+
+    def test_automatic_gdb_selection_recovers_an_exited_session_offline(self):
+        r = runs.new(self.machine(), self.kernel())
+        r.update(status='debugging', debugger_identity={'pid': 2**30, 'start_time': '0', 'boot_id': 'past'})
+        c.save(c.record('runs', r['name']), r)
+        (c.STATE / 'active-machine').write_text('dev')
+        with patch.object(c, 'ssh', side_effect=AssertionError('selection is offline')):
+            self.assertEqual(runs.find_run()['status'], 'detached')
+
+    def test_attach_recording_failure_stops_its_child_before_releasing_locks(self):
+        r = runs.new(self.machine(), self.kernel())
+        r.update(status='prepared', boot_id='boot', load_receipt='receipt', sections={'.text': '0xffff1234'})
+        c.save(c.record('runs', r['name']), r)
+        child = subprocess.Popen(['/bin/sleep', '60'])
+        save = c.save
+        def record(path, value):
+            if value.get('status') == 'debugging' and value.get('debugger_pid'):
+                raise OSError('cannot record debugger')
+            save(path, value)
+        def ssh(machine, command, **kwargs):
+            return subprocess.CompletedProcess([], 0, b'receipt' if 'receipt' in command else b'0xffff1234')
+        try:
+            with patch.object(machines, 'inspect', return_value={'boot_id': 'boot'}), \
+                 patch.object(runs, 'check_endpoint', return_value='endpoint-test'), \
+                 patch.object(c, 'ssh', side_effect=ssh), patch.object(c, 'save', side_effect=record), \
+                 patch.object(c, 'executable', return_value='/fake/gdb'), patch.object(subprocess, 'Popen', return_value=child):
+                with self.assertRaisesRegex(OSError, 'cannot record'):
+                    runs.attach(r)
+            self.assertIsNotNone(child.poll())
+            self.assertEqual(c.get('runs', r['name'])['status'], 'detached')
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)
+
+    @unittest.skipUnless(shutil.which('gdb'), 'native GDB required')
+    def test_orphaned_gdb_keeps_locks_until_it_exits_then_run_recovers(self):
+        k, m = self.kernel(), self.machine()
+        r = runs.new(m, k)
+        r.update(status='prepared', boot_id='boot', load_receipt='receipt', sections={'.text': '0xffff1234'})
+        c.save(c.record('runs', r['name']), r)
+        ready = self.root / 'gdb-ready'
+        code = f'''
+import os, sys, subprocess
+from pathlib import Path
+from unittest.mock import patch
+sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
+from mapple_dev import core as c, machines, runs
+c.ROOT = Path({str(self.root)!r})
+def ssh(machine, command, **kwargs):
+    return subprocess.CompletedProcess([], 0, b'receipt' if 'receipt' in command else b'0xffff1234')
+with patch.object(machines, 'inspect', return_value={{'boot_id': 'boot'}}), \\
+     patch.object(runs, 'check_endpoint', return_value='endpoint-test'), patch.object(c, 'ssh', side_effect=ssh):
+    runs.attach(c.get('runs', {r['name']!r}), ['--interpreter=mi2', '-batch', '-ex',
+        {('python import pathlib, time; pathlib.Path(' + repr(str(ready)) + ').touch(); time.sleep(60)')!r}])
+'''
+        launcher = subprocess.Popen([sys.executable, '-c', code], stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                    env=dict(os.environ, MAPPLE_LAB_DIR=str(c.STATE)))
+        debugger = None
+        try:
+            deadline = time.monotonic() + 10
+            while not ready.exists():
+                if launcher.poll() is not None:
+                    self.fail(launcher.stderr.read().decode())
+                if time.monotonic() > deadline:
+                    self.fail('GDB did not complete startup')
+                time.sleep(.02)
+            debugger = c.get('runs', r['name'])['debugger_identity']
+            launcher.kill()
+            launcher.wait(timeout=5)
+            with self.assertRaisesRegex(RuntimeError, 'busy'):
+                with c.lock('run-' + r['name']):
+                    pass
+            with patch.object(c, 'ssh', side_effect=AssertionError('never SSH into a paused guest')), \
+                 patch.object(runs, 'build', side_effect=AssertionError('never overwrite an active ELF')):
+                with self.assertRaisesRegex(RuntimeError, 'busy'):
+                    runs.prepare(m, k, True, r)
+            self.assertEqual(runs.process_identity(debugger['pid']), debugger)
+            os.kill(debugger['pid'], signal.SIGKILL)
+            deadline = time.monotonic() + 5
+            while runs.process_identity(debugger['pid']) and time.monotonic() < deadline:
+                time.sleep(.02)
+            self.assertEqual(runs.finish_debug(r)['status'], 'detached')
+        finally:
+            if launcher.poll() is None:
+                launcher.kill()
+                launcher.wait(timeout=5)
+            launcher.stderr.close()
+            if debugger and runs.process_identity(debugger['pid']) == debugger:
+                os.kill(debugger['pid'], signal.SIGKILL)
 
     def test_machine_override_build_does_not_publish_editor_navigation(self):
         k = self.kernel()
@@ -410,11 +581,65 @@ class ModelTests(unittest.TestCase):
         machines.select('second')
         data = c.load(workspace)
         launch = data['launch']['configurations'][0]
+        self.assertEqual(launch['type'], 'mapple-kernel')
         run = c.load(workspace.parent / 'record.json')
         self.assertEqual(run['machine'], 'first')
         self.assertEqual(run['kernel_id'], k['id'])
         self.assertIn(run['name'], data['tasks']['tasks'][0]['args'])
         self.assertIn('gdb-wrapper', launch['miDebuggerPath'])
+        finish = data['tasks']['tasks'][1]
+        self.assertEqual(launch['postDebugTask'], finish['label'])
+        self.assertIn('vscode-finish', finish['args'])
+        self.assertIn(run['name'], finish['args'])
+
+    @unittest.skipUnless(shutil.which('gcc') and shutil.which('gdb'), 'native ELF tools required')
+    def test_kernel_gdb_helpers_load_once_with_exact_trust_and_separate_debug_info(self):
+        python = subprocess.run(['gdb', '-nx', '-q', '-batch', '-ex', 'python import gdb'], capture_output=True)
+        if python.returncode:
+            self.skipTest('GDB Python support required')
+        for kind in ('vmlinux', 'separate', 'missing', 'symbol-only'):
+            with self.subTest(kind=kind):
+                k = self.kernel(kind)
+                source = c.directory(kernels.root(k) / 'source with spaces')
+                main = c.directory(source / 'init') / 'main.c'
+                main.write_text('int start_kernel(void) { return 42; }\nint main(void) { return start_kernel(); }\n')
+                elf = source / 'vmlinux'
+                c.run(['gcc', '-g', '-no-pie', main, '-o', elf])
+                k['artifacts'].update(source='source with spaces', vmlinux='source with spaces/vmlinux')
+                if kind == 'separate':
+                    debug = kernels.root(k) / 'linux.debug'
+                    c.run(['objcopy', '--only-keep-debug', elf, debug])
+                    k['artifacts']['debug_info'] = 'linux.debug'
+                if kind == 'symbol-only':
+                    c.run(['objcopy', '--strip-debug', elf])
+                helper = c.directory(source / 'scripts/gdb') / 'vmlinux-gdb.py'
+                if kind != 'missing':
+                    helper.write_text('import gdb\n'
+                                      'gdb._mapple_helper_loads = getattr(gdb, "_mapple_helper_loads", 0) + 1\n'
+                                      'class Helper(gdb.Command):\n'
+                                      '    def __init__(self): super().__init__("lx-mapple-test", gdb.COMMAND_USER)\n'
+                                      '    def invoke(self, args, from_tty): gdb.write("HELPER_READY\\n")\n'
+                                      'Helper()\n')
+                    (source / 'vmlinux-gdb.py').symlink_to('scripts/gdb/vmlinux-gdb.py')
+                k = kernels.seal(k)
+                r = runs.new(self.machine(kernel=kind), k)
+                c.run(['gcc', '-g', '-c', main, '-o', runs.root(r) / 'mapple.ko'])
+                r.update(debug_mode='kernel-source' if kind != 'symbol-only' else 'kernel-symbol',
+                         sections={'.text': '0xffffffffc0100000'}, kernel_offset=0)
+                runs.debug_script(r, k)
+                setup = (runs.root(r) / 'debug.gdb').read_text().split('target remote')[0]
+                offline = runs.root(r) / 'offline.gdb'
+                offline.write_text(setup)
+                args = ['gdb', '-nx', '-q', '-batch', '-x', offline]
+                if kind in ('vmlinux', 'separate'):
+                    self.assertEqual([line for line in setup.splitlines() if line.startswith('add-auto-load-safe-path ')],
+                                     ['add-auto-load-safe-path ' + str(helper.resolve())])
+                    output = c.run([*args, '-ex', 'lx-mapple-test', '-ex', 'python print(gdb._mapple_helper_loads)'], capture_output=True)
+                    self.assertIn(b'HELPER_READY\n1\n', output.stdout)
+                    self.assertNotIn(b'auto-loading has been declined', output.stderr)
+                else:
+                    self.assertNotIn('add-auto-load-safe-path', setup)
+                    c.run(args, capture_output=True)
 
     @unittest.skipUnless(shutil.which('gcc') and shutil.which('gdb'), 'native ELF tools required')
     def test_module_only_debug_uses_real_elf_source_mappings_without_vmlinux(self):
