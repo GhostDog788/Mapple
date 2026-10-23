@@ -1,4 +1,5 @@
-#include <control/commands/pslist/fd.h>
+#include <control/commands/pslist/files/descriptors.h>
+#include <control/commands/pslist/files/network.h>
 
 #include <asm/unaligned.h>
 #include <linux/anon_inodes.h>
@@ -21,14 +22,8 @@
 #include <linux/string.h>
 #include <linux/time64.h>
 #include <linux/uidgid.h>
-#include <linux/user_namespace.h>
 #include <linux/uio.h>
-#include <net/net_namespace.h>
-#include <net/sock.h>
-#include <uapi/linux/in.h>
-#include <uapi/linux/in6.h>
-#include <uapi/linux/netlink.h>
-#include <uapi/linux/un.h>
+#include <linux/user_namespace.h>
 
 #define MAPPLE_PSLIST_FD_SNAPSHOT_RETRIES 3
 #define MAPPLE_PSLIST_FDINFO_INITIAL_SIZE PAGE_SIZE
@@ -46,14 +41,6 @@ struct mapple_pslist_fd_snapshot {
 	u16 status;
 };
 
-struct mapple_pslist_captured_socket {
-	struct mapple_pslist_network_record wire;
-	u8 local_address[sizeof_field(struct sockaddr_un, sun_path)];
-	u8 peer_address[sizeof_field(struct sockaddr_un, sun_path)];
-	u32 local_length;
-	u32 peer_length;
-};
-
 struct mapple_pslist_captured_fd {
 	struct mapple_pslist_fd_record generic;
 	struct mapple_pslist_fd_details_record details;
@@ -64,14 +51,6 @@ struct mapple_pslist_captured_fd {
 	u32 fdinfo_length;
 	bool socket;
 };
-
-static void mapple_pslist_encode_record(struct mapple_pslist_stream_record *record,
-					u32 size, u16 type, u64 group)
-{
-	put_unaligned_be32(size, &record->record_size);
-	put_unaligned_be16(type, &record->record_type);
-	put_unaligned_be64(group, &record->group);
-}
 
 static void mapple_pslist_encode_timespec(struct mapple_pslist_timespec *wire,
 					  const struct timespec64 *value)
@@ -337,124 +316,6 @@ static void mapple_pslist_capture_credentials(struct mapple_pslist_fd_details_re
 	read_unlock_irq(&owner->lock);
 }
 
-static void mapple_pslist_encode_endpoint(struct mapple_pslist_socket_endpoint *wire,
-					  const struct sockaddr_storage *address, int length,
-					  u8 *bytes, u32 *bytes_length, bool peer)
-{
-	if (length < 0) {
-		put_unaligned_be16(length == -ENOTCONN && peer ?
-			MAPPLE_PSLIST_SOCKET_ENDPOINT_NOT_CONNECTED :
-			MAPPLE_PSLIST_SOCKET_ENDPOINT_UNAVAILABLE, &wire->status);
-		put_unaligned_be32(-length, &wire->error);
-		return;
-	}
-	put_unaligned_be16(MAPPLE_PSLIST_SOCKET_ENDPOINT_AVAILABLE, &wire->status);
-	switch (address->ss_family) {
-	case AF_INET: {
-		const struct sockaddr_in *inet = (const struct sockaddr_in *)address;
-
-		put_unaligned_be16(MAPPLE_PSLIST_SOCKET_ENDPOINT_IPV4, &wire->type);
-		put_unaligned_be16(ntohs(inet->sin_port), &wire->port);
-		memcpy(bytes, &inet->sin_addr, sizeof(inet->sin_addr));
-		*bytes_length = sizeof(inet->sin_addr);
-		break;
-	}
-	case AF_INET6: {
-		const struct sockaddr_in6 *inet6 = (const struct sockaddr_in6 *)address;
-
-		put_unaligned_be16(MAPPLE_PSLIST_SOCKET_ENDPOINT_IPV6, &wire->type);
-		put_unaligned_be16(ntohs(inet6->sin6_port), &wire->port);
-		put_unaligned_be32(ntohl(inet6->sin6_flowinfo), &wire->flow_info);
-		put_unaligned_be32(inet6->sin6_scope_id, &wire->scope_id);
-		memcpy(bytes, &inet6->sin6_addr, sizeof(inet6->sin6_addr));
-		*bytes_length = sizeof(inet6->sin6_addr);
-		break;
-	}
-	case AF_UNIX: {
-		const struct sockaddr_un *unix_address = (const struct sockaddr_un *)address;
-		size_t offset = offsetof(struct sockaddr_un, sun_path);
-		size_t available = length > offset ? length - offset : 0;
-
-		available = min_t(size_t, available, sizeof(unix_address->sun_path));
-		put_unaligned_be16(MAPPLE_PSLIST_SOCKET_ENDPOINT_UNIX, &wire->type);
-		if (available && !unix_address->sun_path[0])
-			put_unaligned_be16(MAPPLE_PSLIST_SOCKET_ENDPOINT_ABSTRACT, &wire->flags);
-		memcpy(bytes, unix_address->sun_path, available);
-		*bytes_length = available;
-		break;
-	}
-	case AF_NETLINK: {
-		const struct sockaddr_nl *netlink = (const struct sockaddr_nl *)address;
-
-		put_unaligned_be16(MAPPLE_PSLIST_SOCKET_ENDPOINT_NETLINK, &wire->type);
-		put_unaligned_be32(netlink->nl_pid, &wire->netlink_pid);
-		put_unaligned_be32(netlink->nl_groups, &wire->netlink_groups);
-		break;
-	}
-	default:
-		put_unaligned_be16(MAPPLE_PSLIST_SOCKET_ENDPOINT_UNSUPPORTED, &wire->status);
-		break;
-	}
-	put_unaligned_be32(*bytes_length, &wire->address_length);
-}
-
-static void mapple_pslist_capture_socket(struct mapple_pslist_captured_fd *captured,
-					 struct file *file, u64 object_id, u32 fd)
-{
-	struct mapple_pslist_captured_socket *captured_socket = &captured->network;
-	struct mapple_pslist_socket_data *wire = &captured_socket->wire.socket;
-	struct sockaddr_storage address;
-	struct socket *socket = sock_from_file(file);
-	struct sock *sk;
-	int length;
-
-	if (!socket)
-		return;
-	captured->socket = true;
-	put_unaligned_be64(object_id, &captured_socket->wire.object_id);
-	put_unaligned_be32(fd, &captured_socket->wire.fd);
-	put_unaligned_be16(socket->type, &wire->type);
-	put_unaligned_be16(socket->state, &wire->socket_state);
-	sk = READ_ONCE(socket->sk);
-	if (sk) {
-		put_unaligned_be16(READ_ONCE(sk->sk_family), &wire->family);
-		put_unaligned_be16(READ_ONCE(sk->sk_protocol), &wire->protocol);
-		put_unaligned_be16(READ_ONCE(sk->sk_state), &wire->protocol_state);
-		put_unaligned_be16(READ_ONCE(sk->sk_shutdown), &wire->shutdown);
-		put_unaligned_be32(READ_ONCE(sk->sk_err), &wire->error);
-		put_unaligned_be32(READ_ONCE(sk->sk_err_soft), &wire->soft_error);
-		put_unaligned_be32(READ_ONCE(sk->sk_bound_dev_if), &wire->bound_device);
-		put_unaligned_be32(READ_ONCE(sk->sk_mark), &wire->mark);
-		put_unaligned_be32(READ_ONCE(sk->sk_priority), &wire->priority);
-		put_unaligned_be32(from_kuid_munged(&init_user_ns, sock_i_uid(sk)), &wire->uid);
-		put_unaligned_be32(sock_net(sk)->ns.inum, &wire->network_namespace);
-		put_unaligned_be32(READ_ONCE(sk->sk_rcvbuf), &wire->receive_buffer);
-		put_unaligned_be32(READ_ONCE(sk->sk_sndbuf), &wire->send_buffer);
-		put_unaligned_be32(sk_rmem_alloc_get(sk), &wire->receive_queued);
-		put_unaligned_be32(sk_wmem_alloc_get(sk), &wire->send_queued);
-		put_unaligned_be32(atomic_read(&sk->sk_drops), &wire->drops);
-	}
-	memset(&address, 0, sizeof(address));
-	length = kernel_getsockname(socket, (struct sockaddr *)&address);
-	mapple_pslist_encode_endpoint(&wire->local, &address, length,
-				      captured_socket->local_address,
-				      &captured_socket->local_length, false);
-	memset(&address, 0, sizeof(address));
-	length = kernel_getpeername(socket, (struct sockaddr *)&address);
-	mapple_pslist_encode_endpoint(&wire->peer, &address, length,
-				      captured_socket->peer_address,
-				      &captured_socket->peer_length, true);
-	put_unaligned_be32(captured_socket->local_length,
-			   &captured_socket->wire.local_address_length);
-	put_unaligned_be32(captured_socket->peer_length,
-			   &captured_socket->wire.peer_address_length);
-	mapple_pslist_encode_record(&captured_socket->wire.record,
-				    sizeof(captured_socket->wire) +
-				    captured_socket->local_length + captured_socket->peer_length,
-				    MAPPLE_PSLIST_STREAM_NETWORK,
-				    MAPPLE_PSLIST_GROUP_NETWORK);
-}
-
 static ssize_t mapple_pslist_read_fdinfo_file(struct file *file, void *buffer,
 					       size_t size, loff_t *position)
 {
@@ -594,8 +455,8 @@ static void mapple_pslist_capture_fd(struct mapple_pslist_captured_fd *captured,
 					    MAPPLE_PSLIST_GROUP_FDS_DETAILS);
 	}
 	if (groups & MAPPLE_PSLIST_GROUP_NETWORK)
-		mapple_pslist_capture_socket(captured, file, network_object_id,
-					     reference->fd);
+		captured->socket = mapple_pslist_capture_socket(&captured->network, file,
+								network_object_id, reference->fd);
 }
 
 static void mapple_pslist_release_captured_fd(struct mapple_pslist_captured_fd *captured)
@@ -604,71 +465,33 @@ static void mapple_pslist_release_captured_fd(struct mapple_pslist_captured_fd *
 	kvfree(captured->fdinfo);
 }
 
-static int mapple_pslist_write_captured_fd(struct mapple_command_context *context,
+static int mapple_pslist_write_captured_fd(struct mapple_pslist_writer *writer,
 					   const struct mapple_pslist_captured_fd *captured,
 					   u64 groups)
 {
 	int ret;
 
-	ret = mapple_command_write(context, &captured->generic, sizeof(captured->generic));
+	ret = mapple_pslist_write(writer, &captured->generic, sizeof(captured->generic));
 	if (!ret)
-		ret = mapple_command_write(context, captured->path, captured->path_length);
+		ret = mapple_pslist_write(writer, captured->path, captured->path_length);
 	if (ret)
 		return ret;
 	if (groups & MAPPLE_PSLIST_GROUP_FDS_DETAILS) {
-		ret = mapple_command_write(context, &captured->details,
-					   sizeof(captured->details));
+		ret = mapple_pslist_write(writer, &captured->details, sizeof(captured->details));
 		if (!ret)
-			ret = mapple_command_write(context, captured->fdinfo,
-						   captured->fdinfo_length);
+			ret = mapple_pslist_write(writer, captured->fdinfo,
+						  captured->fdinfo_length);
 		if (ret)
 			return ret;
 	}
 	if (!(groups & MAPPLE_PSLIST_GROUP_NETWORK) || !captured->socket)
 		return 0;
-	ret = mapple_command_write(context, &captured->network.wire,
-				   sizeof(captured->network.wire));
-	if (!ret)
-		ret = mapple_command_write(context, captured->network.local_address,
-					   captured->network.local_length);
-	if (!ret)
-		ret = mapple_command_write(context, captured->network.peer_address,
-					   captured->network.peer_length);
-	return ret;
+	return mapple_pslist_write_socket(writer, &captured->network);
 }
 
-static int mapple_pslist_write_object_begin(struct mapple_command_context *context,
-					    u64 object_id, u64 group)
-{
-	struct mapple_pslist_object_begin begin = { 0 };
-
-	mapple_pslist_encode_record(&begin.record, sizeof(begin),
-				    MAPPLE_PSLIST_STREAM_OBJECT_BEGIN, group);
-	put_unaligned_be64(object_id, &begin.object_id);
-	put_unaligned_be16(MAPPLE_PSLIST_OBJECT_FILES, &begin.object_type);
-	return mapple_command_write(context, &begin, sizeof(begin));
-}
-
-static int mapple_pslist_write_object_end(struct mapple_command_context *context,
-					  u64 object_id, u64 group, u16 status,
-					  u32 count)
-{
-	struct mapple_pslist_object_end end = { 0 };
-
-	mapple_pslist_encode_record(&end.record, sizeof(end),
-				    MAPPLE_PSLIST_STREAM_OBJECT_END, group);
-	put_unaligned_be64(object_id, &end.object_id);
-	put_unaligned_be16(MAPPLE_PSLIST_OBJECT_FILES, &end.object_type);
-	put_unaligned_be16(status, &end.status);
-	put_unaligned_be32(count, &end.record_count);
-	return mapple_command_write(context, &end, sizeof(end));
-}
-
-int mapple_pslist_write_files_objects(struct mapple_command_context *context,
-				      struct task_struct *task,
-				      struct files_struct *expected_files,
-				      u64 fds_object_id, u64 network_object_id,
-				      u64 groups, u32 *object_count, bool *partial)
+int mapple_pslist_write_files_objects(struct mapple_pslist_writer *writer, struct task_struct *task,
+				      struct files_struct *expected_files, u64 fds_object_id,
+				      u64 network_object_id, u64 groups)
 {
 	struct mapple_pslist_fd_snapshot snapshot;
 	struct mapple_pslist_captured_fd *captured;
@@ -680,18 +503,17 @@ int mapple_pslist_write_files_objects(struct mapple_command_context *context,
 	if (ret)
 		return ret;
 	if (snapshot.status != MAPPLE_PSLIST_OBJECT_COMPLETE)
-		*partial = true;
-	ret = mapple_pslist_write_object_begin(context, fds_object_id,
-					      MAPPLE_PSLIST_GROUP_FDS);
+		writer->partial = true;
+	ret = mapple_pslist_write_object_begin(writer, fds_object_id, MAPPLE_PSLIST_OBJECT_FILES,
+					       MAPPLE_PSLIST_GROUP_FDS);
 	if (ret)
 		goto release_snapshot;
-	++*object_count;
 	if (groups & MAPPLE_PSLIST_GROUP_NETWORK) {
-		ret = mapple_pslist_write_object_begin(context, network_object_id,
-					       MAPPLE_PSLIST_GROUP_NETWORK);
+		ret = mapple_pslist_write_object_begin(writer, network_object_id,
+						       MAPPLE_PSLIST_OBJECT_FILES,
+						       MAPPLE_PSLIST_GROUP_NETWORK);
 		if (ret)
 			goto release_snapshot;
-		++*object_count;
 	}
 	captured = kmalloc(sizeof(*captured), GFP_KERNEL);
 	if (!captured) {
@@ -699,23 +521,23 @@ int mapple_pslist_write_files_objects(struct mapple_command_context *context,
 		goto release_snapshot;
 	}
 	for (index = 0; index < snapshot.count; ++index) {
-		mapple_pslist_capture_fd(captured, task, fds_object_id,
-					 network_object_id, groups,
+		mapple_pslist_capture_fd(captured, task, fds_object_id, network_object_id, groups,
 					 &snapshot.entries[index]);
-		ret = mapple_pslist_write_captured_fd(context, captured, groups);
+		ret = mapple_pslist_write_captured_fd(writer, captured, groups);
 		if (captured->socket)
 			++network_count;
 		mapple_pslist_release_captured_fd(captured);
 		if (ret)
 			goto free_captured;
 	}
-	ret = mapple_pslist_write_object_end(context, fds_object_id,
-					    MAPPLE_PSLIST_GROUP_FDS,
-					     snapshot.status, snapshot.count);
+	ret = mapple_pslist_write_object_end(writer, fds_object_id, MAPPLE_PSLIST_OBJECT_FILES,
+					     MAPPLE_PSLIST_GROUP_FDS, snapshot.status, 0,
+					     snapshot.count);
 	if (!ret && (groups & MAPPLE_PSLIST_GROUP_NETWORK))
-		ret = mapple_pslist_write_object_end(context, network_object_id,
-					     MAPPLE_PSLIST_GROUP_NETWORK,
-					     snapshot.status, network_count);
+		ret = mapple_pslist_write_object_end(writer, network_object_id,
+						     MAPPLE_PSLIST_OBJECT_FILES,
+						     MAPPLE_PSLIST_GROUP_NETWORK, snapshot.status,
+						     0, network_count);
 
 free_captured:
 	kfree(captured);

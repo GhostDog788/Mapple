@@ -1,15 +1,8 @@
-#include <control/commands/pslist/elf.h>
+#include <control/commands/pslist/elf/parser.h>
 
 #include <asm/unaligned.h>
 #include <linux/elf.h>
-#include <linux/errno.h>
-#include <linux/file.h>
-#include <linux/fs.h>
-#include <linux/kdev_t.h>
 #include <linux/slab.h>
-#include <linux/stat.h>
-#include <linux/string.h>
-#include <linux/time64.h>
 
 #define MAPPLE_ELF_EI_ABI_VERSION 8
 #define MAPPLE_ELF_SHN_XINDEX 0xffff
@@ -18,14 +11,6 @@
 #define MAPPLE_ELF_STV_PROTECTED 3
 #define MAPPLE_ELF_NT_GNU_BUILD_ID 3
 
-struct mapple_pslist_elf_file {
-	struct hlist_node hash_node;
-	struct list_head order_node;
-	struct inode *inode;
-	struct file *file;
-	u64 object_id;
-};
-
 struct mapple_pslist_elf_section {
 	u32 type;
 	u32 link;
@@ -33,51 +18,6 @@ struct mapple_pslist_elf_section {
 	u64 size;
 	u64 entry_size;
 };
-
-struct mapple_pslist_elf_string {
-	u16 kind;
-	u32 length;
-	u8 *bytes;
-};
-
-struct mapple_pslist_elf_symbol {
-	u16 kind;
-	u8 binding;
-	u8 type;
-	u8 visibility;
-	u16 section_index;
-	u32 name_length;
-	u8 *name;
-	u64 value;
-	u64 size;
-};
-
-struct mapple_pslist_elf_capture {
-	struct mapple_pslist_elf_metadata_record metadata;
-	struct mapple_pslist_elf_string *strings;
-	struct mapple_pslist_elf_symbol *symbols;
-	struct mapple_pslist_elf_section *sections;
-	u32 string_count;
-	u32 string_capacity;
-	u32 symbol_count;
-	u32 symbol_capacity;
-	u32 import_count;
-	u32 export_count;
-	u32 section_count;
-	u8 elf_class;
-	u8 data_encoding;
-	u16 status;
-	u32 error;
-	u64 file_size;
-};
-
-static void mapple_pslist_encode_record(struct mapple_pslist_stream_record *record,
-					u32 size, u16 type, u64 group)
-{
-	put_unaligned_be32(size, &record->record_size);
-	put_unaligned_be16(type, &record->record_type);
-	put_unaligned_be64(group, &record->group);
-}
 
 static int mapple_pslist_elf_read(struct file *file, u64 offset, void *buffer,
 				   size_t size, u64 file_size)
@@ -746,22 +686,19 @@ static int mapple_pslist_elf_capture_sections(struct file *file,
 	return 0;
 }
 
-static void mapple_pslist_elf_release_capture(
-	struct mapple_pslist_elf_capture *capture)
+int mapple_pslist_elf_parse(struct file *file, struct mapple_pslist_elf_capture *capture)
 {
-	u32 index;
+	int ret;
 
-	for (index = 0; index < capture->string_count; ++index)
-		kfree(capture->strings[index].bytes);
-	for (index = 0; index < capture->symbol_count; ++index)
-		kfree(capture->symbols[index].name);
-	kfree(capture->strings);
-	kfree(capture->symbols);
-	kvfree(capture->sections);
+	ret = mapple_pslist_elf_capture_header(file, capture);
+	if (!ret)
+		ret = mapple_pslist_elf_capture_interpreter(file, capture);
+	if (!ret)
+		ret = mapple_pslist_elf_capture_sections(file, capture);
+	return ret;
 }
 
-static void mapple_pslist_elf_discard_details(
-	struct mapple_pslist_elf_capture *capture)
+void mapple_pslist_elf_discard_details(struct mapple_pslist_elf_capture *capture)
 {
 	u32 index;
 
@@ -774,273 +711,15 @@ static void mapple_pslist_elf_discard_details(
 	capture->strings = NULL;
 	capture->symbols = NULL;
 	capture->string_count = 0;
+	capture->string_capacity = 0;
 	capture->symbol_count = 0;
+	capture->symbol_capacity = 0;
 	capture->import_count = 0;
 	capture->export_count = 0;
 }
 
-static bool mapple_pslist_elf_stat_changed(const struct kstat *before,
-					    const struct kstat *after)
+void mapple_pslist_elf_release_capture(struct mapple_pslist_elf_capture *capture)
 {
-	return before->dev != after->dev || before->ino != after->ino ||
-	       before->size != after->size ||
-	       !timespec64_equal(&before->mtime, &after->mtime) ||
-	       !timespec64_equal(&before->ctime, &after->ctime);
-}
-
-static int mapple_pslist_elf_capture_file(struct mapple_pslist_elf_file *entry,
-					   struct mapple_pslist_elf_capture *capture)
-{
-	struct kstat before;
-	struct kstat after;
-	int ret;
-
-	ret = vfs_getattr_nosec(&entry->file->f_path, &before, STATX_BASIC_STATS,
-				 AT_STATX_DONT_SYNC);
-	if (ret)
-		goto unavailable;
-	if (before.size < 0) {
-		ret = -ENOEXEC;
-		goto unavailable;
-	}
-	capture->file_size = before.size;
-	put_unaligned_be32(MAJOR(before.dev), &capture->metadata.file_device_major);
-	put_unaligned_be32(MINOR(before.dev), &capture->metadata.file_device_minor);
-	put_unaligned_be32(before.mode, &capture->metadata.file_mode);
-	put_unaligned_be64(before.ino, &capture->metadata.file_inode);
-	put_unaligned_be64(before.size, &capture->metadata.file_size);
-	put_unaligned_be64((u64)timespec64_to_ns(&before.mtime),
-			   &capture->metadata.file_mtime_ns);
-	put_unaligned_be64((u64)timespec64_to_ns(&before.ctime),
-			   &capture->metadata.file_ctime_ns);
-	put_unaligned_be64(file_inode(entry->file)->i_sb->s_magic,
-			   &capture->metadata.file_filesystem_magic);
-	ret = mapple_pslist_elf_capture_header(entry->file, capture);
-	if (!ret)
-		ret = mapple_pslist_elf_capture_interpreter(entry->file, capture);
-	if (!ret)
-		ret = mapple_pslist_elf_capture_sections(entry->file, capture);
-	if (ret == -ENOMEM)
-		return ret;
-	if (ret)
-		goto capture_error;
-	ret = vfs_getattr_nosec(&entry->file->f_path, &after, STATX_BASIC_STATS,
-				 AT_STATX_DONT_SYNC);
-	if (ret)
-		goto unavailable;
-	if (mapple_pslist_elf_stat_changed(&before, &after)) {
-		capture->status = MAPPLE_PSLIST_OBJECT_RACED;
-		capture->error = EAGAIN;
-		return 0;
-	}
-	capture->status = MAPPLE_PSLIST_OBJECT_COMPLETE;
-	return 0;
-
-capture_error:
-	capture->status = ret == -E2BIG ? MAPPLE_PSLIST_OBJECT_TOO_LARGE :
-					       MAPPLE_PSLIST_OBJECT_UNAVAILABLE;
-	capture->error = -ret;
-	return 0;
-
-unavailable:
-	if (ret == -ENOMEM)
-		return ret;
-	capture->status = MAPPLE_PSLIST_OBJECT_UNAVAILABLE;
-	capture->error = -ret;
-	return 0;
-}
-
-void mapple_pslist_elf_registry_init(struct mapple_pslist_elf_registry *registry)
-{
-	hash_init(registry->files);
-	INIT_LIST_HEAD(&registry->order);
-	registry->next_object_id = 1;
-}
-
-void mapple_pslist_elf_registry_release(struct mapple_pslist_elf_registry *registry)
-{
-	struct mapple_pslist_elf_file *entry;
-	struct mapple_pslist_elf_file *temporary;
-
-	list_for_each_entry_safe(entry, temporary, &registry->order, order_node) {
-		hash_del(&entry->hash_node);
-		list_del(&entry->order_node);
-		fput(entry->file);
-		kfree(entry);
-	}
-}
-
-int mapple_pslist_elf_observe_file(struct mapple_pslist_elf_registry *registry,
-				    struct file *file, u64 *object_id)
-{
-	struct mapple_pslist_elf_file *entry;
-	struct inode *inode = file_inode(file);
-	loff_t position = 0;
-	u8 magic[SELFMAG];
-	ssize_t read;
-
-	*object_id = 0;
-	if (!S_ISREG(inode->i_mode))
-		return 0;
-	hash_for_each_possible(registry->files, entry, hash_node,
-			       (unsigned long)inode) {
-		if (entry->inode == inode) {
-			*object_id = entry->object_id;
-			return 0;
-		}
-	}
-	read = kernel_read(file, magic, sizeof(magic), &position);
-	if (read < 0)
-		return read;
-	if (read != sizeof(magic) || memcmp(magic, ELFMAG, SELFMAG))
-		return 0;
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
-	if (!entry)
-		return -ENOMEM;
-	get_file(file);
-	entry->file = file;
-	entry->inode = inode;
-	entry->object_id = registry->next_object_id++;
-	hash_add(registry->files, &entry->hash_node, (unsigned long)inode);
-	list_add_tail(&entry->order_node, &registry->order);
-	*object_id = entry->object_id;
-	return 0;
-}
-
-static int mapple_pslist_elf_write_begin(struct mapple_command_context *context,
-					  u64 object_id)
-{
-	struct mapple_pslist_object_begin begin = { 0 };
-
-	mapple_pslist_encode_record(&begin.record, sizeof(begin),
-				    MAPPLE_PSLIST_STREAM_OBJECT_BEGIN,
-				    MAPPLE_PSLIST_GROUP_ELF);
-	put_unaligned_be64(object_id, &begin.object_id);
-	put_unaligned_be16(MAPPLE_PSLIST_OBJECT_ELF_FILE, &begin.object_type);
-	return mapple_command_write(context, &begin, sizeof(begin));
-}
-
-static int mapple_pslist_elf_write_string(struct mapple_command_context *context,
-					   u64 object_id, u32 index,
-					   const struct mapple_pslist_elf_string *string)
-{
-	struct mapple_pslist_elf_string_record record = { 0 };
-	int ret;
-
-	mapple_pslist_encode_record(&record.record, sizeof(record) + string->length,
-				    MAPPLE_PSLIST_STREAM_ELF_STRING,
-				    MAPPLE_PSLIST_GROUP_ELF);
-	put_unaligned_be64(object_id, &record.object_id);
-	put_unaligned_be32(index + 1, &record.string_index);
-	put_unaligned_be16(string->kind, &record.string_kind);
-	put_unaligned_be32(string->length, &record.byte_length);
-	ret = mapple_command_write(context, &record, sizeof(record));
-	if (!ret)
-		ret = mapple_command_write(context, string->bytes, string->length);
-	return ret;
-}
-
-static int mapple_pslist_elf_write_symbol(struct mapple_command_context *context,
-					   u64 object_id, u32 index,
-					   const struct mapple_pslist_elf_symbol *symbol)
-{
-	struct mapple_pslist_elf_symbol_record record = { 0 };
-	int ret;
-
-	mapple_pslist_encode_record(&record.record, sizeof(record) + symbol->name_length,
-				    MAPPLE_PSLIST_STREAM_ELF_SYMBOL,
-				    MAPPLE_PSLIST_GROUP_ELF);
-	put_unaligned_be64(object_id, &record.object_id);
-	put_unaligned_be32(index + 1, &record.symbol_index);
-	put_unaligned_be16(symbol->kind, &record.symbol_kind);
-	record.binding = symbol->binding;
-	record.symbol_type = symbol->type;
-	record.visibility = symbol->visibility;
-	put_unaligned_be16(symbol->section_index, &record.section_index);
-	put_unaligned_be32(symbol->name_length, &record.name_length);
-	put_unaligned_be64(symbol->value, &record.value);
-	put_unaligned_be64(symbol->size, &record.size);
-	ret = mapple_command_write(context, &record, sizeof(record));
-	if (!ret)
-		ret = mapple_command_write(context, symbol->name, symbol->name_length);
-	return ret;
-}
-
-static int mapple_pslist_elf_write_end(struct mapple_command_context *context,
-					u64 object_id, u16 status, u32 error,
-					u32 record_count)
-{
-	struct mapple_pslist_object_end end = { 0 };
-
-	mapple_pslist_encode_record(&end.record, sizeof(end),
-				    MAPPLE_PSLIST_STREAM_OBJECT_END,
-				    MAPPLE_PSLIST_GROUP_ELF);
-	put_unaligned_be64(object_id, &end.object_id);
-	put_unaligned_be16(MAPPLE_PSLIST_OBJECT_ELF_FILE, &end.object_type);
-	put_unaligned_be16(status, &end.status);
-	put_unaligned_be32(error, &end.error_code);
-	put_unaligned_be32(record_count, &end.record_count);
-	return mapple_command_write(context, &end, sizeof(end));
-}
-
-static int mapple_pslist_write_elf_object(struct mapple_command_context *context,
-					   struct mapple_pslist_elf_file *entry,
-					   u32 *object_count, bool *partial)
-{
-	struct mapple_pslist_elf_capture capture = { 0 };
-	u32 index;
-	int ret;
-
-	put_unaligned_be64(entry->object_id, &capture.metadata.object_id);
-	ret = mapple_pslist_elf_capture_file(entry, &capture);
-	if (ret)
-		goto release;
-	if (capture.status != MAPPLE_PSLIST_OBJECT_COMPLETE) {
-		*partial = true;
-		mapple_pslist_elf_discard_details(&capture);
-	}
-	put_unaligned_be32(capture.string_count,
-			   &capture.metadata.string_record_count);
-	put_unaligned_be32(capture.symbol_count,
-			   &capture.metadata.symbol_record_count);
-	put_unaligned_be32(capture.import_count, &capture.metadata.import_count);
-	put_unaligned_be32(capture.export_count, &capture.metadata.export_count);
-	mapple_pslist_encode_record(&capture.metadata.record, sizeof(capture.metadata),
-				    MAPPLE_PSLIST_STREAM_ELF_METADATA,
-				    MAPPLE_PSLIST_GROUP_ELF);
-	ret = mapple_pslist_elf_write_begin(context, entry->object_id);
-	if (ret)
-		goto release;
-	++*object_count;
-	ret = mapple_command_write(context, &capture.metadata, sizeof(capture.metadata));
-	for (index = 0; !ret && index < capture.string_count; ++index)
-		ret = mapple_pslist_elf_write_string(
-			context, entry->object_id, index, &capture.strings[index]);
-	for (index = 0; !ret && index < capture.symbol_count; ++index)
-		ret = mapple_pslist_elf_write_symbol(
-			context, entry->object_id, index, &capture.symbols[index]);
-	if (!ret)
-		ret = mapple_pslist_elf_write_end(
-			context, entry->object_id, capture.status, capture.error,
-			1 + capture.string_count + capture.symbol_count);
-
-release:
-	mapple_pslist_elf_release_capture(&capture);
-	return ret;
-}
-
-int mapple_pslist_write_elf_objects(struct mapple_command_context *context,
-				     struct mapple_pslist_elf_registry *registry,
-				     u32 *object_count, bool *partial)
-{
-	struct mapple_pslist_elf_file *entry;
-	int ret = 0;
-
-	list_for_each_entry(entry, &registry->order, order_node) {
-		ret = mapple_pslist_write_elf_object(
-			context, entry, object_count, partial);
-		if (ret)
-			break;
-	}
-	return ret;
+	mapple_pslist_elf_discard_details(capture);
+	kvfree(capture->sections);
 }

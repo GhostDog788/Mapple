@@ -1,16 +1,8 @@
-#include <control/commands/pslist/resources.h>
+#include <control/commands/pslist/task/resources.h>
 
 #include <asm/unaligned.h>
 #include <linux/mm.h>
 #include <linux/sched/cputime.h>
-
-static void mapple_pslist_encode_record(struct mapple_pslist_stream_record *record,
-					u32 size, u16 type, u64 group)
-{
-	put_unaligned_be32(size, &record->record_size);
-	put_unaligned_be16(type, &record->record_type);
-	put_unaligned_be64(group, &record->group);
-}
 
 static void mapple_pslist_capture_cpu(struct mapple_pslist_resources_record *wire,
 				       struct task_struct *task)
@@ -88,37 +80,8 @@ static void mapple_pslist_capture_memory(struct mapple_pslist_resources_record *
 	put_unaligned_be16(MAPPLE_PSLIST_DATA_AVAILABLE, &wire->memory_status);
 }
 
-static int mapple_pslist_write_object_begin(struct mapple_command_context *context,
-					     u64 object_id)
-{
-	struct mapple_pslist_object_begin begin = { 0 };
-
-	mapple_pslist_encode_record(&begin.record, sizeof(begin),
-				    MAPPLE_PSLIST_STREAM_OBJECT_BEGIN,
-				    MAPPLE_PSLIST_GROUP_RESOURCES);
-	put_unaligned_be64(object_id, &begin.object_id);
-	put_unaligned_be16(MAPPLE_PSLIST_OBJECT_TASK, &begin.object_type);
-	return mapple_command_write(context, &begin, sizeof(begin));
-}
-
-static int mapple_pslist_write_object_end(struct mapple_command_context *context,
-					   u64 object_id)
-{
-	struct mapple_pslist_object_end end = { 0 };
-
-	mapple_pslist_encode_record(&end.record, sizeof(end),
-				    MAPPLE_PSLIST_STREAM_OBJECT_END,
-				    MAPPLE_PSLIST_GROUP_RESOURCES);
-	put_unaligned_be64(object_id, &end.object_id);
-	put_unaligned_be16(MAPPLE_PSLIST_OBJECT_TASK, &end.object_type);
-	put_unaligned_be16(MAPPLE_PSLIST_OBJECT_COMPLETE, &end.status);
-	put_unaligned_be32(1, &end.record_count);
-	return mapple_command_write(context, &end, sizeof(end));
-}
-
-int mapple_pslist_write_resources_object(struct mapple_command_context *context,
-					  struct task_struct *task, u64 object_id,
-					  u32 *object_count)
+int mapple_pslist_write_resources_object(struct mapple_pslist_writer *writer,
+					 struct task_struct *task, u64 object_id)
 {
 	struct mapple_pslist_resources_record wire = { 0 };
 	int ret;
@@ -128,15 +91,16 @@ int mapple_pslist_write_resources_object(struct mapple_command_context *context,
 	mapple_pslist_capture_io(&wire, task);
 	mapple_pslist_capture_memory(&wire, task);
 	put_unaligned_be16(MAPPLE_PSLIST_DATA_UNSUPPORTED, &wire.network_status);
-	mapple_pslist_encode_record(&wire.record, sizeof(wire),
-				    MAPPLE_PSLIST_STREAM_RESOURCES,
+	mapple_pslist_encode_record(&wire.record, sizeof(wire), MAPPLE_PSLIST_STREAM_RESOURCES,
 				    MAPPLE_PSLIST_GROUP_RESOURCES);
-	ret = mapple_pslist_write_object_begin(context, object_id);
+	ret = mapple_pslist_write_object_begin(writer, object_id, MAPPLE_PSLIST_OBJECT_TASK,
+					       MAPPLE_PSLIST_GROUP_RESOURCES);
 	if (ret)
 		return ret;
-	++*object_count;
-	ret = mapple_command_write(context, &wire, sizeof(wire));
+	ret = mapple_pslist_write(writer, &wire, sizeof(wire));
 	if (!ret)
-		ret = mapple_pslist_write_object_end(context, object_id);
+		ret = mapple_pslist_write_object_end(writer, object_id, MAPPLE_PSLIST_OBJECT_TASK,
+						     MAPPLE_PSLIST_GROUP_RESOURCES,
+						     MAPPLE_PSLIST_OBJECT_COMPLETE, 0, 1);
 	return ret;
 }

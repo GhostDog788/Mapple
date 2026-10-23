@@ -1,4 +1,4 @@
-#include <control/commands/pslist/security.h>
+#include <control/commands/pslist/task/security.h>
 
 #include <asm/unaligned.h>
 #include <linux/capability.h>
@@ -66,42 +66,6 @@ void mapple_pslist_capture_security_metadata(
 	metadata->lsm_provider_length = strlen(provider);
 	memcpy(metadata->lsm_provider, provider, metadata->lsm_provider_length);
 	metadata->lsm_provider_status = MAPPLE_PSLIST_DATA_AVAILABLE;
-}
-
-static void mapple_pslist_encode_record(struct mapple_pslist_stream_record *record,
-					u32 size, u16 type, u64 group)
-{
-	put_unaligned_be32(size, &record->record_size);
-	put_unaligned_be16(type, &record->record_type);
-	put_unaligned_be64(group, &record->group);
-}
-
-static int mapple_pslist_write_object_begin(struct mapple_command_context *context,
-					    u64 object_id)
-{
-	struct mapple_pslist_object_begin begin = { 0 };
-
-	mapple_pslist_encode_record(&begin.record, sizeof(begin),
-				    MAPPLE_PSLIST_STREAM_OBJECT_BEGIN,
-				    MAPPLE_PSLIST_GROUP_SECURITY);
-	put_unaligned_be64(object_id, &begin.object_id);
-	put_unaligned_be16(MAPPLE_PSLIST_OBJECT_TASK, &begin.object_type);
-	return mapple_command_write(context, &begin, sizeof(begin));
-}
-
-static int mapple_pslist_write_object_end(struct mapple_command_context *context,
-					  u64 object_id)
-{
-	struct mapple_pslist_object_end end = { 0 };
-
-	mapple_pslist_encode_record(&end.record, sizeof(end),
-				    MAPPLE_PSLIST_STREAM_OBJECT_END,
-				    MAPPLE_PSLIST_GROUP_SECURITY);
-	put_unaligned_be64(object_id, &end.object_id);
-	put_unaligned_be16(MAPPLE_PSLIST_OBJECT_TASK, &end.object_type);
-	put_unaligned_be16(MAPPLE_PSLIST_OBJECT_COMPLETE, &end.status);
-	put_unaligned_be32(1, &end.record_count);
-	return mapple_command_write(context, &end, sizeof(end));
 }
 
 static void mapple_pslist_capture_dumpable(struct mapple_pslist_security_record *wire,
@@ -209,8 +173,8 @@ static int mapple_pslist_capture_security(struct mapple_pslist_captured_security
 	return 0;
 }
 
-static int mapple_pslist_write_supplementary_groups(
-	struct mapple_command_context *context, const struct group_info *group_info)
+static int mapple_pslist_write_supplementary_groups(struct mapple_pslist_writer *writer,
+						    const struct group_info *group_info)
 {
 	__u32 groups[MAPPLE_PSLIST_SECURITY_GROUP_CHUNK];
 	unsigned int index = 0;
@@ -222,10 +186,10 @@ static int mapple_pslist_write_supplementary_groups(
 		count = min_t(unsigned int, MAPPLE_PSLIST_SECURITY_GROUP_CHUNK,
 			      group_info->ngroups - index);
 		for (chunk_index = 0; chunk_index < count; ++chunk_index)
-			put_unaligned_be32(from_kgid_munged(
-				&init_user_ns, group_info->gid[index + chunk_index]),
-				&groups[chunk_index]);
-		ret = mapple_command_write(context, groups, count * sizeof(groups[0]));
+			put_unaligned_be32(from_kgid_munged(&init_user_ns,
+							    group_info->gid[index + chunk_index]),
+					   &groups[chunk_index]);
+		ret = mapple_pslist_write(writer, groups, count * sizeof(groups[0]));
 		if (ret)
 			return ret;
 		index += count;
@@ -233,11 +197,10 @@ static int mapple_pslist_write_supplementary_groups(
 	return 0;
 }
 
-int mapple_pslist_write_security_object(struct mapple_command_context *context,
+int mapple_pslist_write_security_object(struct mapple_pslist_writer *writer,
 					struct task_struct *task,
 					const struct mapple_pslist_security_metadata *metadata,
-					u64 object_id,
-					u32 *object_count)
+					u64 object_id)
 {
 	struct mapple_pslist_captured_security captured = { 0 };
 	int ret;
@@ -245,27 +208,27 @@ int mapple_pslist_write_security_object(struct mapple_command_context *context,
 	ret = mapple_pslist_capture_security(&captured, task, metadata, object_id);
 	if (ret)
 		goto release;
-	ret = mapple_pslist_write_object_begin(context, object_id);
+	ret = mapple_pslist_write_object_begin(writer, object_id, MAPPLE_PSLIST_OBJECT_TASK,
+					       MAPPLE_PSLIST_GROUP_SECURITY);
 	if (ret)
 		goto release;
-	++*object_count;
-	ret = mapple_command_write(context, &captured.wire, sizeof(captured.wire));
+	ret = mapple_pslist_write(writer, &captured.wire, sizeof(captured.wire));
 	if (!ret)
-		ret = mapple_pslist_write_supplementary_groups(
-			context, captured.cred->group_info);
+		ret = mapple_pslist_write_supplementary_groups(writer, captured.cred->group_info);
 	if (!ret)
-		ret = mapple_command_write(context, metadata->lsm_provider,
-					   metadata->lsm_provider_length);
+		ret = mapple_pslist_write(writer, metadata->lsm_provider,
+					  metadata->lsm_provider_length);
 	if (!ret)
-		ret = mapple_command_write(context, captured.lsm_context,
-					   captured.lsm_context_length);
+		ret = mapple_pslist_write(writer, captured.lsm_context,
+					  captured.lsm_context_length);
 	if (!ret)
-		ret = mapple_pslist_write_object_end(context, object_id);
+		ret = mapple_pslist_write_object_end(writer, object_id, MAPPLE_PSLIST_OBJECT_TASK,
+						     MAPPLE_PSLIST_GROUP_SECURITY,
+						     MAPPLE_PSLIST_OBJECT_COMPLETE, 0, 1);
 
 release:
 	if (captured.lsm_context)
-		security_release_secctx(captured.lsm_context,
-					captured.lsm_context_length);
+		security_release_secctx(captured.lsm_context, captured.lsm_context_length);
 	if (captured.cred)
 		put_cred(captured.cred);
 	return ret;
