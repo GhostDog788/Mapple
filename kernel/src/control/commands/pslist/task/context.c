@@ -1,4 +1,4 @@
-#include <control/commands/pslist/context.h>
+#include <control/commands/pslist/task/context.h>
 
 #include <asm/unaligned.h>
 #include <linux/cgroup.h>
@@ -31,14 +31,6 @@ struct mapple_pslist_captured_context {
 	u32 cgroup_host_path_length;
 	u32 cgroup_namespace_path_length;
 };
-
-static void mapple_pslist_encode_record(struct mapple_pslist_stream_record *record,
-					u32 size, u16 type, u64 group)
-{
-	put_unaligned_be32(size, &record->record_size);
-	put_unaligned_be16(type, &record->record_type);
-	put_unaligned_be64(group, &record->group);
-}
 
 static int mapple_pslist_capture_path(const struct path *path, char **result,
 				       u32 *length)
@@ -233,37 +225,8 @@ static void mapple_pslist_capture_cgroup(
 	cgroup_put(cgroup);
 }
 
-static int mapple_pslist_write_object_begin(struct mapple_command_context *context,
-					     u64 object_id)
-{
-	struct mapple_pslist_object_begin begin = { 0 };
-
-	mapple_pslist_encode_record(&begin.record, sizeof(begin),
-				    MAPPLE_PSLIST_STREAM_OBJECT_BEGIN,
-				    MAPPLE_PSLIST_GROUP_CONTEXT);
-	put_unaligned_be64(object_id, &begin.object_id);
-	put_unaligned_be16(MAPPLE_PSLIST_OBJECT_TASK, &begin.object_type);
-	return mapple_command_write(context, &begin, sizeof(begin));
-}
-
-static int mapple_pslist_write_object_end(struct mapple_command_context *context,
-					   u64 object_id)
-{
-	struct mapple_pslist_object_end end = { 0 };
-
-	mapple_pslist_encode_record(&end.record, sizeof(end),
-				    MAPPLE_PSLIST_STREAM_OBJECT_END,
-				    MAPPLE_PSLIST_GROUP_CONTEXT);
-	put_unaligned_be64(object_id, &end.object_id);
-	put_unaligned_be16(MAPPLE_PSLIST_OBJECT_TASK, &end.object_type);
-	put_unaligned_be16(MAPPLE_PSLIST_OBJECT_COMPLETE, &end.status);
-	put_unaligned_be32(1, &end.record_count);
-	return mapple_command_write(context, &end, sizeof(end));
-}
-
-int mapple_pslist_write_context_object(struct mapple_command_context *context,
-					struct task_struct *task, u64 object_id,
-					u32 *object_count)
+int mapple_pslist_write_context_object(struct mapple_pslist_writer *writer,
+				       struct task_struct *task, u64 object_id)
 {
 	struct mapple_pslist_captured_context captured = { 0 };
 	u64 variable_size;
@@ -274,29 +237,28 @@ int mapple_pslist_write_context_object(struct mapple_command_context *context,
 	mapple_pslist_capture_namespaces(&captured, task);
 	mapple_pslist_capture_cgroup(&captured, task);
 	variable_size = (u64)captured.cwd_length + captured.root_length +
-			captured.cgroup_host_path_length +
-			captured.cgroup_namespace_path_length;
-	mapple_pslist_encode_record(&captured.wire.record,
-				    sizeof(captured.wire) + variable_size,
-				    MAPPLE_PSLIST_STREAM_CONTEXT,
-				    MAPPLE_PSLIST_GROUP_CONTEXT);
-	ret = mapple_pslist_write_object_begin(context, object_id);
+			captured.cgroup_host_path_length + captured.cgroup_namespace_path_length;
+	mapple_pslist_encode_record(&captured.wire.record, sizeof(captured.wire) + variable_size,
+				    MAPPLE_PSLIST_STREAM_CONTEXT, MAPPLE_PSLIST_GROUP_CONTEXT);
+	ret = mapple_pslist_write_object_begin(writer, object_id, MAPPLE_PSLIST_OBJECT_TASK,
+					       MAPPLE_PSLIST_GROUP_CONTEXT);
 	if (ret)
 		goto release;
-	++*object_count;
-	ret = mapple_command_write(context, &captured.wire, sizeof(captured.wire));
+	ret = mapple_pslist_write(writer, &captured.wire, sizeof(captured.wire));
 	if (!ret)
-		ret = mapple_command_write(context, captured.cwd, captured.cwd_length);
+		ret = mapple_pslist_write(writer, captured.cwd, captured.cwd_length);
 	if (!ret)
-		ret = mapple_command_write(context, captured.root, captured.root_length);
+		ret = mapple_pslist_write(writer, captured.root, captured.root_length);
 	if (!ret)
-		ret = mapple_command_write(context, captured.cgroup_host_path,
-					   captured.cgroup_host_path_length);
+		ret = mapple_pslist_write(writer, captured.cgroup_host_path,
+					  captured.cgroup_host_path_length);
 	if (!ret)
-		ret = mapple_command_write(context, captured.cgroup_namespace_path,
-					   captured.cgroup_namespace_path_length);
+		ret = mapple_pslist_write(writer, captured.cgroup_namespace_path,
+					  captured.cgroup_namespace_path_length);
 	if (!ret)
-		ret = mapple_pslist_write_object_end(context, object_id);
+		ret = mapple_pslist_write_object_end(writer, object_id, MAPPLE_PSLIST_OBJECT_TASK,
+						     MAPPLE_PSLIST_GROUP_CONTEXT,
+						     MAPPLE_PSLIST_OBJECT_COMPLETE, 0, 1);
 
 release:
 	if (captured.cgroup_ns)

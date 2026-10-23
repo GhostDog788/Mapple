@@ -1,4 +1,4 @@
-#include <control/commands/pslist/memory_maps.h>
+#include <control/commands/pslist/memory/maps.h>
 
 #include <asm/unaligned.h>
 #include <linux/dcache.h>
@@ -34,14 +34,6 @@ struct mapple_pslist_captured_memory_map {
 	char *path;
 	u32 path_length;
 };
-
-static void mapple_pslist_encode_record(struct mapple_pslist_stream_record *record,
-					u32 size, u16 type, u64 group)
-{
-	put_unaligned_be32(size, &record->record_size);
-	put_unaligned_be16(type, &record->record_type);
-	put_unaligned_be64(group, &record->group);
-}
 
 static void mapple_pslist_release_snapshot(
 	struct mapple_pslist_memory_maps_snapshot *snapshot)
@@ -244,21 +236,8 @@ static void mapple_pslist_capture_file_metadata(
 			   &captured->wire.file_filesystem_magic);
 }
 
-static int mapple_pslist_write_object_begin(struct mapple_command_context *context,
-					     u64 object_id)
-{
-	struct mapple_pslist_object_begin begin = { 0 };
-
-	mapple_pslist_encode_record(&begin.record, sizeof(begin),
-				    MAPPLE_PSLIST_STREAM_OBJECT_BEGIN,
-				    MAPPLE_PSLIST_GROUP_MEMORY_MAPS);
-	put_unaligned_be64(object_id, &begin.object_id);
-	put_unaligned_be16(MAPPLE_PSLIST_OBJECT_MM, &begin.object_type);
-	return mapple_command_write(context, &begin, sizeof(begin));
-}
-
-static int mapple_pslist_write_metadata(struct mapple_command_context *context,
-					 u64 object_id, u32 mapping_count)
+static int mapple_pslist_write_metadata(struct mapple_pslist_writer *writer, u64 object_id,
+					u32 mapping_count)
 {
 	struct mapple_pslist_memory_maps_metadata_record metadata = { 0 };
 
@@ -268,15 +247,13 @@ static int mapple_pslist_write_metadata(struct mapple_command_context *context,
 	put_unaligned_be64(object_id, &metadata.object_id);
 	put_unaligned_be32(PAGE_SIZE, &metadata.page_size_bytes);
 	put_unaligned_be32(mapping_count, &metadata.mapping_count);
-	put_unaligned_be32(MAPPLE_PSLIST_MEMORY_MAP_MAX_COUNT,
-			   &metadata.mapping_limit);
-	return mapple_command_write(context, &metadata, sizeof(metadata));
+	put_unaligned_be32(MAPPLE_PSLIST_MEMORY_MAP_MAX_COUNT, &metadata.mapping_limit);
+	return mapple_pslist_write(writer, &metadata, sizeof(metadata));
 }
 
-static int mapple_pslist_write_mapping(
-	struct mapple_command_context *context,
-	struct mapple_pslist_memory_map_reference *reference, u64 object_id,
-	struct mapple_pslist_elf_registry *elf)
+static int mapple_pslist_write_mapping(struct mapple_pslist_writer *writer,
+				       struct mapple_pslist_memory_map_reference *reference,
+				       u64 object_id, struct mapple_pslist_elf_registry *elf)
 {
 	struct mapple_pslist_captured_memory_map captured = { 0 };
 	u64 elf_object_id = 0;
@@ -286,54 +263,33 @@ static int mapple_pslist_write_mapping(
 	put_unaligned_be64(object_id, &captured.wire.object_id);
 	if (reference->file) {
 		if (elf) {
-			ret = mapple_pslist_elf_observe_file(
-				elf, reference->file, &elf_object_id);
+			ret = mapple_pslist_elf_observe_file(elf, reference->file, &elf_object_id);
 			if (ret)
 				return ret;
-			put_unaligned_be64(elf_object_id,
-					   &captured.wire.elf_object_id);
+			put_unaligned_be64(elf_object_id, &captured.wire.elf_object_id);
 		}
 		mapple_pslist_capture_path(&captured, reference->file);
 		mapple_pslist_capture_file_metadata(&captured, reference->file);
 	}
-	mapple_pslist_encode_record(&captured.wire.record,
-				    sizeof(captured.wire) + reference->name_length +
-					    captured.path_length,
-				    MAPPLE_PSLIST_STREAM_MEMORY_MAP,
-				    MAPPLE_PSLIST_GROUP_MEMORY_MAPS);
-	ret = mapple_command_write(context, &captured.wire, sizeof(captured.wire));
+	mapple_pslist_encode_record(
+		&captured.wire.record,
+		sizeof(captured.wire) + reference->name_length + captured.path_length,
+		MAPPLE_PSLIST_STREAM_MEMORY_MAP, MAPPLE_PSLIST_GROUP_MEMORY_MAPS);
+	ret = mapple_pslist_write(writer, &captured.wire, sizeof(captured.wire));
 	if (!ret)
-		ret = mapple_command_write(context, reference->name,
-					   reference->name_length);
+		ret = mapple_pslist_write(writer, reference->name, reference->name_length);
 	if (!ret)
-		ret = mapple_command_write(context, captured.path,
-					   captured.path_length);
+		ret = mapple_pslist_write(writer, captured.path, captured.path_length);
 	kvfree(captured.path);
 	return ret;
 }
 
-static int mapple_pslist_write_object_end(struct mapple_command_context *context,
-					   u64 object_id, u16 status,
-					   u32 record_count)
-{
-	struct mapple_pslist_object_end end = { 0 };
-
-	mapple_pslist_encode_record(&end.record, sizeof(end),
-				    MAPPLE_PSLIST_STREAM_OBJECT_END,
-				    MAPPLE_PSLIST_GROUP_MEMORY_MAPS);
-	put_unaligned_be64(object_id, &end.object_id);
-	put_unaligned_be16(MAPPLE_PSLIST_OBJECT_MM, &end.object_type);
-	put_unaligned_be16(status, &end.status);
-	put_unaligned_be32(record_count, &end.record_count);
-	return mapple_command_write(context, &end, sizeof(end));
-}
-
-int mapple_pslist_write_memory_maps_object(struct mapple_command_context *context,
-					    struct mm_struct *mm, u64 object_id,
-					    struct mapple_pslist_elf_registry *elf,
-					    u32 *object_count, bool *partial)
+int mapple_pslist_write_memory_maps_object(struct mapple_pslist_writer *writer,
+					   struct mm_struct *mm, u64 object_id,
+					   struct mapple_pslist_elf_registry *elf)
 {
 	struct mapple_pslist_memory_maps_snapshot snapshot = { 0 };
+	u32 record_count = 1;
 	u32 index;
 	int ret;
 
@@ -341,21 +297,22 @@ int mapple_pslist_write_memory_maps_object(struct mapple_command_context *contex
 	if (ret)
 		return ret;
 	if (snapshot.status != MAPPLE_PSLIST_OBJECT_COMPLETE)
-		*partial = true;
-	ret = mapple_pslist_write_object_begin(context, object_id);
+		writer->partial = true;
+	ret = mapple_pslist_write_object_begin(writer, object_id, MAPPLE_PSLIST_OBJECT_MM,
+					       MAPPLE_PSLIST_GROUP_MEMORY_MAPS);
 	if (ret)
 		goto release;
-	++*object_count;
-	ret = mapple_pslist_write_metadata(context, object_id, snapshot.count);
-	if (!ret && snapshot.status == MAPPLE_PSLIST_OBJECT_COMPLETE)
+	ret = mapple_pslist_write_metadata(writer, object_id, snapshot.count);
+	if (!ret && snapshot.status == MAPPLE_PSLIST_OBJECT_COMPLETE) {
 		for (index = 0; !ret && index < snapshot.count; ++index)
-			ret = mapple_pslist_write_mapping(
-				context, &snapshot.entries[index], object_id, elf);
+			ret = mapple_pslist_write_mapping(writer, &snapshot.entries[index],
+							  object_id, elf);
+		record_count += snapshot.count;
+	}
 	if (!ret)
 		ret = mapple_pslist_write_object_end(
-			context, object_id, snapshot.status,
-			1 + (snapshot.status == MAPPLE_PSLIST_OBJECT_COMPLETE ?
-				     snapshot.count : 0));
+			writer, object_id, MAPPLE_PSLIST_OBJECT_MM, MAPPLE_PSLIST_GROUP_MEMORY_MAPS,
+			snapshot.status, 0, record_count);
 
 release:
 	mapple_pslist_release_snapshot(&snapshot);

@@ -1,4 +1,4 @@
-#include <control/commands/pslist/environment.h>
+#include <control/commands/pslist/memory/environment.h>
 
 #include <asm/unaligned.h>
 #include <linux/errno.h>
@@ -12,16 +12,7 @@ struct mapple_pslist_captured_environment {
 	u32 length;
 };
 
-static void mapple_pslist_encode_record(struct mapple_pslist_stream_record *record,
-					u32 size, u16 type, u64 group)
-{
-	put_unaligned_be32(size, &record->record_size);
-	put_unaligned_be16(type, &record->record_type);
-	put_unaligned_be64(group, &record->group);
-}
-
-static bool mapple_pslist_task_uses_mm(struct task_struct *task,
-				       struct mm_struct *mm)
+static bool mapple_pslist_task_uses_mm(struct task_struct *task, struct mm_struct *mm)
 {
 	bool matches;
 
@@ -111,38 +102,9 @@ discard:
 	return 0;
 }
 
-static int mapple_pslist_write_object_begin(struct mapple_command_context *context,
-					     u64 object_id)
-{
-	struct mapple_pslist_object_begin begin = { 0 };
-
-	mapple_pslist_encode_record(&begin.record, sizeof(begin),
-				    MAPPLE_PSLIST_STREAM_OBJECT_BEGIN,
-				    MAPPLE_PSLIST_GROUP_ENVIRONMENT);
-	put_unaligned_be64(object_id, &begin.object_id);
-	put_unaligned_be16(MAPPLE_PSLIST_OBJECT_MM, &begin.object_type);
-	return mapple_command_write(context, &begin, sizeof(begin));
-}
-
-static int mapple_pslist_write_object_end(struct mapple_command_context *context,
-					   u64 object_id, u16 status)
-{
-	struct mapple_pslist_object_end end = { 0 };
-
-	mapple_pslist_encode_record(&end.record, sizeof(end),
-				    MAPPLE_PSLIST_STREAM_OBJECT_END,
-				    MAPPLE_PSLIST_GROUP_ENVIRONMENT);
-	put_unaligned_be64(object_id, &end.object_id);
-	put_unaligned_be16(MAPPLE_PSLIST_OBJECT_MM, &end.object_type);
-	put_unaligned_be16(status, &end.status);
-	put_unaligned_be32(1, &end.record_count);
-	return mapple_command_write(context, &end, sizeof(end));
-}
-
-int mapple_pslist_write_environment_object(struct mapple_command_context *context,
-					    struct task_struct *task,
-					    struct mm_struct *mm, u64 object_id,
-					    u32 *object_count, bool *partial)
+int mapple_pslist_write_environment_object(struct mapple_pslist_writer *writer,
+					   struct task_struct *task, struct mm_struct *mm,
+					   u64 object_id)
 {
 	struct mapple_pslist_captured_environment captured = { 0 };
 	u16 object_status = MAPPLE_PSLIST_OBJECT_COMPLETE;
@@ -157,21 +119,22 @@ int mapple_pslist_write_environment_object(struct mapple_command_context *contex
 	if (environment_status != MAPPLE_PSLIST_ENVIRONMENT_AVAILABLE &&
 	    environment_status != MAPPLE_PSLIST_ENVIRONMENT_EMPTY) {
 		object_status = MAPPLE_PSLIST_OBJECT_PARTIAL;
-		*partial = true;
+		writer->partial = true;
 	}
-	mapple_pslist_encode_record(&captured.wire.record,
-				    sizeof(captured.wire) + captured.length,
+	mapple_pslist_encode_record(&captured.wire.record, sizeof(captured.wire) + captured.length,
 				    MAPPLE_PSLIST_STREAM_ENVIRONMENT,
 				    MAPPLE_PSLIST_GROUP_ENVIRONMENT);
-	ret = mapple_pslist_write_object_begin(context, object_id);
+	ret = mapple_pslist_write_object_begin(writer, object_id, MAPPLE_PSLIST_OBJECT_MM,
+					       MAPPLE_PSLIST_GROUP_ENVIRONMENT);
 	if (ret)
 		goto release;
-	++*object_count;
-	ret = mapple_command_write(context, &captured.wire, sizeof(captured.wire));
+	ret = mapple_pslist_write(writer, &captured.wire, sizeof(captured.wire));
 	if (!ret)
-		ret = mapple_command_write(context, captured.bytes, captured.length);
+		ret = mapple_pslist_write(writer, captured.bytes, captured.length);
 	if (!ret)
-		ret = mapple_pslist_write_object_end(context, object_id, object_status);
+		ret = mapple_pslist_write_object_end(writer, object_id, MAPPLE_PSLIST_OBJECT_MM,
+						     MAPPLE_PSLIST_GROUP_ENVIRONMENT, object_status,
+						     0, 1);
 
 release:
 	kvfree(captured.bytes);
