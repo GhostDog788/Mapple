@@ -43,6 +43,12 @@ type echoResultMsg struct {
 	err  error
 }
 
+type getfileResultMsg struct {
+	path  string
+	bytes int64
+	err   error
+}
+
 type pslistResultMsg struct {
 	snapshot api.ProcessSnapshot
 	err      error

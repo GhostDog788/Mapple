@@ -23,6 +23,7 @@ enum mapple_command_id {
 	MAPPLE_COMMAND_ECHO = 1,
 	MAPPLE_COMMAND_PSLIST = 2,
 	MAPPLE_COMMAND_INFO = 3,
+	MAPPLE_COMMAND_GETFILE = 4,
 	MAPPLE_COMMAND_COUNT
 };
 
@@ -782,6 +783,9 @@ struct mapple_pslist_network_record {
 	__u32 reserved;
 	struct mapple_pslist_socket_data socket;
 } PACKED_STRUCT;
+
+
+#define MAPPLE_GETFILE_MAX_PATH_LENGTH 4096U
 
 #undef PACKED_STRUCT
 

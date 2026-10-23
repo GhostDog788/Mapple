@@ -19,6 +19,15 @@ var (
 	ErrSessionBroken = errors.New("moduleclient: session broken")
 )
 
+// CommandError is a complete, empty error response, not a framing failure.
+type CommandError struct {
+	Status wire.Status
+}
+
+func (e *CommandError) Error() string {
+	return fmt.Sprintf("moduleclient: command rejected, status=%d", e.Status)
+}
+
 type InfoResult struct {
 	SessionID         uint64
 	MaxSessions       uint32
@@ -214,7 +223,10 @@ func (c *ModuleClient) readResponseHeader(want wire.Command) (wire.Header, error
 		return wire.Header{}, fmt.Errorf("moduleclient: unknown response flags %#x", h.Flags)
 	}
 	if h.Status != wire.StatusOK {
-		return wire.Header{}, fmt.Errorf("moduleclient: command failed, status=%d", h.Status)
+		if h.Flags != 0 || h.PayloadSize != 0 || h.Status > wire.StatusInternalError {
+			return wire.Header{}, fmt.Errorf("moduleclient: malformed error response")
+		}
+		return h, &CommandError{Status: h.Status}
 	}
 	return h, nil
 }

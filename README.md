@@ -70,10 +70,30 @@ Inside the TUI:
 session create dev
 command info
 command echo hello
+command getfile /etc/hostname ./hostname.txt
 command pslist
 ```
 
-You now have a session to the module running in the guest. `command pslist`
+You now have a session to the module running in the guest.
+`command getfile <remote-path> <local-path>` streams an ordinary file through the
+server into a local file. The remote path must be absolute; the local path
+belongs to the TUI machine and is never sent to the module. Quote either path
+when it contains spaces, e.g. `command getfile "/tmp/my file" "./saved file"`.
+Double-quoted paths support JSON escapes; unquoted paths are literal.
+
+Downloads use bounded buffers and an HTTP binary response with Content-Length.
+The TUI publishes a temporary file only after receiving the complete response,
+replaces an existing destination on success, and removes partial files on failure.
+A failed or canceled download leaves the previous destination intact.
+Use `command getfile cancel` to cancel. Interrupted transfers can break the module
+session; reconnect before retrying. Open failures leave the session usable.
+This is a fixed-length download, not a snapshot: the module aborts on size changes
+it observes, but same-size edits or changes between checks may go undetected.
+Special files such as FIFOs, devices, and generated `/proc` files are not supported
+reliably by the current module. Its wire path limit is 4096 bytes; this kernel's
+file-opening limit is 4095 bytes excluding the terminator.
+
+`command pslist`
 opens a process and thread snapshot; press Esc to return to the command prompt.
 For a terminal-only host, launch the TUI
 with `make tui-run FOREGROUND=1`.

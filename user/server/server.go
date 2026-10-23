@@ -57,12 +57,13 @@ func apiInfoResult(info moduleclient.InfoResult) api.InfoResult {
 
 // commandNameByBit mirrors the wire protocol's own Command bit positions
 // (moduleclient/wire.Command* -- CommandEcho=1, CommandPslist=2,
-// CommandInfo=3), each a bit index into the info response's
+// CommandInfo=3, CommandGetfile=4), each a bit index into the info response's
 // supported_commands mask.
 var commandNameByBit = map[uint]string{
-	uint(wire.CommandEcho):   "echo",
-	uint(wire.CommandPslist): "pslist",
-	uint(wire.CommandInfo):   "info",
+	uint(wire.CommandEcho):    "echo",
+	uint(wire.CommandPslist):  "pslist",
+	uint(wire.CommandInfo):    "info",
+	uint(wire.CommandGetfile): "getfile",
 }
 
 // commandNames renders a supported_commands bitmask as the actual command
@@ -217,6 +218,42 @@ func (s *Server) PostSessionsIdCommandsEcho(ctx context.Context, request api.Pos
 	}
 	s.Sessions.Renew(lease.ID)
 	return api.PostSessionsIdCommandsEcho200JSONResponse{Data: echoed}, nil
+}
+
+func (s *Server) PostSessionsIdCommandsGetfile(ctx context.Context, request api.PostSessionsIdCommandsGetfileRequestObject) (api.PostSessionsIdCommandsGetfileResponseObject, error) {
+	lease, apiErr, status := s.leaseFor(request.Id)
+	if lease == nil {
+		return commandError[api.PostSessionsIdCommandsGetfileResponseObject](status, apiErr,
+			func(e api.NotFoundJSONResponse) api.PostSessionsIdCommandsGetfileResponseObject {
+				return api.PostSessionsIdCommandsGetfile404JSONResponse{NotFoundJSONResponse: e}
+			},
+			func(e api.BrokenJSONResponse) api.PostSessionsIdCommandsGetfileResponseObject {
+				return api.PostSessionsIdCommandsGetfile410JSONResponse{BrokenJSONResponse: e}
+			}), nil
+	}
+	if request.Body == nil {
+		return api.PostSessionsIdCommandsGetfile400JSONResponse{BadRequestJSONResponse: api.BadRequestJSONResponse(apiError("invalid_argument", "request body with path is required"))}, nil
+	}
+	data, err := lease.Client.Getfile(ctx, request.Body.Path)
+	if err != nil {
+		if errors.Is(err, moduleclient.ErrInvalidGetfilePath) {
+			return api.PostSessionsIdCommandsGetfile400JSONResponse{BadRequestJSONResponse: api.BadRequestJSONResponse(apiError("invalid_argument", err.Error()))}, nil
+		}
+		var rejection *moduleclient.CommandError
+		if errors.As(err, &rejection) {
+			s.Sessions.Renew(lease.ID)
+			if rejection.Status == wire.StatusInvalidArgument {
+				return api.PostSessionsIdCommandsGetfile400JSONResponse{BadRequestJSONResponse: api.BadRequestJSONResponse(apiError("invalid_argument", "module rejected the path: "+moduleclient.ErrInvalidGetfilePath.Error()))}, nil
+			}
+			return api.PostSessionsIdCommandsGetfile422JSONResponse(apiError("module_command_rejected", getfileStatusMessage(rejection.Status))), nil
+		}
+		if errors.Is(err, moduleclient.ErrSessionBusy) {
+			return api.PostSessionsIdCommandsGetfile409JSONResponse{BusyJSONResponse: api.BusyJSONResponse(apiError("session_busy", err.Error()))}, nil
+		}
+		return api.PostSessionsIdCommandsGetfile410JSONResponse{BrokenJSONResponse: api.BrokenJSONResponse(apiError("session_broken", err.Error()))}, nil
+	}
+	s.Sessions.Renew(lease.ID)
+	return &getfileResponse{file: data, sessions: s.Sessions, leaseID: lease.ID, logger: s.Logger}, nil
 }
 
 func (s *Server) PostSessionsIdCommandsPslist(ctx context.Context, request api.PostSessionsIdCommandsPslistRequestObject) (api.PostSessionsIdCommandsPslistResponseObject, error) {

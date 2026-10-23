@@ -18,9 +18,10 @@ const (
 type Command uint16
 
 const (
-	CommandEcho   Command = 1
-	CommandPslist Command = 2
-	CommandInfo   Command = 3
+	CommandEcho    Command = 1
+	CommandPslist  Command = 2
+	CommandInfo    Command = 3
+	CommandGetfile Command = 4
 )
 
 type Flags uint32
@@ -79,6 +80,9 @@ func DecodeHeader(buf []byte) (Header, error) {
 }
 
 const InfoResponseSize = 24
+
+// Mirrors MAPPLE_GETFILE_MAX_PATH_LENGTH; excludes a local C NUL terminator.
+const GetfileMaxPathLength = 4096
 
 type InfoResponse struct {
 	SessionID         uint64

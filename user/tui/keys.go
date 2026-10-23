@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strconv"
@@ -14,7 +15,7 @@ import (
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
-		return m, tea.Quit
+		return m.quit()
 	}
 	if len(m.frames) > 0 {
 		return m.handleBrowseKey(msg)
@@ -318,7 +319,7 @@ var replGrammar = map[int]map[string][]string{
 	0: {"": {"session", "command", "log", "history", "help", "quit", "exit"}},
 	1: {
 		"session": {"list", "connect", "create", "delete", "current", "profiles", "save-profile", "help"},
-		"command": {"info", "echo", "pslist", "help"},
+		"command": {"info", "echo", "getfile", "pslist", "help"},
 		"log":     {"client", "server", "module", "help"},
 	},
 }
@@ -328,9 +329,10 @@ var replGrammar = map[int]map[string][]string{
 // subverb (session's own subverbs take an id/no argument, so "session help"
 // is already reachable at word index 1 above).
 var replGrammar2 = map[string][]string{
-	"command pslist": {"history", "groups", "help"},
-	"command info":   {"help"},
-	"command echo":   {"help"},
+	"command pslist":  {"history", "groups", "help"},
+	"command info":    {"help"},
+	"command echo":    {"help"},
+	"command getfile": {"help"},
 }
 
 func (m *Model) completeInput() {
@@ -398,10 +400,19 @@ func (m Model) dispatch(line string) (tea.Model, tea.Cmd) {
 			m.printError("unexpected argument %q", rest[0])
 			return m, nil
 		}
-		return m, tea.Quit
+		return m.quit()
 	case "session":
 		return m.dispatchSession(rest)
 	case "command":
+		if len(rest) > 0 && rest[0] == "getfile" {
+			command := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), verb))
+			args, err := getfileArgs(command)
+			if err != nil {
+				m.printError("%v", err)
+				return m, nil
+			}
+			return m.dispatchCommand(args)
+		}
 		return m.dispatchCommand(rest)
 	case "log":
 		return m.dispatchLog(rest)
@@ -504,9 +515,10 @@ func (m *Model) printCommandHelp() {
 	m.printLine(strings.Join([]string{
 		"command info                    -- session/protocol info -- see `command info help`",
 		"command echo <text>             -- round-trip text through the module -- see `command echo help`",
+		"command getfile <remote> <local> -- stream a file to a local destination",
 		"command pslist                  -- process/thread snapshot -- see `command pslist help`",
 		"",
-		"all three require a connected session (`session connect`/`session create` first).",
+		"all commands require a connected session (`session connect`/`session create` first).",
 	}, "\n"))
 }
 
@@ -526,6 +538,10 @@ func (m *Model) printCommandEchoHelp() {
 		"  Mainly a connectivity/sanity check for the session -- the reply should",
 		"  match what was sent.",
 	}, "\n"))
+}
+
+func (m *Model) printCommandGetfileHelp() {
+	m.printLine("command getfile <remote-path> <local-path>\n  Downloads an ordinary file from the module to a local file.\n  Remote path must be absolute, at most 4096 UTF-8 bytes, without NULs.\n  Quote paths containing spaces with double quotes (JSON escapes).\n  Existing files are replaced after a successful download; failures leave them intact.\n  Example: command getfile /etc/hostname ./hostname.txt\n  command getfile cancel -- cancel the active download; its module session may need reconnecting.\n  Downloads are not snapshots of files being modified concurrently.")
 }
 
 func (m *Model) printCommandPslistHelp() {
@@ -751,7 +767,7 @@ func (m Model) resolveSession(prefix string) (api.Session, error) {
 
 func (m Model) dispatchCommand(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
-		m.printLine("usage: command info|echo <text>|pslist [groups|history]")
+		m.printLine("usage: command info|echo <text>|getfile <remote> <local>|pslist [groups|history]")
 		return m, nil
 	}
 	if args[0] == "help" {
@@ -775,10 +791,21 @@ func (m Model) dispatchCommand(args []string) (tea.Model, tea.Cmd) {
 			m.printCommandInfoHelp()
 		case "echo":
 			m.printCommandEchoHelp()
+		case "getfile":
+			m.printCommandGetfileHelp()
 		case "pslist":
 			m.printCommandPslistHelp()
 		default:
 			m.printError("unknown command %q", args[0])
+		}
+		return m, nil
+	}
+	if args[0] == "getfile" && len(args) == 2 && args[1] == "cancel" {
+		if m.downloadCancel != nil {
+			m.downloadCancel()
+			m.printLine("Canceling download...")
+		} else {
+			m.printLine("no download is running")
 		}
 		return m, nil
 	}
@@ -807,6 +834,19 @@ func (m Model) dispatchCommand(args []string) (tea.Model, tea.Cmd) {
 	case "echo":
 		text := strings.Join(args[1:], " ")
 		return m, m.sendEcho(id, text)
+	case "getfile":
+		if len(args) != 3 || args[1] == "" || args[2] == "" {
+			m.printError("usage: command getfile <remote-path> <local-path>")
+			return m, nil
+		}
+		if m.downloadCancel != nil {
+			m.printError("a download is already running; use command getfile cancel")
+			return m, nil
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		m.downloadCancel = cancel
+		m.printLine("Downloading to " + args[2] + " (command getfile cancel to cancel)")
+		return m, m.fetchGetfile(ctx, id, args[1], args[2])
 	case "pslist":
 		if len(args) > 1 {
 			if args[1] == "groups" {

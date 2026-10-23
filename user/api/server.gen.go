@@ -148,12 +148,18 @@ type Error struct {
 	RequestId *string `json:"request_id,omitempty"`
 }
 
+// GetfileRequest defines model for GetfileRequest.
+type GetfileRequest struct {
+	// Path Absolute path on the module's machine. At most 4096 UTF-8 bytes, without NUL bytes. Sent unchanged without a trailing terminator.
+	Path string `json:"path"`
+}
+
 // InfoResult defines model for InfoResult.
 type InfoResult struct {
 	MaxSessions int   `json:"max_sessions"`
 	SessionId   int64 `json:"session_id"`
 
-	// SupportedCommands Decoded wire-protocol command names this session's kernel module supports (e.g. "echo", "pslist", "info") -- a bit this build doesn't recognize (a newer module) renders as "bit_N" rather than being silently dropped.
+	// SupportedCommands Decoded wire-protocol command names this session's kernel module supports (e.g. "echo", "pslist", "info", "getfile") -- a bit this build doesn't recognize (a newer module) renders as "bit_N" rather than being silently dropped.
 	SupportedCommands []string `json:"supported_commands"`
 }
 
@@ -218,6 +224,9 @@ type PostSessionsJSONRequestBody = Destination
 
 // PostSessionsIdCommandsEchoJSONRequestBody defines body for PostSessionsIdCommandsEcho for application/json ContentType.
 type PostSessionsIdCommandsEchoJSONRequestBody = EchoPayload
+
+// PostSessionsIdCommandsGetfileJSONRequestBody defines body for PostSessionsIdCommandsGetfile for application/json ContentType.
+type PostSessionsIdCommandsGetfileJSONRequestBody = GetfileRequest
 
 // PostSessionsIdCommandsPslistJSONRequestBody defines body for PostSessionsIdCommandsPslist for application/json ContentType.
 type PostSessionsIdCommandsPslistJSONRequestBody PostSessionsIdCommandsPslistJSONBody
@@ -343,6 +352,20 @@ type ClientInterface interface {
 	//
 	// Corresponds with POST /sessions/{id}/commands/echo (the `PostSessionsIdCommandsEcho` operationId).
 	PostSessionsIdCommandsEcho(ctx context.Context, id SessionID, body PostSessionsIdCommandsEchoJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostSessionsIdCommandsGetfileWithBody Download a file from the module using a bounded-memory HTTP response.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with POST /sessions/{id}/commands/getfile (the `PostSessionsIdCommandsGetfile` operationId).
+	PostSessionsIdCommandsGetfileWithBody(ctx context.Context, id SessionID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostSessionsIdCommandsGetfile Download a file from the module using a bounded-memory HTTP response.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with POST /sessions/{id}/commands/getfile (the `PostSessionsIdCommandsGetfile` operationId).
+	PostSessionsIdCommandsGetfile(ctx context.Context, id SessionID, body PostSessionsIdCommandsGetfileJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// PostSessionsIdCommandsInfo Send INFO on this lease's session.
 	//
@@ -492,6 +515,40 @@ func (c *Client) PostSessionsIdCommandsEchoWithBody(ctx context.Context, id Sess
 // Corresponds with POST /sessions/{id}/commands/echo (the `PostSessionsIdCommandsEcho` operationId).
 func (c *Client) PostSessionsIdCommandsEcho(ctx context.Context, id SessionID, body PostSessionsIdCommandsEchoJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewPostSessionsIdCommandsEchoRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostSessionsIdCommandsGetfileWithBody Download a file from the module using a bounded-memory HTTP response.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with POST /sessions/{id}/commands/getfile (the `PostSessionsIdCommandsGetfile` operationId).
+func (c *Client) PostSessionsIdCommandsGetfileWithBody(ctx context.Context, id SessionID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostSessionsIdCommandsGetfileRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// PostSessionsIdCommandsGetfile Download a file from the module using a bounded-memory HTTP response.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with POST /sessions/{id}/commands/getfile (the `PostSessionsIdCommandsGetfile` operationId).
+func (c *Client) PostSessionsIdCommandsGetfile(ctx context.Context, id SessionID, body PostSessionsIdCommandsGetfileJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostSessionsIdCommandsGetfileRequest(c.Server, id, body)
 	if err != nil {
 		return nil, err
 	}
@@ -790,6 +847,53 @@ func NewPostSessionsIdCommandsEchoRequestWithBody(server string, id SessionID, c
 	return req, nil
 }
 
+// NewPostSessionsIdCommandsGetfileRequest calls the generic PostSessionsIdCommandsGetfile builder with application/json body
+func NewPostSessionsIdCommandsGetfileRequest(server string, id SessionID, body PostSessionsIdCommandsGetfileJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostSessionsIdCommandsGetfileRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewPostSessionsIdCommandsGetfileRequestWithBody constructs an http.Request for the PostSessionsIdCommandsGetfile method, with any body, and a specified content type
+func NewPostSessionsIdCommandsGetfileRequestWithBody(server string, id SessionID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/sessions/%s/commands/getfile", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewPostSessionsIdCommandsInfoRequest constructs an http.Request for the PostSessionsIdCommandsInfo method
 func NewPostSessionsIdCommandsInfoRequest(server string, id SessionID) (*http.Request, error) {
 	var err error
@@ -1031,6 +1135,20 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with POST /sessions/{id}/commands/echo (the `PostSessionsIdCommandsEcho` operationId).
 	PostSessionsIdCommandsEchoWithResponse(ctx context.Context, id SessionID, body PostSessionsIdCommandsEchoJSONRequestBody, reqEditors ...RequestEditorFn) (*PostSessionsIdCommandsEchoResponse, error)
+
+	// PostSessionsIdCommandsGetfileWithBodyWithResponse Download a file from the module using a bounded-memory HTTP response.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /sessions/{id}/commands/getfile (the `PostSessionsIdCommandsGetfile` operationId).
+	PostSessionsIdCommandsGetfileWithBodyWithResponse(ctx context.Context, id SessionID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostSessionsIdCommandsGetfileResponse, error)
+
+	// PostSessionsIdCommandsGetfileWithResponse Download a file from the module using a bounded-memory HTTP response.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with POST /sessions/{id}/commands/getfile (the `PostSessionsIdCommandsGetfile` operationId).
+	PostSessionsIdCommandsGetfileWithResponse(ctx context.Context, id SessionID, body PostSessionsIdCommandsGetfileJSONRequestBody, reqEditors ...RequestEditorFn) (*PostSessionsIdCommandsGetfileResponse, error)
 
 	// PostSessionsIdCommandsInfoWithResponse Send INFO on this lease's session.
 	//
@@ -1382,6 +1500,82 @@ func (r PostSessionsIdCommandsEchoResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r PostSessionsIdCommandsEchoResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type PostSessionsIdCommandsGetfileResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *BadRequest
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *NotFound
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Busy
+	// JSON410 the response for an HTTP 410 `application/json` response
+	JSON410 *Broken
+	// JSON422 the response for an HTTP 422 `application/json` response
+	JSON422 *Error
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r PostSessionsIdCommandsGetfileResponse) GetJSON400() *BadRequest {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r PostSessionsIdCommandsGetfileResponse) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r PostSessionsIdCommandsGetfileResponse) GetJSON404() *NotFound {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r PostSessionsIdCommandsGetfileResponse) GetJSON409() *Busy {
+	return r.JSON409
+}
+
+// GetJSON410 returns the response for an HTTP 410 `application/json` response
+func (r PostSessionsIdCommandsGetfileResponse) GetJSON410() *Broken {
+	return r.JSON410
+}
+
+// GetJSON422 returns the response for an HTTP 422 `application/json` response
+func (r PostSessionsIdCommandsGetfileResponse) GetJSON422() *Error {
+	return r.JSON422
+}
+
+// GetBody returns the raw response body bytes
+func (r PostSessionsIdCommandsGetfileResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r PostSessionsIdCommandsGetfileResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostSessionsIdCommandsGetfileResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r PostSessionsIdCommandsGetfileResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -1747,6 +1941,32 @@ func (c *ClientWithResponses) PostSessionsIdCommandsEchoWithResponse(ctx context
 	return ParsePostSessionsIdCommandsEchoResponse(rsp)
 }
 
+// PostSessionsIdCommandsGetfileWithBodyWithResponse Download a file from the module using a bounded-memory HTTP response.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /sessions/{id}/commands/getfile (the `PostSessionsIdCommandsGetfile` operationId).
+func (c *ClientWithResponses) PostSessionsIdCommandsGetfileWithBodyWithResponse(ctx context.Context, id SessionID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostSessionsIdCommandsGetfileResponse, error) {
+	rsp, err := c.PostSessionsIdCommandsGetfileWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostSessionsIdCommandsGetfileResponse(rsp)
+}
+
+// PostSessionsIdCommandsGetfileWithResponse Download a file from the module using a bounded-memory HTTP response.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with POST /sessions/{id}/commands/getfile (the `PostSessionsIdCommandsGetfile` operationId).
+func (c *ClientWithResponses) PostSessionsIdCommandsGetfileWithResponse(ctx context.Context, id SessionID, body PostSessionsIdCommandsGetfileJSONRequestBody, reqEditors ...RequestEditorFn) (*PostSessionsIdCommandsGetfileResponse, error) {
+	rsp, err := c.PostSessionsIdCommandsGetfile(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostSessionsIdCommandsGetfileResponse(rsp)
+}
+
 // PostSessionsIdCommandsInfoWithResponse Send INFO on this lease's session.
 //
 // Returns a wrapper object for the known response body format(s).
@@ -2043,6 +2263,67 @@ func ParsePostSessionsIdCommandsEchoResponse(rsp *http.Response) (*PostSessionsI
 	return response, nil
 }
 
+// ParsePostSessionsIdCommandsGetfileResponse parses an HTTP response from a PostSessionsIdCommandsGetfileWithResponse call
+func ParsePostSessionsIdCommandsGetfileResponse(rsp *http.Response) (*PostSessionsIdCommandsGetfileResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostSessionsIdCommandsGetfileResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Busy
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 410:
+		var dest Broken
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON410 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON422 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParsePostSessionsIdCommandsInfoResponse parses an HTTP response from a PostSessionsIdCommandsInfoWithResponse call
 func ParsePostSessionsIdCommandsInfoResponse(rsp *http.Response) (*PostSessionsIdCommandsInfoResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -2258,6 +2539,9 @@ type ServerInterface interface {
 	// PostSessionsIdCommandsEcho Send ECHO on this lease's session. Binary data is base64.
 	// (POST /sessions/{id}/commands/echo)
 	PostSessionsIdCommandsEcho(w http.ResponseWriter, r *http.Request, id SessionID)
+	// PostSessionsIdCommandsGetfile Download a file from the module using a bounded-memory HTTP response.
+	// (POST /sessions/{id}/commands/getfile)
+	PostSessionsIdCommandsGetfile(w http.ResponseWriter, r *http.Request, id SessionID)
 	// PostSessionsIdCommandsInfo Send INFO on this lease's session.
 	// (POST /sessions/{id}/commands/info)
 	PostSessionsIdCommandsInfo(w http.ResponseWriter, r *http.Request, id SessionID)
@@ -2392,6 +2676,32 @@ func (siw *ServerInterfaceWrapper) PostSessionsIdCommandsEcho(w http.ResponseWri
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PostSessionsIdCommandsEcho(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostSessionsIdCommandsGetfile operation middleware
+func (siw *ServerInterfaceWrapper) PostSessionsIdCommandsGetfile(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id SessionID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostSessionsIdCommandsGetfile(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2622,6 +2932,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/sessions/{id}/renew", wrapper.PostSessionsIdRenew)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/sessions/{id}/commands/info", wrapper.PostSessionsIdCommandsInfo)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/sessions/{id}/commands/echo", wrapper.PostSessionsIdCommandsEcho)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/sessions/{id}/commands/getfile", wrapper.PostSessionsIdCommandsGetfile)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/sessions/{id}/commands/pslist", wrapper.PostSessionsIdCommandsPslist)
 
 	return m
@@ -2918,6 +3229,119 @@ func (response PostSessionsIdCommandsEcho410JSONResponse) VisitPostSessionsIdCom
 	return err
 }
 
+type PostSessionsIdCommandsGetfileRequestObject struct {
+	Id   SessionID `json:"id"`
+	Body *PostSessionsIdCommandsGetfileJSONRequestBody
+}
+
+type PostSessionsIdCommandsGetfileResponseObject interface {
+	VisitPostSessionsIdCommandsGetfileResponse(w http.ResponseWriter) error
+}
+
+type PostSessionsIdCommandsGetfile200ApplicationoctetStreamResponse struct {
+	Body          io.Reader
+	ContentLength int64
+}
+
+func (response PostSessionsIdCommandsGetfile200ApplicationoctetStreamResponse) VisitPostSessionsIdCommandsGetfileResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
+type PostSessionsIdCommandsGetfile400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response PostSessionsIdCommandsGetfile400JSONResponse) VisitPostSessionsIdCommandsGetfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PostSessionsIdCommandsGetfile401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response PostSessionsIdCommandsGetfile401JSONResponse) VisitPostSessionsIdCommandsGetfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PostSessionsIdCommandsGetfile404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response PostSessionsIdCommandsGetfile404JSONResponse) VisitPostSessionsIdCommandsGetfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PostSessionsIdCommandsGetfile409JSONResponse struct{ BusyJSONResponse }
+
+func (response PostSessionsIdCommandsGetfile409JSONResponse) VisitPostSessionsIdCommandsGetfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PostSessionsIdCommandsGetfile410JSONResponse struct{ BrokenJSONResponse }
+
+func (response PostSessionsIdCommandsGetfile410JSONResponse) VisitPostSessionsIdCommandsGetfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(410)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PostSessionsIdCommandsGetfile422JSONResponse Error
+
+func (response PostSessionsIdCommandsGetfile422JSONResponse) VisitPostSessionsIdCommandsGetfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type PostSessionsIdCommandsInfoRequestObject struct {
 	Id SessionID `json:"id"`
 }
@@ -3208,6 +3632,9 @@ type StrictServerInterface interface {
 	// PostSessionsIdCommandsEcho Send ECHO on this lease's session. Binary data is base64.
 	// (POST /sessions/{id}/commands/echo)
 	PostSessionsIdCommandsEcho(ctx context.Context, request PostSessionsIdCommandsEchoRequestObject) (PostSessionsIdCommandsEchoResponseObject, error)
+	// PostSessionsIdCommandsGetfile Download a file from the module using a bounded-memory HTTP response.
+	// (POST /sessions/{id}/commands/getfile)
+	PostSessionsIdCommandsGetfile(ctx context.Context, request PostSessionsIdCommandsGetfileRequestObject) (PostSessionsIdCommandsGetfileResponseObject, error)
 	// PostSessionsIdCommandsInfo Send INFO on this lease's session.
 	// (POST /sessions/{id}/commands/info)
 	PostSessionsIdCommandsInfo(ctx context.Context, request PostSessionsIdCommandsInfoRequestObject) (PostSessionsIdCommandsInfoResponseObject, error)
@@ -3425,6 +3852,39 @@ func (sh *strictHandler) PostSessionsIdCommandsEcho(w http.ResponseWriter, r *ht
 	}
 }
 
+// PostSessionsIdCommandsGetfile operation middleware
+func (sh *strictHandler) PostSessionsIdCommandsGetfile(w http.ResponseWriter, r *http.Request, id SessionID) {
+	var request PostSessionsIdCommandsGetfileRequestObject
+
+	request.Id = id
+
+	var body PostSessionsIdCommandsGetfileJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PostSessionsIdCommandsGetfile(ctx, request.(PostSessionsIdCommandsGetfileRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PostSessionsIdCommandsGetfile")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PostSessionsIdCommandsGetfileResponseObject); ok {
+		if err := validResponse.VisitPostSessionsIdCommandsGetfileResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // PostSessionsIdCommandsInfo operation middleware
 func (sh *strictHandler) PostSessionsIdCommandsInfo(w http.ResponseWriter, r *http.Request, id SessionID) {
 	var request PostSessionsIdCommandsInfoRequestObject
@@ -3542,45 +4002,49 @@ func (sh *strictHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"3Fpfb9s4Ev8qA94BTbCynNzmFnsu7qFNulsfum0QZ5+awqDFscU1RWpJyqm3yHc/DCnZkq00abfOHfal",
-	"iCVyZjjz42/+qJ9YZorSaNTesdEnVnLLC/Row68JOieNHl/QD6nZiJXc5yxhmhfIRkwKljCLv1fSomAj",
-	"bytMmMtyLDjt8OuSVjlvpV6wu7s7WuxKox0G8S+5uMLfK3SefmVGe9ThT16WSmbcS6OHvzmj6dlW7N8t",
-	"ztmI/W24NX0Y37rhK2uNjaoEuszKkoSwERvrFVdSgI0KU3aXsJfWLFEfXvd1jqCQO3zmwEWXgnQwC+qB",
-	"awFF5TzMEAQq9CiGFjOL3KOIdlZufXgrX0BmioKskQ64ssjFGqSGuZKL3IPR4HPp4kGCWW+N/8lUWhze",
-	"tLcGXJXlLd2/al753Fj5Bz6B/l+kc1IvwFiQNY5myC1a8BTClNGWWgopuUDnpeZx9ydWWlOi9TKiPjcR",
-	"710VV/UtgtscNdDN+bfPypQlu7coiXfwMQKynFuBq+cbePGZM6ry2C/W2K+xS2qPC7QkIT75xFBXBRu9",
-	"Zz4rWcJqK9iHPZ13bfJ4H99uV5nZb5h5kvsqy80lXyvDxb47BfchsHNjC+7ZiM3WHtlDusKuXl0BA3ta",
-	"MiOwh9ISVqBzfNH/ruaaqRR9bNg1KCjYiuszbazn5gpdpfy+fQX/OK2pxbWUtYJTv62N2XhLav/DWW80",
-	"XVUSJFBMa15w++i4QLJbwK20OCit8SYzasMjlCVcZI1a+zMHS7QaFRRGVAqhVuLgCNNFCjcMs9zcsARu",
-	"WOmUdD7+LfXc3LBjGAyAw0z6KHRWSSVAGHT6mQeLmVlo+QfCEQeNt2hrJcdgUQu0DriDGzaTfvr2hoHl",
-	"PqcbnHMNM6Tr7aRC7dUahDVliSK90Sxh0mPheuNbP+DW8vVeQFv+Trrh6XVtX8AvrcnQuYnmpctNz+X8",
-	"RRJaycUILuclgplD9Ntg9WNK7AdH9NLiHC3qDOEcMiVR+2cOTOXLyh+PIDLXdIU2pKbvwNUa4Qj1CpUp",
-	"8Ri+A8/d0sFRGa1CN1z6nLKEG1a64D7LUUzrJ7Q8nsNFA05PoEQ7WFhTlSDFYIlrFCDQc6mg4KVLoFSV",
-	"A1RzsuxWg1sXM6OmEUMZ91yZxXEKF6jkDC33qNagjQdXYibnEgXMJSoxmK0H4Q/I0SIBxqFdoR1Gt6wk",
-	"3qYLQykuOE3qBaHQVDYLzvO28jnMjQ2v8SPP/NazyLMcHGbk/YiN7iWsTxySkBCSlnF12VoSC6S9OHf9",
-	"f8/1bYHgi4SHqH3hrl0od+1rGdOITzZn78VxcP3PFPt2epACtZd+zRKGeiWt0QWlcKKqrLLxRcjrH30o",
-	"M2OUSNlc1P9OI4Lol0Z/a+wycGhh7HpKqCLRat6TepKmtu2h+lh5TbnvEKXgHgdeFtiXO0U34X+uyGjX",
-	"BncJw4+ltOi+SFtvPkkCST6kvZVDCFSee3xoS+2oSVi7C43AblFM1wtJ24+dY/YhpKOjBZFQhLKEzagC",
-	"TlismPvD6bmv3H40eeblCqehcrwnMz6UO3eOvMPlXQUf+u5Sg+cJeTRaEcvHF1Ws5IKraVN8vI157n0Z",
-	"C9ImuN0E8Pr6+nICdEmsUVAqrnFDXgUVwtjNtylcU+Js2M8ohLKaKZlFGTzzo3qfaBYZrdZQcz5xeCG9",
-	"RwHeEPPyZVhT66AqAJoq4DngCu0aTMiyMenEXFAbdv3rOIGssioBXnlTBNwcw8KEmsGaapHHNP/ichzZ",
-	"1kuvyCuNhd1zv7gcs4RtSJSdUmxNiZqXko3Y9+lJ+j2L1XMIwTBHrnw+VHIVMLfAcAUJPMGUsWAj9jP6",
-	"12HZG1q107/+4+Tki3qPLjLdBrEN2s3y4SK53tWDs72u5YJjETtNTmdMO1hko/cfqBApCm7XbFQ3VETI",
-	"Gd1aEHEzbdQU+SzHbBlFDNuX5T6vTbY35E/5bFN9PYKiemqyPaecV9YSEuN9Db3k2cnpfQo2pg87DWdw",
-	"5MZ1b6TzwJVqyyzrJq/rl0vjuo4J/cFLI75de99JL13wUKq/2wvH6TdTvYnCvtffkGegzgjPm+J//Pan",
-	"d5tJwwptKOPqkJw8HJLW+Ojropiwf56cHX56cG60xsyDsfHEORX8OV8iUIIXVIenO5A6D54CHiEFfMGl",
-	"JpA1nrs+v4TcOD+iNoIE1002ELvt3NLhJynuYupQGNNrF5UX4XmDy7HYv7Jn+5knRtRiYVYo4MjYTSD5",
-	"zKH2x9/kao0FFqXxsSubG5vhIFOGPKJFrbxxUkL5RsNtLhUC1QvBgIfoqe+0J093I2L5mn41fs9iaD6/",
-	"aTOn2/GtptbJN/575iDUcQm0yrgEMk59XQBuErweKrno3Paw+H2/Fdslw+0w+e7DHj6HTSM8xCw3u5Po",
-	"LxP+GPYdi/Na4SvSdxgubs+tHsXFJ4dT3UUfvUYBZVzxZPijDf96BLFTtU+LTx+TBWJP0MX2BLWAV+ev",
-	"33XH1tv5ewovpeZ2DYJ7Hobx3OEPZ33UuYVmU4M/FTSpWTskPbWbwZ6h9zZJ/0UBErLxfQD5LBLiMOkp",
-	"sRBnKH+CqLrNRy0FxTSM5NyjS+32LKdvBLrXlRyS5XYHpD0orpcM42ByM9lMYF4ptQZRD7DjkHDgpMBR",
-	"3bhSV5bATPqCu2USajXneVGGLBga4fglL04bW9/MOFjkClZcVWEWHTu5BHgYiEPwFeVSGE/eDX784eR0",
-	"Kzs8Vg4GauD8mrrzrZ5GTJqmxwloMpJU8dvYd9M5UpjkvEQBSi5xZxD8JGPez894j6mN31b3h626rxqE",
-	"Q0Q4SJ2pSiBFNE426lq6+X5QD+X/olx3OXkznlzfx3YJWPSV1eErCBZce5k1Q5/m6vxn8u5tCrvEAQLn",
-	"vFLkUtPyKoluPnKAQw9yDiaOjgII9rnVosbbp2DUq6Dof1P1B910Pzcfsv/vkNaBzhXOLbqcWEkKtf1f",
-	"DJsmIMRxM8i6t9uKKw7p86jh/ilYNPKbNKUv+gZlVBvaOMNMoxmtSVt33vv+A0E1ZpyI8coqNmLD1Sm1",
-	"Rv8NAAD//w==",
+	"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",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

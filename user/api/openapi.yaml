@@ -166,6 +166,41 @@ paths:
           $ref: "#/components/responses/Busy"
         "410":
           $ref: "#/components/responses/Broken"
+  /sessions/{id}/commands/getfile:
+    parameters:
+      - $ref: "#/components/parameters/SessionID"
+    post:
+      summary: Download a file from the module using a bounded-memory HTTP response.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GetfileRequest"
+      responses:
+        "200":
+          description: File bytes streamed with Content-Length. A truncated body is a failed download. Concurrent modifications are not snapshot-consistent.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          description: Module rejected the command; the session remains usable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Busy"
+        "410":
+          $ref: "#/components/responses/Broken"
   /sessions/{id}/commands/pslist:
     parameters:
       - $ref: "#/components/parameters/SessionID"
@@ -323,7 +358,7 @@ components:
         supported_commands:
           description: >
             Decoded wire-protocol command names this session's kernel
-            module supports (e.g. "echo", "pslist", "info") -- a bit this
+            module supports (e.g. "echo", "pslist", "info", "getfile") -- a bit this
             build doesn't recognize (a newer module) renders as "bit_N"
             rather than being silently dropped.
           type: array
@@ -336,6 +371,16 @@ components:
         data:
           type: string
           format: byte
+    GetfileRequest:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          pattern: '^/'
+          description: Absolute path on the module's machine. At most 4096 UTF-8 bytes, without NUL bytes. Sent unchanged without a trailing terminator.
     PslistGroup:
       type: string
       enum:

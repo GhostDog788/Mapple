@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -103,11 +104,13 @@ type wizard struct {
 }
 
 type Model struct {
-	client         api.ClientWithResponsesInterface
-	profileName    string
-	profile        Profile
-	moduleProfiles map[string]ModuleProfile
-	configPath     string
+	client           Client
+	downloadCancel   context.CancelFunc
+	downloadQuitting bool
+	profileName      string
+	profile          Profile
+	moduleProfiles   map[string]ModuleProfile
+	configPath       string
 
 	input    textinput.Model
 	viewport viewport.Model
@@ -161,7 +164,7 @@ type logEntry struct {
 
 const replPlaceholder = "session list | session create | command pslist | help"
 
-func New(client api.ClientWithResponsesInterface, profileName string, profile Profile, moduleProfiles map[string]ModuleProfile, configPath string) Model {
+func New(client Client, profileName string, profile Profile, moduleProfiles map[string]ModuleProfile, configPath string) Model {
 	input := textinput.New()
 	input.Placeholder = replPlaceholder
 	input.Focus()
@@ -419,6 +422,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.printSuccess("echo: %s", encodeEchoDisplay(msg.data))
+		return m, nil
+
+	case getfileResultMsg:
+		if m.downloadCancel != nil {
+			m.downloadCancel()
+			m.downloadCancel = nil
+		}
+		if m.downloadQuitting {
+			return m, tea.Quit
+		}
+		if msg.err != nil {
+			m.printError("getfile: %v", msg.err)
+			return m, nil
+		}
+		m.printSuccess("getfile: saved %d bytes to %s", msg.bytes, msg.path)
 		return m, nil
 
 	case pslistResultMsg:

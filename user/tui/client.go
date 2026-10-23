@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -13,7 +14,14 @@ import (
 	"github.com/GhostDog788/Mapple/user/api"
 )
 
-func NewClient(p Profile) (api.ClientWithResponsesInterface, error) {
+// Client includes the raw HTTP method so file bodies can be streamed without
+// the generated WithResponse parser reading the entire download into memory.
+type Client interface {
+	api.ClientWithResponsesInterface
+	PostSessionsIdCommandsGetfile(context.Context, string, api.GetfileRequest, ...api.RequestEditorFn) (*http.Response, error)
+}
+
+func NewClient(p Profile) (Client, error) {
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 	if p.InsecureSkipVerify {
 		tlsConfig.InsecureSkipVerify = true
@@ -30,8 +38,11 @@ func NewClient(p Profile) (api.ClientWithResponsesInterface, error) {
 	}
 
 	httpClient := &http.Client{
-		Timeout:   60 * time.Second,
-		Transport: &http.Transport{TLSClientConfig: tlsConfig},
+		// Individual ordinary commands carry context deadlines. Downloads may
+		// run longer than a minute, so do not limit total response duration.
+		Transport: &http.Transport{TLSClientConfig: tlsConfig,
+			DialContext:         (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 60 * time.Second},
 	}
 
 	auth := func(ctx context.Context, req *http.Request) error {

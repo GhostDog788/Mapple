@@ -7,7 +7,7 @@
 
 #define MAPPLE_INFO_SUPPORTED_COMMANDS                                        \
 	((1ULL << MAPPLE_COMMAND_ECHO) | (1ULL << MAPPLE_COMMAND_PSLIST) |    \
-	 (1ULL << MAPPLE_COMMAND_INFO))
+	 (1ULL << MAPPLE_COMMAND_INFO) | (1ULL << MAPPLE_COMMAND_GETFILE))
 
 int mapple_handle_info(struct mapple_command_context *context)
 {
