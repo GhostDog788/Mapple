@@ -1,53 +1,55 @@
 # Installing mappled and mapple
 
-This covers taking the Go control plane (`docs/usermode-architecture-plan.md`)
-from a checked-out repo to a running `mappled` daemon on a management host
-and a `mapple` TUI on an operator's workstation. It assumes the kernel module
-side (`kernel/scripts/0*.sh`) is already set up per the top-level `Makefile`
-and `kernel/scripts/`; this document is only about the Go side (`user/`).
+[Documentation](../README.md) / Guides
+
+Install the Go server on a management host and the TUI on an operator's
+workstation. For the local Ubuntu/QEMU lab, follow [setup](setup.md) instead.
+This guide assumes the module's machine is already prepared and reachable.
+See [architecture](../architecture/overview.md) for components, transports, and session ownership.
+Run shell commands from the repository root unless indicated otherwise.
 
 ## 1. Build
 
-```
-cd user
-CGO_ENABLED=0 go build -o bin/mappled ./cmd/mappled
-CGO_ENABLED=0 go build -o bin/mapple ./cmd/mapple
+On a fresh x86-64 Ubuntu 24.04 build host, install the bootstrap tools and clone:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git make python3 golang-go build-essential openssl
+git clone https://github.com/GhostDog788/Mapple.git
+cd Mapple
 ```
 
-(`make user` from the repo root does this, plus `go vet`/`go test`/the
-OpenAPI regeneration check, and drops the binaries in the same place.)
-`CGO_ENABLED=0` matters here, not as a style preference: it's what makes both
-binaries statically linked, so they run on a minimal server image without
-matching libc, and can be dropped straight into a container `FROM scratch`
-if you go that route later. Verify with `file bin/mappled` --
-"statically linked" should appear; `ldd bin/mappled` should refuse to treat
-it as a dynamic executable at all.
+An installed `go` executable is required. Make selects and downloads the toolchain
+specified by `user/go.mod`; the destination machines only need the built binaries.
+From the repository root:
+
+```bash
+make server-build tui-build
+make check
+```
+
+The binaries are `.lab/builds/go/mappled` and `.lab/builds/go/mapple`. Both are built with
+`CGO_ENABLED=0`; they do not need a Go installation on the destination machine.
 
 ## 2. Install the binaries
 
 ```
-sudo install -m 0755 user/bin/mappled /usr/local/bin/mappled
-sudo install -m 0755 user/bin/mapple  /usr/local/bin/mapple
+sudo install -m 0755 .lab/builds/go/mappled /usr/local/bin/mappled
+sudo install -m 0755 .lab/builds/go/mapple  /usr/local/bin/mapple
 ```
 
-`mapple` (the TUI) is the only piece meant to run unprivileged, on whatever
-machine an operator is sitting at -- it never needs to be on the same host
-as `mappled` or the kernel module. `mappled` runs as root (see the
-"Explicit Assumptions" section of the architecture plan: arbitrary
-TCP/chardev destinations are opened as root by design), so install it only
-on hosts you're comfortable running a root network service on.
+`mapple` runs unprivileged on an operator's workstation. The installed `mappled`
+service runs as root and opens the TCP destinations and local character-device
+paths supplied by authenticated operators.
 
 ## 3. TLS certificate and key
 
-`mappled` terminates HTTPS itself (see `cmd/mappled/main.go`) and refuses to
+`mappled` terminates HTTPS itself (see `user/cmd/mappled/main.go`) and refuses to
 start without both `tls_cert_file` and `tls_key_file` configured
-(`server/config.go`'s `LoadConfig`). Two realistic paths:
+(`user/server/config.go`'s `LoadConfig`). Two realistic paths:
 
-**Private management network, self-signed (recommended default):** since
-the plan requires "a private management network... trusted by TUI and
-automation clients" rather than public HTTPS, a self-signed cert plus
-distributing its public cert to clients (as `ca_file` in the TUI profile,
-see step 6) is the normal case, not a shortcut:
+**Private management network, self-signed:** distribute the public certificate
+to clients and set `ca_file` in each TUI profile (step 8):
 
 ```
 sudo mkdir -p /etc/mapple
@@ -66,14 +68,14 @@ that will run `mapple` or otherwise call the API, for use as `ca_file`.
 step-ca, your org's internal CA) issues, and skip `ca_file` on clients
 entirely since the system trust store already covers it.
 
-`user/scripts/dev-setup.sh` automates the self-signed path for local
-development only -- it writes into a gitignored `user/dev/` and is not
-meant for production paths like `/etc/mapple`.
+For local development, follow the [setup guide](setup.md). `make server-run`
+and `make tui-run` create matching TLS/authentication configurations per machine
+under `.lab/runs/`; they do not use the production paths below.
 
 ## 4. Bearer tokens
 
 `mappled` never stores plaintext tokens -- only a name and a SHA-256 digest
-per identity (`server/config.go`'s `Identity`), compared in constant time.
+per identity (`user/server/config.go`'s `Identity`), compared in constant time.
 Generate one token per identity/operator:
 
 ```
@@ -88,7 +90,7 @@ recovery path from the stored digest, which is the point.
 
 ## 5. `/etc/mapple/mappled.json`
 
-Matches `server/config.go`'s `fileConfig`:
+Matches `user/server/config.go`'s `fileConfig`:
 
 ```json
 {
@@ -105,7 +107,7 @@ Matches `server/config.go`'s `fileConfig`:
 ```
 
 `handshake_timeout_seconds` and `lease_timeout_minutes` are optional
-(default to 30s and 15m, the plan's own defaults); `listen_address` and at
+(default to 30 seconds and 15 minutes); `listen_address` and at
 least one identity are required, and `LoadConfig` refuses to start without
 both TLS paths. Restrict the file itself:
 
@@ -114,18 +116,13 @@ sudo chmod 600 /etc/mapple/mappled.json
 sudo chown root:root /etc/mapple/mappled.json
 ```
 
-Token/identity changes require a `systemctl restart mappled` -- the plan
-is explicit that this is v1 behavior (no hot reload).
+Restart with `sudo systemctl restart mappled` after changing tokens or identities.
 
 ## 6. systemd service
 
-`user/packaging/systemd/mappled.service` is provided, hardened per the
-plan's "systemd restart and feasible root-service hardening" (
-`NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`, capability
-stripping, and more -- see the unit file's own comments for what's
-deliberately *not* restricted and why: `DevicePolicy` is left alone
-because the daemon's whole job is opening operator-supplied chardev paths
-it can't know about at deploy time).
+The provided `user/packaging/systemd/mappled.service` uses restart-on-failure,
+`NoNewPrivileges`, `ProtectSystem=strict`, and private temporary storage.
+See the unit file for its permissions and filesystem restrictions.
 
 ```
 sudo cp user/packaging/systemd/mappled.service /etc/systemd/system/
@@ -140,11 +137,8 @@ Validate the unit file itself any time with
 
 ## 7. Firewall
 
-The plan requires that "the private management network must prevent
-ordinary clients from reaching module TCP port 4444 directly. Modules may
-allow multiple designated server machines." Concretely: only `mappled`
-hosts should be able to reach port 4444 on any module machine, and
-everything else should be able to reach only `mappled`'s HTTPS port.
+Allow only designated `mappled` hosts to reach module TCP port 4444. Operators
+and automation reach the server's HTTPS port on the private management network.
 
 On a module host (nftables example, adjust the mappled host list):
 
@@ -190,6 +184,6 @@ Fill in the identity's token from step 4, the daemon's URL, and either
 
 Multiple profiles can coexist in the same file (e.g. one per environment);
 `mapple -profile <name>` selects one, otherwise `active_profile` is used.
-Run `mapple` and you're in the TUI: `n` to create a session against a
-module's `host:port` or chardev path, `enter` for detail, `i`/`e`/`p` for
-info/echo/pslist, `/` to filter a list, `s` to cycle pslist sort order.
+Run `mapple` and use `session create` to connect to a module by TCP or character
+device. Use `command info`, `command echo <text>`, and `command pslist` after
+connecting. `help` and `session help` list the current commands.

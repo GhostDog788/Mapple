@@ -1,112 +1,124 @@
+<p align="center">
+  <img src="docs/assets/maple-leaf.svg" width="128" height="128" alt="A red and amber maple leaf">
+</p>
+
 # Mapple
 
-Mapple is a kernel-resident agent (`mapple.ko`) that gives a control server
-full access to the machine it's installed on, over a small versioned wire
-protocol that's designed to keep growing new capabilities.
+Explore Linux from the kernel, through an HTTPS API and a terminal interface.
 
-`mappled` is that control server: a root HTTPS daemon, and the only thing
-ever allowed to speak the agent's wire protocol directly. Everything else —
-the `mapple` terminal UI, your own scripts, another frontend you write —
-talks to `mappled` over its authenticated OpenAPI-defined HTTP API instead.
-The kernel side never touches a network or a terminal on its own.
+Mapple combines a C kernel module, a Go server, and a Go TUI. Inspect processes
+and threads, query module capabilities, and send echo requests through a live
+kernel session. An Ubuntu/QEMU development lab brings the whole stack together,
+with source breakpoints, kernel stepping, and navigation into Linux definitions.
 
+```text
+Ubuntu host                                  Ubuntu QEMU guest
+
+mapple TUI ── HTTPS ── mappled ── TCP ──────── mapple.ko
+                           Go server          C kernel module
+
+VS Code / GDB TUI ── QEMU GDB stub ────────── kernel + module
 ```
- a frontend ──HTTPS/OpenAPI──▶ mappled (control server, root) ──wire protocol──▶ mapple.ko
- (mapple TUI,                                                   (TCP :4444 or /dev/mapple)
-  or your own client)
+
+The server also supports a local `/dev/mapple` character device when it runs on
+the module's machine. The TUI communicates through the server's authenticated
+HTTPS API.
+
+## Get started
+
+Use an **x86-64 Ubuntu 24.04 host** with sudo and an internet connection. KVM is
+recommended. Allow at least **10 GiB free for the kernel build**, plus room for
+the Ubuntu image and VM disk growth. The default guest uses 4 GiB RAM and 2 CPUs;
+see the [setup guide](docs/guides/setup.md) for prerequisites and smaller VM settings.
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git make python3
+git clone https://github.com/GhostDog788/Mapple.git
+cd Mapple
+make setup
+make kernel-create NAME=baseline VERSION=6.6.6 PROFILE=debug
+make kernel-build KERNEL=baseline
+make machine-create NAME=dev KERNEL=baseline
+make machine-start
+make machine-prepare
+make module-run
 ```
 
-## Repo layout
+`make setup` installs the remaining host tools. The first machine is selected
+automatically. `kernel-build` compiles Linux once; `machine-prepare` installs it,
+reboots, and verifies the guest. Other machines can reuse the same kernel slot.
 
-| Path | What |
+Run `make` to browse commands. Use `make machine-create HELP=1` (or any command
+with `HELP=1`) for its arguments, defaults, examples, and effects without running it.
+
+Start the server in one terminal:
+
+```bash
+make server-run
+```
+
+From the repository root in another terminal, launch the TUI:
+
+```bash
+make tui-run
+```
+
+Inside the TUI:
+
+```text
+session create dev
+command info
+command echo hello
+command pslist
+```
+
+You now have a session to the module running in the guest. `command pslist`
+opens a process and thread snapshot; press Esc to return to the command prompt.
+For a terminal-only host, launch the TUI
+with `make tui-run FOREGROUND=1`.
+
+## Develop and debug
+
+Use `make module-build`, `make server-build`, or `make tui-build`. Reload Mapple
+with `make module-run`, and run repository checks with `make check`.
+
+Run `make navigation-prepare` once per kernel for Ctrl+click into Mapple and Linux
+source. The VS Code status bar shows readiness and follows the selected machine.
+
+For VS Code, install the recommended C/C++ and clangd extensions, run
+`make vscode-open`, and press **F5** in the generated machine workspace. Set
+breakpoints in `kernel/src/` and trigger requests from the TUI. For GDB TUI, run
+`make module-debug`, create a fresh TUI session, then run `make gdb-open`.
+The [debugging guide](docs/guides/usage.md#kernel-debugging) walks through both flows.
+
+Manage machines with `make machine-list` and `make machine-use NAME=...`.
+`MACHINE=...` overrides the destination for one command. `make kernel-list`
+shows reusable kernel slots and their development tiers. The
+[usage guide](docs/guides/usage.md) covers kernel switching, source navigation,
+and simultaneous development on multiple machines.
+
+## Documentation
+
+The [documentation index](docs/README.md) organizes guides, architecture, and
+reference material.
+
+| Guide | What you will find |
 | --- | --- |
-| `kernel/` | The kernel module (`mapple.ko`): sessions, transports (TCP + chardev), commands (`echo`, `pslist`, `info`). Cross-built against a target's exact running kernel via `kernel/scripts/`. |
-| `shared/` | The wire ABI both the kernel module and any client compile against (`shared/commands.h`, `shared/shared.h`) — the one header pair that has to stay in sync across the C/Go boundary. |
-| `user/` | The Go control plane: `user/server/internal/moduleclient` (the private wire-protocol client), `user/api` (OpenAPI contract + generated server/client), `user/server` (the `mappled` implementation), `user/tui` (the `mapple` TUI), `user/cmd/{mappled,mapple}` (the two binaries). |
-| `user/packaging/systemd/` | The `mappled.service` unit. |
-| `docs/` | Architecture and protocol docs — see below. |
-| `lab.example.env` / `lab.local.env` | Per-machine target config (IPs, SSH creds, debug endpoints) for the kernel build/deploy/debug scripts. Copy the example to `lab.local.env` (gitignored) and fill in your machines. |
+| [Setup](docs/guides/setup.md) | From a fresh Ubuntu host to a working lab; new or existing QEMU VMs |
+| [Usage](docs/guides/usage.md) | Daily development, every Make target and option, debugging, and troubleshooting |
+| [Architecture](docs/architecture/overview.md) | Components, transports, API, and session ownership |
+| [Server installation](docs/guides/server-installation.md) | Deploying the Go server and TUI outside the local lab |
 
-## Building
+The application lives in [`kernel/src/`](kernel/src), [`shared/`](shared), and
+[`user/`](user). Development tooling lives in [`scripts/`](scripts) and
+[`scripts/mapple_dev/`](scripts/mapple_dev); the editor integration is in
+[`tools/vscode-navigation/`](tools/vscode-navigation). Private lab state and VM disks stay in the
+gitignored `.lab/` directory.
 
-```
-make            # kernel module (default target's kernel-cache) + user/ (build, vet, test, binaries)
-make kernel     # kernel module only
-make user       # Go side only: OpenAPI regen-check, build, vet, test, and
-                #   CGO_ENABLED=0 static binaries at user/bin/{mappled,mapple}
-```
+## Meet Mapple
 
-Kernel module builds are cross-compiled against a specific target's exact
-running kernel, driven by `lab.local.env` and `kernel/scripts/0*.sh`
-(`00-check-target.sh`, `02-setup-host-build.sh`, `03-build-module.sh`,
-`04-deploy-and-prep-gdb.sh`) — see their own header comments and
-`docs/session-lifecycle.md` / `docs/pslist-snapshot.md` for what the module
-itself is doing.
+This project is named after my dog, **Mapple**. “Mapple” is how I spell her name
+in English. It started as a spellig mistake when I was 14 and I caried it on :)
 
-## Running the control plane
-
-```
-cd user
-bash scripts/dev-setup.sh                     # local self-signed cert + bearer token + dev/mappled.json
-go run ./cmd/mappled -config dev/mappled.json # in one terminal
-
-# in another: fill in the server_url/bearer_token dev-setup.sh printed
-go run ./cmd/mapple -init && $EDITOR ~/.config/mapple/config.json
-go run ./cmd/mapple
-```
-
-`docs/mapple-install.md` covers the production path: real TLS provisioning,
-bearer-token generation/hashing, the systemd unit, firewall rules for the
-kernel module's TCP port, and per-operator TUI profiles.
-
-## Commands
-
-Every command below runs against a session (`$ID`), which you get by
-creating one first — `n` in the `mapple` TUI, or
-`POST /v1/sessions` with `{"type":"tcp","host":"...","port":4444}`
-(see `docs/mapple-install.md` for the full request). In the TUI, each
-command is a single key once you're viewing a session's detail screen.
-
-### `info` — sanity-check a session (TUI: `i`)
-
-Returns the kernel-side session ID, the module's max concurrent sessions,
-and a bitmap of which commands this module build supports. Cheap, useful
-right after creating a session.
-
-```
-curl -sk -H "Authorization: Bearer $TOKEN" -X POST \
-  https://$HOST/v1/sessions/$ID/commands/info
-```
-
-### `echo` — round-trip check (TUI: `e`)
-
-Sends a payload through the kernel module and back unchanged. A liveness
-check for the wire protocol itself, not a real capability.
-
-```
-curl -sk -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"data":"aGVsbG8="}' -X POST \
-  https://$HOST/v1/sessions/$ID/commands/echo
-```
-
-### `pslist` — process/thread snapshot (TUI: `p`)
-
-A point-in-time snapshot of every process and thread: identity
-(executable, command line), security context (uid/gid, capabilities,
-LSM), open file descriptors, and network sockets. Optional group flags
-narrow what comes back — see `docs/pslist-snapshot.md` for the full
-collection model.
-
-```
-curl -sk -H "Authorization: Bearer $TOKEN" -X POST \
-  https://$HOST/v1/sessions/$ID/commands/pslist
-```
-
-## Docs
-
-- `docs/usermode-architecture-plan.md` — the Go control-plane design (wire
-  protocol v3, the module-client library, the HTTPS API, the TUI).
-- `docs/mapple-install.md` — production installation.
-- `docs/pslist-snapshot.md` — what a `pslist` snapshot actually collects and
-  the guarantees around it (request-scoped, no retained state between calls).
-- `docs/session-lifecycle.md` — kernel-side session/transport invariants.
+<img src="docs/assets/mapple.jpg" width="480" alt="Mapple, a brown and white dog, curled up asleep on a tiled floor">

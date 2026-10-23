@@ -1,27 +1,19 @@
 {
-  "C_Cpp.default.configurationName": "Kernel + Usermode",
+  "C_Cpp.default.configurationName": "Kernel",
   "C_Cpp.intelliSenseEngine": "disabled",
-  "clangd.path": "/usr/bin/clangd-18",
-  "clangd.arguments": [
-    "--compile-commands-dir=.",
-    "--background-index",
-    "--header-insertion=never",
-    "--clang-tidy=false",
-  ],
+  "clangd.path": "${workspaceFolder}/scripts/clangd.py",
   "files.associations": {
     "*.h": "c",
     "*.c": "c",
     "Kbuild": "makefile"
   },
   "files.exclude": {
-    "kernel/.gdb": true,
-    "kernel/build": true,
-    "user/.gdb": true,
-    "user/build": true,
     ".cache": true,
     "compile_commands.json": true,
     "*/compile_commands.json": true,
-    "*/module_compile_commands.json": true,
-    "*/linux_compile_commands.json": true
+    ".lab": true
+  },
+  "files.watcherExclude": {
+    "**/.lab/**": true
   }
 }

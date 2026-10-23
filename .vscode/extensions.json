@@ -1,5 +1,6 @@
 {
   "recommendations": [
+    "mapple.navigation",
     "ms-vscode.cpptools",
     "llvm-vs-code-extensions.vscode-clangd",
     "editorconfig.editorconfig"

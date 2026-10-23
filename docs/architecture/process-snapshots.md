@@ -1,12 +1,14 @@
-# PSLIST snapshot architecture
+# Process snapshot architecture
+
+[Documentation](../README.md) / Architecture
 
 PSLIST is an observational, request-scoped snapshot. Every request starts with an
 empty collection context, walks the kernel task list once, writes the response,
 and releases every reference and allocation. The module does not install hooks,
 keep accounting data, or retain object IDs between requests.
 
-The userspace JSON compatibility contract is documented in
-[`pslist-json-v1.md`](pslist-json-v1.md).
+The server's [JSON representation](../reference/process-snapshot-json.md)
+describes how these snapshots appear in the HTTPS API.
 
 ## Collection groups
 
@@ -26,7 +28,7 @@ optional collectors:
 | 8 | `memory-maps` | VMA and mapped-file metadata |
 | 9 | `elf` | static metadata for mapped ELF files |
 
-The current milestone implements every listed group. `elf` implies
+All listed groups are implemented. `elf` implies
 `memory-maps`, just as `fds-details` and `network` imply `fds`.
 The streamed response reports both the requested and effective masks.
 
@@ -155,6 +157,5 @@ or intentionally change process, file, socket, or namespace state. Observation c
 still cause incidental kernel activity such as allocation, cache fills, page faults,
 or lock contention. All module-owned state is released at the end of the request.
 
-CPU, I/O, and TCP counters added by later collectors are existing kernel-maintained
-counters. Rates and deltas are calculated by remote userspace from two independent
+CPU, I/O, and TCP counters come from existing kernel-maintained counters. Rates and deltas are calculated by remote userspace from two independent
 snapshots; the module never maintains history.

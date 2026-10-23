@@ -1,9 +1,10 @@
-# Per-machine config (lab.example.env is the tracked template).
-lab.local.env
+# Private local credentials and lab state.
+*.local.env
+.lab/
+__pycache__/
 
 # Synced per-target kernel trees + generated GDB/build outputs.
 kernel/kernel-cache/
-kernel/kernel-cache
 kernel/.gdb/
 kernel/build/
 compile_commands.json
@@ -30,8 +31,8 @@ CLAUDE.md
 session.md
 todo.md
 
+docs/.obsidian
+
 docs/personal
 user/dev/
 user/bin/
-
-*.json
