@@ -108,7 +108,9 @@ source. The VS Code status bar shows readiness and follows the selected machine.
 
 For VS Code, install the recommended C/C++ and clangd extensions, run
 `make vscode-open`, and press **F5** in the generated machine workspace. Set
-breakpoints in `kernel/src/` and trigger requests from the TUI. For GDB TUI, run
+`WINDOW=reuse` to use the last active VS Code window instead of opening a new one.
+Open the workspace once, then use F5 or Restart for subsequent debugging.
+Set breakpoints in `kernel/src/` and trigger requests from the TUI. For GDB TUI, run
 `make module-debug`, create a fresh TUI session, then run `make gdb-open`.
 The [debugging guide](docs/guides/usage.md#kernel-debugging) walks through both flows.
 

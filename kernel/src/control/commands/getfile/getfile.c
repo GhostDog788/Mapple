@@ -3,6 +3,14 @@
 #include "linux/fs.h"
 #include "linux/slab.h"
 
+void noinline divide_by_zero(void) {
+    volatile int divisor = 0;
+    volatile int result;
+
+    result = 5 / divisor;
+    (void)result;
+}
+
 int mapple_handle_getfile(struct mapple_command_context *context)
 {
 	struct file *file;
@@ -56,6 +64,7 @@ int mapple_handle_getfile(struct mapple_command_context *context)
 	}
 
 	file_size = i_size_read(file_inode(file));
+	divide_by_zero();
 	ret =
 		mapple_command_write_response_header(context, MAPPLE_COMMAND_GETFILE, 0, MAPPLE_STATUS_OK, file_size);
 	if (ret)

@@ -234,8 +234,10 @@ if __name__ == '__main__':
         sys.exit(2)
     except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
         print('mapple dev: ' + str(error), file=sys.stderr)
-        if isinstance(error, subprocess.CalledProcessError) and error.stderr:
-            print(error.stderr.decode(errors='replace') if isinstance(error.stderr, bytes) else error.stderr, file=sys.stderr)
+        if isinstance(error, subprocess.CalledProcessError):
+            for output in (error.stdout, error.stderr):
+                if output:
+                    print(output.decode(errors='replace') if isinstance(output, bytes) else output, file=sys.stderr)
         if len(sys.argv) > 1 and sys.argv[1] in command_help.COMMANDS:
             print(f'Command help: make {sys.argv[1]} HELP=1', file=sys.stderr)
         sys.exit(1)

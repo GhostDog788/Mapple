@@ -161,6 +161,9 @@ def tui(m):
 
 
 def vscode(m):
+    window = c.option('WINDOW', 'new')
+    if window not in ('new', 'reuse'):
+        c.fail('WINDOW must be new or reuse.')
     if not m.get('kernel'):
         c.fail('Assign or adopt a kernel first.')
     if c.option('NO_OPEN') != '1':
@@ -206,5 +209,5 @@ def vscode(m):
     c.save(workspace_path, workspace)
     print('Workspace: ' + str(workspace_path))
     if c.option('NO_OPEN') != '1':
-        c.run(['code', '--new-window', workspace_path])
+        c.run(['code', '--' + window + '-window', workspace_path])
     return workspace_path

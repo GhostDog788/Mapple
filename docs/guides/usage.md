@@ -99,6 +99,20 @@ For VS Code:
 make vscode-open MACHINE=dev MIN_DEBUG=kernel-source
 ```
 
+By default, this opens a new window (`WINDOW=new`). To replace the workspace in
+the last active VS Code window, use:
+
+```bash
+make vscode-open MACHINE=dev WINDOW=reuse
+```
+
+The last active window may differ from the window whose terminal runs the command.
+Stop active debugging before replacing its workspace. Each invocation generates
+a workspace bound to the selected machine and run, whichever window mode you use.
+Open it once and use F5 or Restart for subsequent debugging; run `vscode-open`
+again when you need a workspace for another target. Use `WINDOW=new` to keep both
+target workspaces open. `NO_OPEN=1` only generates the workspace without opening it.
+
 This opens a generated machine-bound workspace. Install the recommended C/C++
 and clangd extensions, select **Mapple: dev**, and press F5. Its prelaunch task
 builds/uploads for that frozen destination, so close existing application sessions
@@ -127,9 +141,48 @@ and uses Microsoft's C/C++ adapter underneath. Debug Console execution commands
 such as `-exec continue`, `-exec next`, `-exec step`, `-exec finish` and
 `-exec interrupt` synchronize the toolbar with the same GDB session. Inspection
 commands pass through normally. `vscode-open` checks the installed integration
-version before opening a new window; after updating, generate a new workspace
+version before opening the workspace; after updating, generate a new workspace
 with `make vscode-open`. Old generated workspaces retain their old debug configuration.
 Pausing kernel execution also pauses that machine's networking.
+
+With x86-64 kernel-source debugging, both harnesses automatically load the
+read-only exception unwinder in `scripts/gdb/mapple-unwind.py`. Set function
+breakpoints on `die` and `panic` (or `exc_divide_error` for a division exercise).
+When stopped, the Call Stack can cross supported Linux IDT entries and show the
+faulting function and its callers. Select that frame to open the faulting source
+line and inspect available locals through Variables, Watch and hovers. Terminal
+GDB uses the same frames with `bt`, `frame` and `info locals`.
+
+The helper adds local DWARF signal-frame metadata after checking the kernel's
+`pt_regs` layout and entry instructions. It does not change guest registers,
+memory or execution. GDB displays the exception boundary as
+`<signal handler called>`; this represents the CPU exception, not a userspace
+signal. Optimized-out values cannot be reconstructed, and the faulting
+instruction's output has not yet been assigned. Support covers ordinary x86-64
+IDT entries such as division, invalid opcode, general protection and page fault;
+it does not cover NMI, double fault, IST/paranoid entries or the special int3
+entry. Unsupported layouts are left to GDB's existing unwinding.
+
+Newly prepared debug runs load the helper automatically; F5 prepares the run
+before launching GDB. An already paused terminal GDB session can load it with
+`source /absolute/path/to/mapple/scripts/gdb/mapple-unwind.py`, without a module
+rebuild or guest restart. It can be sourced again safely. VS Code's C++ adapter
+caches stacks for the current stop: sourcing the helper in the Debug Console
+updates GDB, but does not refresh that cached editor stack. Use automatic loading
+at session startup for the full editor view. The helper never resumes the guest
+or rewrites registers to work around this cache.
+
+An unprivileged fixture verifies unwinding from exception, Oops and panic
+handlers, all saved general registers, locals, and unchanged inferior state:
+
+```bash
+python3 -m unittest discover -s scripts/tests -p test_exception_unwind.py -v
+python3 scripts/tests/exception_unwind_integration.py
+```
+
+The second command tests the real VS Code Call Stack, Variables, Watch, hovers
+and editor navigation with an isolated profile and a fixture core dump. Neither
+test connects to a VM. Evidence is saved under `.lab/unwind-verification`.
 
 To verify the actual editor controls against an already prepared, disposable
 machine with full kernel-source support:
@@ -260,7 +313,7 @@ with a letter or digit and contain letters, digits, dots, underscores and hyphen
 | `tui-run` | Build and launch the matching machine's TUI in a new terminal |
 | `gdb-open` | Open GDB TUI for a prepared `RUN`; use `FOREGROUND=1` for this terminal |
 | `gdb-attach` | Attach GDB in this terminal; accepts `RUN` |
-| `vscode-open` | Generate/open a machine-bound VS Code workspace; `NO_OPEN=1` only generates it |
+| `vscode-open` | Generate/open a machine-bound VS Code workspace; `WINDOW=reuse` uses the last active window; `NO_OPEN=1` only generates it |
 | `debug-list` | List module run IDs, machines, kernels, state and debugger mode |
 | `doctor` | Inspect the machine and report artifact, identity, API, compiler and module-loading blockers |
 | `clean` | Remove application build outputs, preserving preparation data and frozen runs |
@@ -302,6 +355,7 @@ with a letter or digit and contain letters, digits, dots, underscores and hyphen
 | `SIGNER` | Optional local executable to sign a frozen module copy before upload; may be persisted during kernel creation/import |
 | `CASCADE` | Explicitly retire machine records referencing a removed kernel |
 | `NO_OPEN` | Generate a VS Code workspace without opening a window |
+| `WINDOW` | VS Code window mode: `new` (default) or `reuse` to replace the workspace in the last active window |
 | `GDB` | Override the GDB executable; otherwise use native GDB or gdb-multiarch for foreign targets |
 | `CLANGD` | Native clangd executable for navigation preparation; default `clangd-18`; distinct from the repository's editor launcher |
 | `NAV_TIMEOUT` | Navigation indexing timeout in seconds; default 1800; partial index shards remain reusable after interruption/failure |
@@ -345,6 +399,19 @@ A `SIGNER` executable receives `<module.ko> <kernel-record.json>
 be stored in kernel snapshots, and signing does not change interface compatibility.
 
 ## State and recovery
+
+Development commands launched through Make stream their output to the terminal.
+If a command fails, a separate supervisor also prints available host kernel
+messages recorded during that invocation, including full Oops traces. It reports
+fatal signals explicitly; `SIGKILL` alone does not prove an out-of-memory kill.
+Earlier kernel messages are excluded, and concurrent messages may be unrelated.
+If journal access is unavailable, the supervisor says so without requesting sudo.
+This reporting requires the supervisor and host to remain running; it cannot
+print after a host panic or a kill of the entire process group.
+
+`module-build` prints its validation, compilation, and navigation phases. A failure
+during validation may happen before a new compiler log is created; an older
+`build.log` does not describe that attempt.
 
 All large managed files live under `.lab`: `kernels/<name>`, `machines/<name>`,
 `builds/`, `runs/<id>`, and `downloads/`. Records are private JSON; use show commands

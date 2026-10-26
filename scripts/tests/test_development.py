@@ -627,7 +627,13 @@ with patch.object(machines, 'inspect', return_value={{'boot_id': 'boot'}}), \\
                 r.update(debug_mode='kernel-source' if kind != 'symbol-only' else 'kernel-symbol',
                          sections={'.text': '0xffffffffc0100000'}, kernel_offset=0)
                 runs.debug_script(r, k)
-                setup = (runs.root(r) / 'debug.gdb').read_text().split('target remote')[0]
+                script = (runs.root(r) / 'debug.gdb').read_text()
+                if kind != 'symbol-only':
+                    self.assertIn('mapple-unwind.py', script)
+                    self.assertGreater(script.index('mapple-unwind.py'), script.index('add-symbol-file'))
+                else:
+                    self.assertNotIn('mapple-unwind.py', script)
+                setup = script.split('target remote')[0]
                 offline = runs.root(r) / 'offline.gdb'
                 offline.write_text(setup)
                 args = ['gdb', '-nx', '-q', '-batch', '-x', offline]

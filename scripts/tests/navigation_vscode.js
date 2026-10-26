@@ -43,6 +43,7 @@ exports.run = async function () {
     try {
         await ready('a');
         await lookup('a');
+        result.checks.push('Startup with an open C file reaches readiness and resolves definitions');
         await vscode.window.showTextDocument(vscode.Uri.file(path.join(lab, 'kernels/a/source/net/socket.c')), {preview: false});
         result.checks.push('A: unopened Linux implementation');
         if (process.env.MAPPLE_NAV_TEST_REOPEN !== '1') {

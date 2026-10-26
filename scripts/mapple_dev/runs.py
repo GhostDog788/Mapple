@@ -73,6 +73,7 @@ def build(k, publish=True, freeze=None):
         if current['id'] != k['id']:
             c.fail('Kernel slot was replaced while waiting for its build.')
         k = current
+        print(f'mapple dev: Validating kernel {k["name"]} inputs before compilation.', flush=True)
         kernels.validate(k)
         if not kernels.characteristics(k)['build']:
             c.fail('Tier 0: ' + ', '.join(kernels.characteristics(k)['blockers']))
@@ -81,6 +82,7 @@ def build(k, publish=True, freeze=None):
         t = k.get('toolchain', {})
         c.executable(shlex.split(t.get('cc', 'gcc'))[0], env=kernels.toolenv(k))
         directory = c.directory(c.STATE / 'builds/module' / k['id'])
+        print(f'mapple dev: Compiling module against {k["name"]}.', flush=True)
         c.logged(['make', '-C', c.ROOT / 'kernel', *kernels.make_args(k),
                f'KDIR={build}', f'INTERMEDIATE_DIR={directory / "intermediate"}',
                f'ARTIFACT_DIR={directory / "artifacts"}', f'MODULE_DIR={c.ROOT / "kernel"}',
@@ -95,6 +97,7 @@ def build(k, publish=True, freeze=None):
         if expected and expected not in kernels.elf_info(artifact).get('machine', ''):
             c.fail('Compiler produced a module for another architecture. Review the kernel toolchain.')
         from . import navigation
+        print('mapple dev: Updating source navigation.', flush=True)
         navigation.capture(k, directory / 'compile_commands.json')
         if freeze is not None:
             # Freeze under the build lock: a second machine may rebuild the
@@ -345,6 +348,12 @@ def debug_script(r, k):
     lines.append(f'target remote {r["machine_snapshot"]["gdb"]}')
     if r['debug_mode'] != 'module':
         lines.append(f'add-symbol-file "{relocated}" {r["sections"][".text"]}')
+    if r['debug_mode'] == 'kernel-source' and k['arch'] == 'x86_64':
+        # Both terminal GDB and VS Code source this script. Install the missing
+        # IDT signal-frame CFI after connecting, so entry validation sees the
+        # running kernel's alternatives. This only adds local debugger metadata.
+        helper = Path(__file__).resolve().parents[1] / 'gdb' / 'mapple-unwind.py'
+        lines.append(f'source {helper}')
     (directory / 'debug.gdb').write_text('\n'.join(lines) + '\n')
 
 

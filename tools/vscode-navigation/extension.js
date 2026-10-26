@@ -43,6 +43,31 @@ async function activate(context) {
             (!selected.kernel_root || !inside(file, selected.kernel_root));
     }
 
+    async function awaitStarted(targetClient) {
+        // The clangd extension publishes its client before its asynchronous
+        // startClient() calls start(). Stopped here can mean "not started yet".
+        // Also, Running precedes feature registration: await start()'s existing
+        // promise before stopping or sending requests, not just the state flag.
+        const deadline = Date.now() + 30000;
+        const timeout = () => new Error('clangd startup timed out. See the clangd output channel.');
+        while (targetClient.state !== 2 && targetClient.state !== 3) {
+            if (disposed) return;
+            if (Date.now() >= deadline) throw timeout();
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        let timer;
+        try {
+            await Promise.race([
+                targetClient.start(),
+                new Promise((_, reject) => {
+                    timer = setTimeout(() => reject(timeout()), Math.max(0, deadline - Date.now()));
+                })
+            ]);
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
     function render() {
         const label = current?.machine ? `${current.machine} · ${current.kernel || 'no kernel'}` : 'No active machine';
         const names = {loading: 'Loading index', indexing: 'Indexing', ready: 'Ready', limited: 'Limited navigation',
@@ -114,6 +139,7 @@ async function activate(context) {
         }
         current = manifest;
         if (activeGeneration === manifest.generation) { render(); return; }
+        const previousGeneration = activeGeneration;
         activeGeneration = manifest.generation;
         const generation = activeGeneration;
         checking = false;
@@ -125,16 +151,15 @@ async function activate(context) {
         const api = await extension.activate();
         clangdApi = api;
         client = api.getApi(1).languageClient;
-        // Await shutdown: old definitions/providers must be gone before restart.
-        if (client) {
-            const startupDeadline = Date.now() + 30000;
-            while (client.state === 3 && Date.now() < startupDeadline) {
-                await new Promise(resolve => setTimeout(resolve, 50));
-            }
+        // On activation (or a manual upstream restart), adopt the client already
+        // launched through our selected-kernel wrapper. Restart only on a real
+        // context change, after initialization and shutdown have both finished.
+        if (client && previousGeneration !== null) {
+            await awaitStarted(client);
             await client.stop();
         }
         if (disposed) return;
-        await vscode.commands.executeCommand('clangd.restart');
+        if (!client || previousGeneration !== null) await vscode.commands.executeCommand('clangd.restart');
         client = api.getApi(1).languageClient;
         if (!client) throw new Error('clangd did not start. Check the clangd extension settings.');
         const middleware = client.clientOptions.middleware || (client.clientOptions.middleware = {});
@@ -182,11 +207,8 @@ async function activate(context) {
             }
             if (previousProgress) previousProgress(token, value, next); else next();
         };
-        const deadline = Date.now() + 30000;
-        while (!client.isRunning() && Date.now() < deadline) {
-            await new Promise(resolve => setTimeout(resolve, 50));
-        }
-        if (!client.isRunning()) throw new Error('clangd startup timed out. See the clangd output channel.');
+        await awaitStarted(client);
+        if (disposed) return;
         // Initial synchronization can precede middleware attachment. Explicitly
         // remove any inactive documents already sent during that narrow window.
         for (const document of vscode.workspace.textDocuments) {
@@ -204,8 +226,10 @@ async function activate(context) {
         render();
         await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(root, 'kernel/src/main.c')));
         await client.sendRequest('workspace/symbol', {query: 'mapple'});
-        if (ended === generation) await verifyReady(generation);
-        // Progress is authoritative; never call a cached receipt live readiness.
+        // An adopted client may have finished loading its cached index before
+        // middleware attached. Verify actual definitions in that case too;
+        // never infer live readiness from the preparation receipt alone.
+        if (ended === generation || progressGeneration !== generation) await verifyReady(generation);
         if (progressGeneration === generation && phase === 'ready') render();
         output.appendLine(`Selected ${manifest.machine}: ${manifest.kernel} (${manifest.fingerprint})`);
     }

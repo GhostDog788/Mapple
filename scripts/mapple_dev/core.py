@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -127,7 +128,9 @@ def logged(argv, path, **kwargs):
     finally:
         writer.join(timeout=10)
     if code:
-        fail(f'Build failed; see {path}')
+        reason = (f'terminated by {signal.Signals(-code).name} (signal {-code})'
+                  if code < 0 else f'exited with status {code}')
+        fail(f'Build command {reason}. Output was streamed above; saved log: {path}')
 
 
 def digest(path):

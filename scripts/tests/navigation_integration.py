@@ -95,7 +95,10 @@ def main():
             for extension in extensions:
                 if extension not in ['mapple.navigation', 'llvm-vs-code-extensions.vscode-clangd']:
                     command += ['--disable-extension', extension]
-            command += [str(debug_workspace if reopen else repo)]
+            # Real workspaces restore C tabs while extensions are activating.
+            # Exercise that startup overlap instead of starting with no editor.
+            command += [str(debug_workspace if reopen else repo),
+                        str(repo/'kernel/src/control/transports/tcp_server/tcp.c')]
             if not os.environ.get('DISPLAY'): command = ['xvfb-run', '-a', *command]
             env = dict(os.environ, MAPPLE_NAV_TEST_ROOT=str(repo), MAPPLE_LAB_DIR=str(repo/'.lab'),
                        MAPPLE_NAV_TEST_RESULTS=str(evidence/(name+'.json')), MAPPLE_NAV_TEST_REOPEN=str(int(reopen)))
